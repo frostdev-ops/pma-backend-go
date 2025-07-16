@@ -1,0 +1,750 @@
+package homeassistant
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/entities"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/rooms"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
+	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
+	"github.com/sirupsen/logrus"
+)
+
+// SyncConfig holds the configuration for the sync service
+type SyncConfig struct {
+	Enabled              bool          `yaml:"enabled"`
+	FullSyncInterval     time.Duration `yaml:"full_sync_interval"`
+	SupportedDomains     []string      `yaml:"supported_domains"`
+	ConflictResolution   string        `yaml:"conflict_resolution"`
+	BatchSize            int           `yaml:"batch_size"`
+	RetryAttempts        int           `yaml:"retry_attempts"`
+	RetryDelay           time.Duration `yaml:"retry_delay"`
+	EventBufferSize      int           `yaml:"event_buffer_size"`
+	EventProcessingDelay time.Duration `yaml:"event_processing_delay"`
+}
+
+// DefaultSyncConfig returns default configuration values
+func DefaultSyncConfig() *SyncConfig {
+	return &SyncConfig{
+		Enabled:              true,
+		FullSyncInterval:     time.Hour,
+		SupportedDomains:     []string{"light", "switch", "sensor", "binary_sensor", "climate", "cover"},
+		ConflictResolution:   "homeassistant_wins",
+		BatchSize:            100,
+		RetryAttempts:        3,
+		RetryDelay:           5 * time.Second,
+		EventBufferSize:      1000,
+		EventProcessingDelay: 100 * time.Millisecond,
+	}
+}
+
+// SyncError represents a synchronization error
+type SyncError struct {
+	Type      string    `json:"type"`
+	EntityID  string    `json:"entity_id,omitempty"`
+	Operation string    `json:"operation"`
+	Error     string    `json:"error"`
+	Timestamp time.Time `json:"timestamp"`
+	Retryable bool      `json:"retryable"`
+}
+
+// SyncStats holds statistics about synchronization
+type SyncStats struct {
+	LastFullSync     time.Time   `json:"last_full_sync"`
+	EntitiesSynced   int         `json:"entities_synced"`
+	SyncErrors       []SyncError `json:"sync_errors"`
+	IsConnected      bool        `json:"is_connected"`
+	EventsProcessed  int64       `json:"events_processed"`
+	LastEventTime    time.Time   `json:"last_event_time"`
+	CurrentOperation string      `json:"current_operation"`
+}
+
+// SyncService manages synchronization between Home Assistant and PMA
+type SyncService struct {
+	haClient   *homeassistant.Client
+	entitySvc  *entities.Service
+	roomSvc    *rooms.Service
+	configRepo repositories.ConfigRepository
+	wsHub      *websocket.Hub
+	logger     *logrus.Logger
+	config     *SyncConfig
+
+	// Synchronization state
+	syncMutex sync.RWMutex
+	isRunning bool
+	lastSync  time.Time
+	stats     SyncStats
+
+	// Event handling
+	eventHandlers map[string]EventHandler
+	eventBuffer   chan homeassistant.Event
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+
+	// Entity mapping
+	mapper *EntityMapper
+}
+
+// EventHandler processes different types of Home Assistant events
+type EventHandler func(event homeassistant.Event) error
+
+// SyncServiceInterface defines the interface for the sync service
+type SyncServiceInterface interface {
+	// Lifecycle
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	IsRunning() bool
+
+	// Synchronization operations
+	FullSync(ctx context.Context) error
+	SyncEntity(ctx context.Context, entityID string) error
+	SyncRoom(ctx context.Context, roomID string) error
+
+	// State operations
+	UpdateEntityState(ctx context.Context, entityID string, state interface{}, attributes map[string]interface{}) error
+	CallService(ctx context.Context, domain, service string, entityID string, data map[string]interface{}) error
+
+	// Statistics and monitoring
+	GetSyncStats() SyncStats
+	GetLastSync() time.Time
+}
+
+// NewSyncService creates a new synchronization service
+func NewSyncService(
+	haClient *homeassistant.Client,
+	entitySvc *entities.Service,
+	roomSvc *rooms.Service,
+	configRepo repositories.ConfigRepository,
+	wsHub *websocket.Hub,
+	logger *logrus.Logger,
+	config *SyncConfig,
+) *SyncService {
+	if config == nil {
+		config = DefaultSyncConfig()
+	}
+
+	service := &SyncService{
+		haClient:      haClient,
+		entitySvc:     entitySvc,
+		roomSvc:       roomSvc,
+		configRepo:    configRepo,
+		wsHub:         wsHub,
+		logger:        logger,
+		config:        config,
+		eventHandlers: make(map[string]EventHandler),
+		eventBuffer:   make(chan homeassistant.Event, config.EventBufferSize),
+		stopChan:      make(chan struct{}),
+		mapper:        NewEntityMapper(logger),
+	}
+
+	// Register event handlers
+	service.registerEventHandlers()
+
+	return service
+}
+
+// Start initializes and starts the synchronization service
+func (s *SyncService) Start(ctx context.Context) error {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+
+	if s.isRunning {
+		return fmt.Errorf("sync service is already running")
+	}
+
+	if !s.config.Enabled {
+		s.logger.Info("Home Assistant sync service is disabled")
+		return nil
+	}
+
+	s.logger.Info("Starting Home Assistant sync service")
+
+	// Initialize Home Assistant client
+	if err := s.haClient.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize HA client: %w", err)
+	}
+
+	// Start event processing goroutine
+	s.wg.Add(1)
+	go s.processEvents()
+
+	// Start periodic full sync goroutine
+	s.wg.Add(1)
+	go s.periodicFullSync()
+
+	// Subscribe to Home Assistant events
+	if err := s.subscribeToEvents(ctx); err != nil {
+		s.logger.WithError(err).Warn("Failed to subscribe to HA events, will retry later")
+	}
+
+	// Perform initial full sync
+	go func() {
+		if err := s.FullSync(ctx); err != nil {
+			s.logger.WithError(err).Error("Initial full sync failed")
+		}
+	}()
+
+	s.isRunning = true
+	s.logger.Info("Home Assistant sync service started successfully")
+
+	return nil
+}
+
+// Stop gracefully stops the synchronization service
+func (s *SyncService) Stop(ctx context.Context) error {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+
+	if !s.isRunning {
+		return nil
+	}
+
+	s.logger.Info("Stopping Home Assistant sync service")
+
+	// Signal all goroutines to stop
+	close(s.stopChan)
+
+	// Wait for all goroutines to complete
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	// Wait for graceful shutdown or context timeout
+	select {
+	case <-done:
+		s.logger.Info("All sync service goroutines stopped gracefully")
+	case <-ctx.Done():
+		s.logger.Warn("Sync service shutdown timed out")
+	}
+
+	s.isRunning = false
+	s.logger.Info("Home Assistant sync service stopped")
+
+	return nil
+}
+
+// IsRunning returns whether the service is currently running
+func (s *SyncService) IsRunning() bool {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	return s.isRunning
+}
+
+// FullSync performs a complete synchronization of all supported entities
+func (s *SyncService) FullSync(ctx context.Context) error {
+	if !s.isRunning {
+		return fmt.Errorf("sync service is not running")
+	}
+
+	s.logger.Info("Starting full synchronization with Home Assistant")
+	startTime := time.Now()
+
+	s.updateStats(func(stats *SyncStats) {
+		stats.CurrentOperation = "full_sync"
+	})
+
+	defer s.updateStats(func(stats *SyncStats) {
+		stats.CurrentOperation = ""
+		stats.LastFullSync = startTime
+	})
+
+	// Sync areas/rooms first
+	if err := s.syncAreas(ctx); err != nil {
+		s.logger.WithError(err).Error("Failed to sync areas")
+		s.recordError("area_sync", "", "sync_areas", err, true)
+	}
+
+	// Get all entities from Home Assistant
+	states, err := s.haClient.GetStates(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get HA states: %w", err)
+	}
+
+	// Convert to pointers and filter supported entities
+	statePointers := make([]*homeassistant.EntityState, len(states))
+	for i := range states {
+		statePointers[i] = &states[i]
+	}
+	supportedStates := s.filterSupportedEntities(statePointers)
+	batches := s.createBatches(supportedStates, s.config.BatchSize)
+
+	totalSynced := 0
+	for i, batch := range batches {
+		s.logger.Debugf("Processing batch %d/%d with %d entities", i+1, len(batches), len(batch))
+
+		for _, state := range batch {
+			if err := s.syncSingleEntity(ctx, state); err != nil {
+				s.logger.WithError(err).Warnf("Failed to sync entity %s", state.EntityID)
+				s.recordError("entity_sync", state.EntityID, "sync_entity", err, true)
+			} else {
+				totalSynced++
+			}
+		}
+
+		// Check for cancellation between batches
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.stopChan:
+			return fmt.Errorf("sync service stopped")
+		default:
+		}
+	}
+
+	duration := time.Since(startTime)
+	s.logger.Infof("Full sync completed in %v: %d entities synced", duration, totalSynced)
+
+	s.updateStats(func(stats *SyncStats) {
+		stats.EntitiesSynced = totalSynced
+	})
+
+	// Broadcast sync completion event
+	s.broadcastSyncEvent("full_sync_completed", map[string]interface{}{
+		"entities_synced": totalSynced,
+		"duration":        duration.String(),
+	})
+
+	return nil
+}
+
+// SyncEntity synchronizes a specific entity
+func (s *SyncService) SyncEntity(ctx context.Context, entityID string) error {
+	if !s.isRunning {
+		return fmt.Errorf("sync service is not running")
+	}
+
+	s.logger.Debugf("Syncing entity: %s", entityID)
+
+	state, err := s.haClient.GetState(ctx, entityID)
+	if err != nil {
+		return fmt.Errorf("failed to get entity state from HA: %w", err)
+	}
+
+	return s.syncSingleEntity(ctx, state)
+}
+
+// SyncRoom synchronizes all entities in a specific room
+func (s *SyncService) SyncRoom(ctx context.Context, roomID string) error {
+	if !s.isRunning {
+		return fmt.Errorf("sync service is not running")
+	}
+
+	s.logger.Debugf("Syncing room: %s", roomID)
+
+	// Convert roomID to int
+	roomIDInt, err := strconv.Atoi(roomID)
+	if err != nil {
+		return fmt.Errorf("invalid room ID: %w", err)
+	}
+
+	// Get room from database
+	room, err := s.roomSvc.GetByID(ctx, roomIDInt, true)
+	if err != nil {
+		return fmt.Errorf("failed to get room: %w", err)
+	}
+
+	synced := 0
+	for _, entity := range room.Entities {
+		if err := s.SyncEntity(ctx, entity.EntityID); err != nil {
+			s.logger.WithError(err).Warnf("Failed to sync entity %s in room %s", entity.EntityID, roomID)
+		} else {
+			synced++
+		}
+	}
+
+	s.logger.Infof("Synced %d entities in room %s", synced, roomID)
+	return nil
+}
+
+// UpdateEntityState updates an entity's state in Home Assistant
+func (s *SyncService) UpdateEntityState(ctx context.Context, entityID string, state interface{}, attributes map[string]interface{}) error {
+	if !s.isRunning {
+		return fmt.Errorf("sync service is not running")
+	}
+
+	s.logger.Debugf("Updating entity state in HA: %s", entityID)
+
+	// Convert state to string
+	var stateStr string
+	if state != nil {
+		stateStr = fmt.Sprintf("%v", state)
+	}
+
+	// Update state in Home Assistant via service call
+	domain := s.extractDomain(entityID)
+	service := "turn_on"
+	if stateStr == "off" || stateStr == "false" {
+		service = "turn_off"
+	}
+
+	data := make(map[string]interface{})
+	data["entity_id"] = entityID
+
+	// Add attributes to service data if supported
+	for key, value := range attributes {
+		data[key] = value
+	}
+
+	return s.CallService(ctx, domain, service, entityID, data)
+}
+
+// CallService calls a Home Assistant service
+func (s *SyncService) CallService(ctx context.Context, domain, service string, entityID string, data map[string]interface{}) error {
+	if !s.isRunning {
+		return fmt.Errorf("sync service is not running")
+	}
+
+	s.logger.Debugf("Calling HA service: %s.%s for entity %s", domain, service, entityID)
+
+	if err := s.haClient.CallService(ctx, domain, service, data); err != nil {
+		return fmt.Errorf("failed to call HA service: %w", err)
+	}
+
+	// Broadcast service call event
+	s.broadcastSyncEvent("service_called", map[string]interface{}{
+		"domain":    domain,
+		"service":   service,
+		"entity_id": entityID,
+		"data":      data,
+	})
+
+	return nil
+}
+
+// GetSyncStats returns current synchronization statistics
+func (s *SyncService) GetSyncStats() SyncStats {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	// Create a copy of stats to avoid race conditions
+	stats := s.stats
+	stats.IsConnected = s.haClient.IsConnected()
+
+	return stats
+}
+
+// GetLastSync returns the timestamp of the last full synchronization
+func (s *SyncService) GetLastSync() time.Time {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	return s.lastSync
+}
+
+// Helper methods for the sync service
+
+// registerEventHandlers registers event handlers for different Home Assistant event types
+func (s *SyncService) registerEventHandlers() {
+	s.eventHandlers["state_changed"] = s.handleStateChanged
+	s.eventHandlers["entity_registry_updated"] = s.handleEntityRegistryUpdated
+	s.eventHandlers["area_registry_updated"] = s.handleAreaRegistryUpdated
+}
+
+// processEvents processes events from the event buffer
+func (s *SyncService) processEvents() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case event := <-s.eventBuffer:
+			if handler, exists := s.eventHandlers[event.EventType]; exists {
+				if err := handler(event); err != nil {
+					s.logger.WithError(err).Warnf("Failed to process event: %s", event.EventType)
+					s.recordError("event_processing", "", event.EventType, err, true)
+				} else {
+					s.updateStats(func(stats *SyncStats) {
+						stats.EventsProcessed++
+						stats.LastEventTime = time.Now()
+					})
+				}
+			} else {
+				s.logger.Debugf("No handler for event type: %s", event.EventType)
+			}
+
+			// Small delay to prevent overwhelming the system
+			time.Sleep(s.config.EventProcessingDelay)
+
+		case <-s.stopChan:
+			s.logger.Debug("Event processing stopped")
+			return
+		}
+	}
+}
+
+// periodicFullSync performs periodic full synchronization
+func (s *SyncService) periodicFullSync() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(s.config.FullSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.logger.Debug("Starting periodic full sync")
+			ctx := context.Background()
+			if err := s.FullSync(ctx); err != nil {
+				s.logger.WithError(err).Error("Periodic full sync failed")
+			}
+
+		case <-s.stopChan:
+			s.logger.Debug("Periodic sync stopped")
+			return
+		}
+	}
+}
+
+// subscribeToEvents subscribes to Home Assistant WebSocket events
+func (s *SyncService) subscribeToEvents(ctx context.Context) error {
+	// Subscribe to all state changes (empty string subscribes to all)
+	_, err := s.haClient.SubscribeToStateChanges("", func(entityID string, oldState, newState *homeassistant.EntityState) {
+		if newState != nil && s.shouldProcessEntity(newState.EntityID) {
+			event := homeassistant.Event{
+				EventType: "state_changed",
+				Data: map[string]interface{}{
+					"entity_id": entityID,
+					"old_state": oldState,
+					"new_state": newState,
+				},
+			}
+
+			select {
+			case s.eventBuffer <- event:
+			default:
+				s.logger.Warn("Event buffer full, dropping state change event")
+			}
+		}
+	})
+
+	return err
+}
+
+// syncAreas synchronizes Home Assistant areas with PMA rooms
+func (s *SyncService) syncAreas(ctx context.Context) error {
+	areas, err := s.haClient.GetAreas(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get HA areas: %w", err)
+	}
+
+	for _, area := range areas {
+		if err := s.syncSingleArea(ctx, &area); err != nil {
+			s.logger.WithError(err).Warnf("Failed to sync area: %s", area.Name)
+			s.recordError("area_sync", area.AreaID, "sync_area", err, true)
+		}
+	}
+
+	return nil
+}
+
+// syncSingleArea synchronizes a single Home Assistant area to a PMA room
+func (s *SyncService) syncSingleArea(ctx context.Context, area *homeassistant.Area) error {
+	// Check if room already exists
+	existingRoom, err := s.roomSvc.GetByHAAreaID(ctx, area.AreaID)
+	if err == nil {
+		// Update existing room
+		existingRoom.Name = area.Name
+		if _, err := s.roomSvc.Update(ctx, fmt.Sprintf("%d", existingRoom.ID), existingRoom.Name, existingRoom.Description.String, existingRoom.Icon.String); err != nil {
+			return fmt.Errorf("failed to update room: %w", err)
+		}
+		return nil
+	}
+
+	// Create new room
+	_, err = s.roomSvc.Create(ctx, area.Name, "", "", area.AreaID)
+	if err != nil {
+		return fmt.Errorf("failed to create room: %w", err)
+	}
+
+	s.logger.Debugf("Created room for HA area: %s", area.Name)
+	return nil
+}
+
+// syncSingleEntity synchronizes a single Home Assistant entity
+func (s *SyncService) syncSingleEntity(ctx context.Context, state *homeassistant.EntityState) error {
+	if !s.shouldProcessEntity(state.EntityID) {
+		return nil
+	}
+
+	// Convert HA entity to PMA entity
+	entity, err := s.mapper.HAEntityToPMAEntity(*state)
+	if err != nil {
+		return fmt.Errorf("failed to map HA entity: %w", err)
+	}
+
+	// Check if entity already exists
+	existingEntity, err := s.entitySvc.GetByID(ctx, entity.EntityID, false)
+	if err == nil {
+		// Update existing entity
+		return s.updateExistingEntity(ctx, existingEntity.Entity, entity)
+	}
+
+	// Create new entity
+	return s.createNewEntity(ctx, entity)
+}
+
+// updateExistingEntity updates an existing entity with new data
+func (s *SyncService) updateExistingEntity(ctx context.Context, existing, updated *models.Entity) error {
+	// Apply conflict resolution strategy
+	if s.config.ConflictResolution == "homeassistant_wins" ||
+		(s.config.ConflictResolution == "timestamp" && updated.LastUpdated.After(existing.LastUpdated)) {
+
+		_, err := s.entitySvc.Update(ctx, existing.EntityID, updated.FriendlyName.String, updated.State.String, updated.Attributes)
+		return err
+	}
+
+	return nil // PMA wins or timestamp favors existing
+}
+
+// createNewEntity creates a new entity in the database
+func (s *SyncService) createNewEntity(ctx context.Context, entity *models.Entity) error {
+	_, err := s.entitySvc.Create(ctx, entity.EntityID, entity.FriendlyName.String, entity.Domain, entity.State.String, entity.Attributes)
+	return err
+}
+
+// filterSupportedEntities filters entities to only supported domains
+func (s *SyncService) filterSupportedEntities(states []*homeassistant.EntityState) []*homeassistant.EntityState {
+	var filtered []*homeassistant.EntityState
+
+	for _, state := range states {
+		if s.shouldProcessEntity(state.EntityID) {
+			filtered = append(filtered, state)
+		}
+	}
+
+	return filtered
+}
+
+// shouldProcessEntity checks if an entity should be processed based on domain filtering
+func (s *SyncService) shouldProcessEntity(entityID string) bool {
+	domain := s.extractDomain(entityID)
+
+	for _, supportedDomain := range s.config.SupportedDomains {
+		if domain == supportedDomain {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractDomain extracts the domain from an entity ID
+func (s *SyncService) extractDomain(entityID string) string {
+	if idx := strings.Index(entityID, "."); idx > 0 {
+		return entityID[:idx]
+	}
+	return entityID
+}
+
+// createBatches splits entities into batches for processing
+func (s *SyncService) createBatches(entities []*homeassistant.EntityState, batchSize int) [][]*homeassistant.EntityState {
+	var batches [][]*homeassistant.EntityState
+
+	for i := 0; i < len(entities); i += batchSize {
+		end := i + batchSize
+		if end > len(entities) {
+			end = len(entities)
+		}
+		batches = append(batches, entities[i:end])
+	}
+
+	return batches
+}
+
+// updateStats safely updates the statistics
+func (s *SyncService) updateStats(updateFunc func(*SyncStats)) {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	updateFunc(&s.stats)
+}
+
+// recordError records a synchronization error
+func (s *SyncService) recordError(errorType, entityID, operation string, err error, retryable bool) {
+	syncError := SyncError{
+		Type:      errorType,
+		EntityID:  entityID,
+		Operation: operation,
+		Error:     err.Error(),
+		Timestamp: time.Now(),
+		Retryable: retryable,
+	}
+
+	s.updateStats(func(stats *SyncStats) {
+		stats.SyncErrors = append(stats.SyncErrors, syncError)
+
+		// Keep only last 100 errors to prevent memory growth
+		if len(stats.SyncErrors) > 100 {
+			stats.SyncErrors = stats.SyncErrors[len(stats.SyncErrors)-100:]
+		}
+	})
+}
+
+// broadcastSyncEvent broadcasts sync events via WebSocket
+func (s *SyncService) broadcastSyncEvent(eventType string, data map[string]interface{}) {
+	if s.wsHub != nil {
+		message := map[string]interface{}{
+			"type":      "sync_event",
+			"event":     eventType,
+			"data":      data,
+			"timestamp": time.Now(),
+		}
+
+		s.wsHub.BroadcastToAll(message)
+	}
+}
+
+// Event handlers
+
+// handleStateChanged handles Home Assistant state change events
+func (s *SyncService) handleStateChanged(event homeassistant.Event) error {
+	data := event.Data
+	entityID, ok := data["entity_id"].(string)
+	if !ok {
+		return fmt.Errorf("invalid entity_id in state change event")
+	}
+
+	newState, ok := data["new_state"].(*homeassistant.EntityState)
+	if !ok || newState == nil {
+		return fmt.Errorf("invalid new_state in state change event")
+	}
+
+	s.logger.Debugf("Processing state change for entity: %s", entityID)
+	return s.syncSingleEntity(context.Background(), newState)
+}
+
+// handleEntityRegistryUpdated handles entity registry update events
+func (s *SyncService) handleEntityRegistryUpdated(event homeassistant.Event) error {
+	s.logger.Debug("Entity registry updated, triggering entity resync")
+
+	// For now, we'll just log this. In a more sophisticated implementation,
+	// we could parse the event data and only sync affected entities
+	go func() {
+		ctx := context.Background()
+		if err := s.FullSync(ctx); err != nil {
+			s.logger.WithError(err).Error("Failed to sync after entity registry update")
+		}
+	}()
+
+	return nil
+}
+
+// handleAreaRegistryUpdated handles area registry update events
+func (s *SyncService) handleAreaRegistryUpdated(event homeassistant.Event) error {
+	s.logger.Debug("Area registry updated, triggering area resync")
+
+	go func() {
+		ctx := context.Background()
+		if err := s.syncAreas(ctx); err != nil {
+			s.logger.WithError(err).Error("Failed to sync areas after registry update")
+		}
+	}()
+
+	return nil
+}
