@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// Function type aliases for cleaner interfaces
+type EventHandler func(event Event)
+type StateChangeHandler func(entityID string, oldState, newState *EntityState)
+type ConnectionStateHandler func(connected bool)
+
 // HAConfig represents Home Assistant configuration
 type HAConfig struct {
 	Version               string     `json:"version"`
@@ -175,11 +180,4 @@ type PongMessage struct {
 	Success bool   `json:"success"`
 }
 
-// EventHandler is a function type for handling events
-type EventHandler func(event Event)
 
-// StateChangeHandler is a function type for handling state changes
-type StateChangeHandler func(entityID string, oldState, newState *EntityState)
-
-// ConnectionStateHandler is a function type for handling connection state changes
-type ConnectionStateHandler func(connected bool)
