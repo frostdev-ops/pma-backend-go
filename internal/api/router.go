@@ -5,12 +5,13 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/api/middleware"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
 
 // NewRouter creates and configures the main HTTP router
-func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger) *gin.Engine {
+func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub) *gin.Engine {
 	// Set gin mode based on config
 	if cfg.Server.Mode == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -30,10 +31,13 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 	router.Use(rateLimiter.RateLimitMiddleware())
 
 	// Initialize handlers
-	h := handlers.NewHandlers(cfg, repos, logger)
+	h := handlers.NewHandlers(cfg, repos, logger, wsHub)
 
 	// Public routes
 	router.GET("/health", h.Health)
+
+	// WebSocket endpoint (no auth required for connection)
+	router.GET("/ws", h.WebSocketHandler(wsHub))
 
 	// API v1 routes
 	api := router.Group("/api/v1")
@@ -77,6 +81,13 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				rooms.DELETE("/:id", h.DeleteRoom)
 				rooms.GET("/stats", h.GetRoomStats)
 				rooms.POST("/sync-ha", h.SyncRoomsWithHA)
+			}
+
+			// WebSocket management endpoints (protected)
+			ws := protected.Group("/websocket")
+			{
+				ws.GET("/stats", h.GetWebSocketStats(wsHub))
+				ws.POST("/broadcast", h.BroadcastMessage(wsHub))
 			}
 
 			// TODO: Add more protected endpoints here

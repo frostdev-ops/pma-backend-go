@@ -3,6 +3,7 @@ package handlers
 import (
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/sirupsen/logrus"
 )
 
@@ -11,13 +12,15 @@ type Handlers struct {
 	cfg    *config.Config
 	repos  *database.Repositories
 	logger *logrus.Logger
+	wsHub  *websocket.Hub
 }
 
 // NewHandlers creates a new handlers instance
-func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger) *Handlers {
+func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub) *Handlers {
 	return &Handlers{
 		cfg:    cfg,
 		repos:  repos,
 		logger: logger,
+		wsHub:  wsHub,
 	}
 }

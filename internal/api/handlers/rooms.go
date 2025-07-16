@@ -8,6 +8,7 @@ import (
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/rooms"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
+	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -105,6 +106,14 @@ func (h *Handlers) CreateRoom(c *gin.Context) {
 		return
 	}
 
+	h.logger.WithField("room_id", room.ID).WithField("room_name", room.Name).Info("Room created")
+
+	// Broadcast WebSocket event for room creation
+	if h.wsHub != nil {
+		message := websocket.RoomUpdatedMessage(int(room.ID), room.Name, "created")
+		h.wsHub.BroadcastToAll(message)
+	}
+
 	utils.SendSuccess(c, gin.H{
 		"message": "Room created successfully",
 		"room_id": room.ID,
@@ -164,6 +173,14 @@ func (h *Handlers) UpdateRoom(c *gin.Context) {
 		return
 	}
 
+	h.logger.WithField("room_id", roomID).WithField("room_name", updates.Name).Info("Room updated")
+
+	// Broadcast WebSocket event for room update
+	if h.wsHub != nil {
+		message := websocket.RoomUpdatedMessage(roomID, updates.Name, "updated")
+		h.wsHub.BroadcastToAll(message)
+	}
+
 	utils.SendSuccess(c, gin.H{
 		"message": "Room updated successfully",
 		"room_id": roomID,
@@ -194,11 +211,27 @@ func (h *Handlers) DeleteRoom(c *gin.Context) {
 
 	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
 
+	// Get room name before deletion for WebSocket message
+	roomData, err := roomService.GetByID(ctx, roomID, false)
+	if err != nil {
+		h.logger.WithError(err).Errorf("Failed to get room data before deletion: %d", roomID)
+		utils.SendError(c, http.StatusNotFound, "Room not found")
+		return
+	}
+
 	err = roomService.Delete(ctx, roomID, request.ReassignToRoomID)
 	if err != nil {
 		h.logger.WithError(err).Errorf("Failed to delete room: %d", roomID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to delete room")
 		return
+	}
+
+	h.logger.WithField("room_id", roomID).WithField("room_name", roomData.Name).Info("Room deleted")
+
+	// Broadcast WebSocket event for room deletion
+	if h.wsHub != nil {
+		message := websocket.RoomUpdatedMessage(roomID, roomData.Name, "deleted")
+		h.wsHub.BroadcastToAll(message)
 	}
 
 	utils.SendSuccess(c, gin.H{

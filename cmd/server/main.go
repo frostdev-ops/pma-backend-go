@@ -12,6 +12,7 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/api"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/frostdev-ops/pma-backend-go/pkg/logger"
 )
 
@@ -40,8 +41,12 @@ func main() {
 	// Create repositories
 	repos := database.NewRepositories(db)
 
+	// Create WebSocket hub
+	wsHub := websocket.NewHub(log)
+	go wsHub.Run()
+
 	// Initialize router
-	router := api.NewRouter(cfg, repos, log)
+	router := api.NewRouter(cfg, repos, log, wsHub)
 
 	// Create HTTP server
 	srv := &http.Server{
