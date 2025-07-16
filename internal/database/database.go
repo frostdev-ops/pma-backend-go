@@ -6,8 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/sqlite3"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/pma/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/sirupsen/logrus"
 )
 
 // Initialize creates and configures the database connection
@@ -45,9 +49,40 @@ func Initialize(cfg config.DatabaseConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// Migrate runs database migrations (placeholder for now)
+// Migrate runs database migrations
 func Migrate(db *sql.DB, migrationsPath string) error {
-	// TODO: Implement migration logic
-	// For now, just return nil
+	driver, err := sqlite3.WithInstance(db, &sqlite3.Config{})
+	if err != nil {
+		return fmt.Errorf("failed to create migration driver: %w", err)
+	}
+
+	m, err := migrate.NewWithDatabaseInstance(
+		fmt.Sprintf("file://%s", migrationsPath),
+		"sqlite3",
+		driver,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create migration instance: %w", err)
+	}
+
+	// Run migrations
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
 	return nil
+}
+
+// DB wraps sql.DB to provide additional functionality
+type DB struct {
+	*sql.DB
+	log *logrus.Logger
+}
+
+// NewDB creates a new DB wrapper
+func NewDB(sqlDB *sql.DB, log *logrus.Logger) *DB {
+	return &DB{
+		DB:  sqlDB,
+		log: log,
+	}
 }

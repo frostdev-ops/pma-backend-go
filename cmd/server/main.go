@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pma/pma-backend-go/internal/api"
-	"github.com/pma/pma-backend-go/internal/config"
-	"github.com/pma/pma-backend-go/internal/database"
-	"github.com/pma/pma-backend-go/pkg/logger"
+	"github.com/frostdev-ops/pma-backend-go/internal/api"
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/frostdev-ops/pma-backend-go/pkg/logger"
 )
 
 func main() {
@@ -37,8 +37,11 @@ func main() {
 		log.Fatal("Failed to run migrations:", err)
 	}
 
+	// Create repositories
+	repos := database.NewRepositories(db)
+
 	// Initialize router
-	router := api.NewRouter(cfg, db, log)
+	router := api.NewRouter(cfg, repos, log)
 
 	// Create HTTP server
 	srv := &http.Server{
