@@ -1,11 +1,11 @@
 package api
 
 import (
-	"net/http"
-
-	"github.com/gin-gonic/gin"
+	"github.com/frostdev-ops/pma-backend-go/internal/api/handlers"
+	"github.com/frostdev-ops/pma-backend-go/internal/api/middleware"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,39 +20,48 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 
 	router := gin.New()
 
-	// Add middleware
-	router.Use(gin.Logger())
-	router.Use(gin.Recovery())
+	// Global middleware
+	router.Use(middleware.ErrorHandlingMiddleware(logger))
+	router.Use(middleware.LoggingMiddleware(logger))
+	router.Use(middleware.CORSMiddleware())
 
-	// Health check endpoint
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"service": "pma-backend",
-		})
-	})
+	// Rate limiting
+	rateLimiter := middleware.NewRateLimiter(100, 200) // 100 requests/sec, burst 200
+	router.Use(rateLimiter.RateLimitMiddleware())
 
-	// Test endpoint to verify database connectivity
-	router.GET("/api/test-db", func(c *gin.Context) {
-		// Simple test to verify config repository works
-		configs, err := repos.Config.GetAll(c.Request.Context())
-		if err != nil {
-			logger.WithError(err).Error("Failed to query database")
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database connection failed",
-			})
-			return
+	// Initialize handlers
+	h := handlers.NewHandlers(cfg, repos, logger)
+
+	// Public routes
+	router.GET("/health", h.Health)
+
+	// API v1 routes
+	api := router.Group("/api/v1")
+	{
+		// Public API routes (no auth required)
+		public := api.Group("/")
+		{
+			public.GET("/status", h.Health)
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"status":       "ok",
-			"message":      "Database connected successfully",
-			"config_count": len(configs),
-		})
-	})
+		// Protected API routes (auth required)
+		protected := api.Group("/")
+		protected.Use(middleware.AuthMiddleware(cfg.Auth.JWTSecret))
+		{
+			// Configuration endpoints
+			config := protected.Group("/config")
+			{
+				config.GET("/:key", h.GetConfig)
+				config.PUT("/:key", h.SetConfig)
+				config.GET("/", h.GetAllConfig)
+			}
 
-	// TODO: Add other route groups here
-	// api/v1 routes will be added in subsequent implementations
+			// TODO: Add more protected endpoints here
+			// entities := protected.Group("/entities")
+			// rooms := protected.Group("/rooms")
+			// automation := protected.Group("/automation")
+		}
+	}
 
 	return router
 }
