@@ -42,6 +42,14 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 	// API v1 routes
 	api := router.Group("/api/v1")
 	{
+		// Authentication routes (public)
+		auth := api.Group("/auth")
+		{
+			auth.POST("/register", h.Register)
+			auth.POST("/login", h.Login)
+			auth.POST("/validate", h.ValidateToken)
+		}
+
 		// Public API routes (no auth required)
 		public := api.Group("/")
 		{
@@ -52,6 +60,19 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		protected := api.Group("/")
 		protected.Use(middleware.AuthMiddleware(cfg.Auth.JWTSecret))
 		{
+			// User profile routes
+			profile := protected.Group("/profile")
+			{
+				profile.GET("/", h.GetProfile)
+				profile.PUT("/password", h.UpdatePassword)
+			}
+
+			// User management routes (admin functionality)
+			users := protected.Group("/users")
+			{
+				users.GET("/", h.GetAllUsers)
+				users.DELETE("/:id", h.DeleteUser)
+			}
 			// Configuration endpoints
 			config := protected.Group("/config")
 			{

@@ -147,3 +147,36 @@ func (r *UserRepository) Delete(ctx context.Context, id int) error {
 
 	return nil
 }
+
+// GetAll retrieves all users
+func (r *UserRepository) GetAll(ctx context.Context) ([]*models.User, error) {
+	query := `
+		SELECT id, username, password_hash, created_at, updated_at
+		FROM users
+		ORDER BY created_at DESC
+	`
+	
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users: %w", err)
+	}
+	defer rows.Close()
+	
+	var users []*models.User
+	for rows.Next() {
+		user := &models.User{}
+		err := rows.Scan(
+			&user.ID,
+			&user.Username,
+			&user.PasswordHash,
+			&user.CreatedAt,
+			&user.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+	
+	return users, nil
+}
