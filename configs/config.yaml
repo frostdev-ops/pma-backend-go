@@ -1,0 +1,28 @@
+server:
+  port: 3001
+  host: "0.0.0.0"
+  mode: "development" # development, production
+
+database:
+  path: "./data/pma.db"
+  migrations_path: "./migrations"
+  backup_enabled: true
+  backup_path: "./data/backups"
+  max_connections: 25
+
+auth:
+  jwt_secret: "your-secret-key-here" # Override with environment variable
+  token_expiry: 3600 # seconds
+
+home_assistant:
+  url: "http://192.168.100.2:8123"
+  token: "" # Override with environment variable
+
+logging:
+  level: "info" # debug, info, warn, error
+  format: "json" # json, text
+
+websocket:
+  ping_interval: 30 # seconds
+  pong_timeout: 60 # seconds
+  write_timeout: 10 # seconds 
