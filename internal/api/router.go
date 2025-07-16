@@ -56,8 +56,18 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				config.GET("/", h.GetAllConfig)
 			}
 
+			// Entity endpoints
+			entities := protected.Group("/entities")
+			{
+				entities.GET("/", h.GetEntities)
+				entities.GET("/:id", h.GetEntity)
+				entities.POST("/", h.CreateOrUpdateEntity)
+				entities.PUT("/:id/state", h.UpdateEntityState)
+				entities.PUT("/:id/room", h.AssignEntityToRoom)
+				entities.DELETE("/:id", h.DeleteEntity)
+			}
+
 			// TODO: Add more protected endpoints here
-			// entities := protected.Group("/entities")
 			// rooms := protected.Group("/rooms")
 			// automation := protected.Group("/automation")
 		}
