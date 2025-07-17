@@ -430,9 +430,7 @@ func TestScheduler(t *testing.T) {
 	trigger := NewTimeTrigger("test-trigger")
 	trigger.Interval = "1m"
 
-	executed := false
 	handler := func(ctx context.Context, t Trigger, event Event) error {
-		executed = true
 		return nil
 	}
 
@@ -440,11 +438,12 @@ func TestScheduler(t *testing.T) {
 	err = scheduler.ScheduleTrigger("test-rule", trigger, handler)
 	require.NoError(t, err)
 
-	// Wait for execution (just check if the trigger was scheduled correctly)
+	// Wait for setup to complete
 	time.Sleep(100 * time.Millisecond)
 
-	// Check if it was executed
-	assert.True(t, executed)
+	// Check if trigger is scheduled (we can't wait 1 minute for actual execution in test)
+	stats := scheduler.GetStatistics()
+	assert.Equal(t, 1, stats["total_triggers"], "Should have 1 scheduled trigger")
 
 	// Unschedule the trigger
 	err = scheduler.UnscheduleTrigger(trigger.GetID())
