@@ -1,200 +1,211 @@
 package devices
 
 import (
-	"context"
+	"sync"
 	"time"
+)
+
+// DeviceType represents the type of device
+type DeviceType string
+
+const (
+	DeviceTypeRingDoorbell DeviceType = "ring_doorbell"
+	DeviceTypeRingCamera   DeviceType = "ring_camera"
+	DeviceTypeRingChime    DeviceType = "ring_chime"
+	DeviceTypeShellySwitch DeviceType = "shelly_switch"
+	DeviceTypeShellyDimmer DeviceType = "shelly_dimmer"
+	DeviceTypeShellyRGBW   DeviceType = "shelly_rgbw"
+	DeviceTypeUPS          DeviceType = "ups"
 )
 
 // DeviceStatus represents the current status of a device
 type DeviceStatus string
 
 const (
-	DeviceStatusOnline     DeviceStatus = "online"
-	DeviceStatusOffline    DeviceStatus = "offline"
-	DeviceStatusError      DeviceStatus = "error"
-	DeviceStatusUnknown    DeviceStatus = "unknown"
-	DeviceStatusConnecting DeviceStatus = "connecting"
+	DeviceStatusOnline       DeviceStatus = "online"
+	DeviceStatusOffline      DeviceStatus = "offline"
+	DeviceStatusConnecting   DeviceStatus = "connecting"
+	DeviceStatusError        DeviceStatus = "error"
+	DeviceStatusUnknown      DeviceStatus = "unknown"
+	DeviceStatusInitializing DeviceStatus = "initializing"
+)
+
+// DeviceCapability represents a capability that a device supports
+type DeviceCapability string
+
+const (
+	CapabilitySwitch       DeviceCapability = "switch"
+	CapabilityDimmer       DeviceCapability = "dimmer"
+	CapabilityColorControl DeviceCapability = "color_control"
+	CapabilityMotion       DeviceCapability = "motion"
+	CapabilityCamera       DeviceCapability = "camera"
+	CapabilityDoorbell     DeviceCapability = "doorbell"
+	CapabilityBattery      DeviceCapability = "battery"
+	CapabilityPower        DeviceCapability = "power"
+	CapabilityTemperature  DeviceCapability = "temperature"
+)
+
+// EventType represents the type of device event
+type EventType string
+
+const (
+	EventTypeStateChange    EventType = "state_change"
+	EventTypeMotionDetected EventType = "motion_detected"
+	EventTypeDoorbellPress  EventType = "doorbell_press"
+	EventTypeBatteryLow     EventType = "battery_low"
+	EventTypePowerLoss      EventType = "power_loss"
+	EventTypePowerRestored  EventType = "power_restored"
+	EventTypeConnected      EventType = "connected"
+	EventTypeDisconnected   EventType = "disconnected"
 )
 
 // Device represents a generic device interface
 type Device interface {
 	GetID() string
-	GetType() string
+	GetType() DeviceType
 	GetName() string
-	GetAdapterType() string
 	GetStatus() DeviceStatus
-	GetCapabilities() []string
+	GetCapabilities() []DeviceCapability
 	GetState() map[string]interface{}
 	SetState(key string, value interface{}) error
 	Execute(command string, params map[string]interface{}) (interface{}, error)
-	GetLastSeen() time.Time
+	GetAdapter() string
 	GetMetadata() map[string]interface{}
-	Validate() error
 }
 
-// DeviceAdapter represents an interface for device adapters
+// DeviceAdapter represents an adapter for specific device types
 type DeviceAdapter interface {
-	GetType() string
-	Connect(ctx context.Context) error
+	GetName() string
+	Connect() error
 	Disconnect() error
-	Discover(ctx context.Context) ([]Device, error)
+	Discover() ([]Device, error)
 	Subscribe(callback func(DeviceEvent)) error
-	Unsubscribe() error
-	GetDevice(deviceID string) (Device, error)
-	GetDevices() []Device
-	IsConnected() bool
-	HealthCheck() error
+	GetDevice(id string) (Device, error)
+	GetStatus() AdapterStatus
 }
 
 // DeviceEvent represents an event from a device
 type DeviceEvent struct {
-	DeviceID    string                 `json:"device_id"`
-	AdapterType string                 `json:"adapter_type"`
-	EventType   string                 `json:"event_type"`
-	Data        map[string]interface{} `json:"data"`
-	Timestamp   time.Time              `json:"timestamp"`
-	Source      string                 `json:"source"`
+	DeviceID  string                 `json:"device_id"`
+	EventType EventType              `json:"event_type"`
+	Data      map[string]interface{} `json:"data"`
+	Timestamp time.Time              `json:"timestamp"`
 }
 
-// DeviceCommand represents a command to be executed on a device
-type DeviceCommand struct {
-	DeviceID string                 `json:"device_id"`
-	Command  string                 `json:"command"`
-	Params   map[string]interface{} `json:"params"`
+// AdapterStatus represents the status of a device adapter
+type AdapterStatus struct {
+	Connected      bool                   `json:"connected"`
+	LastError      error                  `json:"last_error,omitempty"`
+	LastConnected  *time.Time             `json:"last_connected,omitempty"`
+	DeviceCount    int                    `json:"device_count"`
+	AdditionalInfo map[string]interface{} `json:"additional_info,omitempty"`
 }
 
-// DeviceDiscoveryResult represents the result of device discovery
-type DeviceDiscoveryResult struct {
-	Devices []Device `json:"devices"`
-	Errors  []error  `json:"errors"`
-}
-
-// Common device capabilities
-const (
-	CapabilityOnOff        = "on_off"
-	CapabilityDimming      = "dimming"
-	CapabilityColorControl = "color_control"
-	CapabilityTemperature  = "temperature"
-	CapabilityHumidity     = "humidity"
-	CapabilityMotion       = "motion"
-	CapabilityVideo        = "video"
-	CapabilityAudio        = "audio"
-	CapabilityPowerMonitor = "power_monitor"
-	CapabilityBattery      = "battery"
-	CapabilityDoorbell     = "doorbell"
-	CapabilityRecording    = "recording"
-	CapabilitySnapshot     = "snapshot"
-	CapabilityLiveStream   = "live_stream"
-	CapabilityUPS          = "ups"
-	CapabilityNetworking   = "networking"
-)
-
-// Common device types
-const (
-	DeviceTypeSwitch       = "switch"
-	DeviceTypeDimmer       = "dimmer"
-	DeviceTypeRGBW         = "rgbw"
-	DeviceTypeSensor       = "sensor"
-	DeviceTypeCamera       = "camera"
-	DeviceTypeDoorbell     = "doorbell"
-	DeviceTypeUPS          = "ups"
-	DeviceTypeMotionSensor = "motion_sensor"
-	DeviceTypePowerMeter   = "power_meter"
-)
-
-// Common event types
-const (
-	EventTypeStateChanged    = "state_changed"
-	EventTypeMotionDetected  = "motion_detected"
-	EventTypeDoorbellPressed = "doorbell_pressed"
-	EventTypePowerLoss       = "power_loss"
-	EventTypeBatteryLow      = "battery_low"
-	EventTypeDeviceOnline    = "device_online"
-	EventTypeDeviceOffline   = "device_offline"
-	EventTypeError           = "error"
-)
-
-// BaseDevice provides a basic implementation of common device functionality
+// BaseDevice provides a basic implementation of the Device interface
 type BaseDevice struct {
 	ID           string                 `json:"id"`
+	Type         DeviceType             `json:"type"`
 	Name         string                 `json:"name"`
-	Type         string                 `json:"type"`
-	AdapterType  string                 `json:"adapter_type"`
 	Status       DeviceStatus           `json:"status"`
-	Capabilities []string               `json:"capabilities"`
+	Capabilities []DeviceCapability     `json:"capabilities"`
 	State        map[string]interface{} `json:"state"`
+	Adapter      string                 `json:"adapter"`
 	Metadata     map[string]interface{} `json:"metadata"`
-	LastSeen     time.Time              `json:"last_seen"`
+	mu           sync.RWMutex
 }
 
+// GetID returns the device ID
 func (d *BaseDevice) GetID() string {
 	return d.ID
 }
 
-func (d *BaseDevice) GetType() string {
+// GetType returns the device type
+func (d *BaseDevice) GetType() DeviceType {
 	return d.Type
 }
 
+// GetName returns the device name
 func (d *BaseDevice) GetName() string {
 	return d.Name
 }
 
-func (d *BaseDevice) GetAdapterType() string {
-	return d.AdapterType
-}
-
+// GetStatus returns the device status
 func (d *BaseDevice) GetStatus() DeviceStatus {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.Status
 }
 
-func (d *BaseDevice) GetCapabilities() []string {
+// GetCapabilities returns the device capabilities
+func (d *BaseDevice) GetCapabilities() []DeviceCapability {
 	return d.Capabilities
 }
 
+// GetState returns the current state of the device
 func (d *BaseDevice) GetState() map[string]interface{} {
-	if d.State == nil {
-		d.State = make(map[string]interface{})
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	
+	// Return a copy to prevent external modification
+	stateCopy := make(map[string]interface{})
+	for k, v := range d.State {
+		stateCopy[k] = v
 	}
-	return d.State
+	return stateCopy
 }
 
-func (d *BaseDevice) GetLastSeen() time.Time {
-	return d.LastSeen
-}
-
-func (d *BaseDevice) GetMetadata() map[string]interface{} {
-	if d.Metadata == nil {
-		d.Metadata = make(map[string]interface{})
-	}
-	return d.Metadata
-}
-
+// SetState updates a state value
 func (d *BaseDevice) SetState(key string, value interface{}) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	
 	if d.State == nil {
 		d.State = make(map[string]interface{})
 	}
 	d.State[key] = value
-	d.LastSeen = time.Now()
 	return nil
 }
 
-func (d *BaseDevice) Validate() error {
-	if d.ID == "" {
-		return ErrInvalidDeviceID
-	}
-	if d.Name == "" {
-		return ErrInvalidDeviceName
-	}
-	if d.Type == "" {
-		return ErrInvalidDeviceType
-	}
-	if d.AdapterType == "" {
-		return ErrInvalidAdapterType
-	}
-	return nil
-}
-
-// Execute is a default implementation that returns not supported
+// Execute runs a command on the device
 func (d *BaseDevice) Execute(command string, params map[string]interface{}) (interface{}, error) {
 	return nil, ErrCommandNotSupported
+}
+
+// GetAdapter returns the adapter name
+func (d *BaseDevice) GetAdapter() string {
+	return d.Adapter
+}
+
+// GetMetadata returns the device metadata
+func (d *BaseDevice) GetMetadata() map[string]interface{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	
+	// Return a copy to prevent external modification
+	metadataCopy := make(map[string]interface{})
+	for k, v := range d.Metadata {
+		metadataCopy[k] = v
+	}
+	return metadataCopy
+}
+
+// SetStatus updates the device status
+func (d *BaseDevice) SetStatus(status DeviceStatus) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Status = status
+}
+
+// UpdateState updates multiple state values at once
+func (d *BaseDevice) UpdateState(updates map[string]interface{}) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	
+	if d.State == nil {
+		d.State = make(map[string]interface{})
+	}
+	
+	for k, v := range updates {
+		d.State[k] = v
+	}
 }

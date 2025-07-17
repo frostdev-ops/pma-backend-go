@@ -9,480 +9,417 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// DeviceManager manages all device adapters and provides a unified interface
-type DeviceManager struct {
-	adapters       map[string]DeviceAdapter
-	devices        map[string]Device
-	eventCallbacks []func(DeviceEvent)
-	repository     DeviceRepository
-	logger         *logrus.Logger
-	mutex          sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	healthTicker   *time.Ticker
+// Manager handles all device adapters and provides a unified interface
+type Manager struct {
+	adapters      map[string]DeviceAdapter
+	devices       map[string]Device
+	repository    Repository
+	eventHandlers []func(DeviceEvent)
+	logger        *logrus.Logger
+	mu            sync.RWMutex
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
-// DeviceManagerConfig holds configuration for the device manager
-type DeviceManagerConfig struct {
-	HealthCheckInterval time.Duration
-}
-
-// NewDeviceManager creates a new device manager instance
-func NewDeviceManager(repo DeviceRepository, logger *logrus.Logger, config DeviceManagerConfig) *DeviceManager {
+// NewManager creates a new device manager
+func NewManager(repository Repository, logger *logrus.Logger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	if config.HealthCheckInterval == 0 {
-		config.HealthCheckInterval = 30 * time.Second
-	}
-
-	return &DeviceManager{
-		adapters:     make(map[string]DeviceAdapter),
-		devices:      make(map[string]Device),
-		repository:   repo,
-		logger:       logger,
-		ctx:          ctx,
-		cancel:       cancel,
-		healthTicker: time.NewTicker(config.HealthCheckInterval),
+	
+	return &Manager{
+		adapters:      make(map[string]DeviceAdapter),
+		devices:       make(map[string]Device),
+		repository:    repository,
+		eventHandlers: make([]func(DeviceEvent), 0),
+		logger:        logger,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
 // RegisterAdapter registers a new device adapter
-func (dm *DeviceManager) RegisterAdapter(adapter DeviceAdapter) error {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-
-	adapterType := adapter.GetType()
-	if _, exists := dm.adapters[adapterType]; exists {
-		return fmt.Errorf("%w: %s", ErrAdapterAlreadyExists, adapterType)
+func (m *Manager) RegisterAdapter(name string, adapter DeviceAdapter) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	if _, exists := m.adapters[name]; exists {
+		return fmt.Errorf("adapter %s already registered", name)
 	}
-
-	dm.adapters[adapterType] = adapter
-	dm.logger.WithField("adapter_type", adapterType).Info("Device adapter registered")
-
+	
+	m.adapters[name] = adapter
+	m.logger.WithField("adapter", name).Info("Registered device adapter")
+	
 	// Subscribe to adapter events
-	if err := adapter.Subscribe(dm.handleDeviceEvent); err != nil {
-		dm.logger.WithError(err).WithField("adapter_type", adapterType).
-			Error("Failed to subscribe to adapter events")
-	}
-
-	return nil
-}
-
-// UnregisterAdapter removes a device adapter
-func (dm *DeviceManager) UnregisterAdapter(adapterType string) error {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-
-	adapter, exists := dm.adapters[adapterType]
-	if !exists {
-		return fmt.Errorf("%w: %s", ErrAdapterNotFound, adapterType)
-	}
-
-	// Disconnect and cleanup
-	adapter.Unsubscribe()
-	adapter.Disconnect()
-
-	// Remove devices from this adapter
-	for deviceID, device := range dm.devices {
-		if device.GetAdapterType() == adapterType {
-			delete(dm.devices, deviceID)
-		}
-	}
-
-	delete(dm.adapters, adapterType)
-	dm.logger.WithField("adapter_type", adapterType).Info("Device adapter unregistered")
-
+	adapter.Subscribe(m.handleAdapterEvent)
+	
 	return nil
 }
 
 // ConnectAdapter connects a specific adapter
-func (dm *DeviceManager) ConnectAdapter(adapterType string) error {
-	dm.mutex.RLock()
-	adapter, exists := dm.adapters[adapterType]
-	dm.mutex.RUnlock()
-
+func (m *Manager) ConnectAdapter(name string) error {
+	m.mu.RLock()
+	adapter, exists := m.adapters[name]
+	m.mu.RUnlock()
+	
 	if !exists {
-		return fmt.Errorf("%w: %s", ErrAdapterNotFound, adapterType)
+		return NewAdapterError(name, "connect", ErrAdapterNotFound)
 	}
-
-	return adapter.Connect(dm.ctx)
-}
-
-// ConnectAll connects all registered adapters
-func (dm *DeviceManager) ConnectAll() error {
-	dm.mutex.RLock()
-	adapters := make([]DeviceAdapter, 0, len(dm.adapters))
-	for _, adapter := range dm.adapters {
-		adapters = append(adapters, adapter)
+	
+	if err := adapter.Connect(); err != nil {
+		return NewAdapterError(name, "connect", err)
 	}
-	dm.mutex.RUnlock()
-
-	var errors []error
-	for _, adapter := range adapters {
-		if err := adapter.Connect(dm.ctx); err != nil {
-			errors = append(errors, fmt.Errorf("failed to connect %s: %w", adapter.GetType(), err))
+	
+	// Discover devices after connection
+	devices, err := adapter.Discover()
+	if err != nil {
+		m.logger.WithError(err).WithField("adapter", name).Warn("Failed to discover devices")
+		return nil // Don't fail connection if discovery fails
+	}
+	
+	// Register discovered devices
+	m.mu.Lock()
+	for _, device := range devices {
+		m.devices[device.GetID()] = device
+		// Save to repository
+		if err := m.repository.CreateDevice(device); err != nil {
+			m.logger.WithError(err).WithField("device_id", device.GetID()).Warn("Failed to save device")
 		}
 	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("connection errors: %v", errors)
-	}
-
+	m.mu.Unlock()
+	
+	m.logger.WithFields(logrus.Fields{
+		"adapter": name,
+		"devices": len(devices),
+	}).Info("Adapter connected and devices discovered")
+	
 	return nil
 }
 
-// DiscoverDevices discovers devices from all or specific adapters
-func (dm *DeviceManager) DiscoverDevices(adapterTypes ...string) (*DeviceDiscoveryResult, error) {
-	result := &DeviceDiscoveryResult{
-		Devices: make([]Device, 0),
-		Errors:  make([]error, 0),
+// DisconnectAdapter disconnects a specific adapter
+func (m *Manager) DisconnectAdapter(name string) error {
+	m.mu.RLock()
+	adapter, exists := m.adapters[name]
+	m.mu.RUnlock()
+	
+	if !exists {
+		return NewAdapterError(name, "disconnect", ErrAdapterNotFound)
 	}
-
-	dm.mutex.RLock()
-	adaptersToDiscover := make([]DeviceAdapter, 0)
-
-	if len(adapterTypes) == 0 {
-		// Discover from all adapters
-		for _, adapter := range dm.adapters {
-			adaptersToDiscover = append(adaptersToDiscover, adapter)
-		}
-	} else {
-		// Discover from specific adapters
-		for _, adapterType := range adapterTypes {
-			if adapter, exists := dm.adapters[adapterType]; exists {
-				adaptersToDiscover = append(adaptersToDiscover, adapter)
-			} else {
-				result.Errors = append(result.Errors, fmt.Errorf("%w: %s", ErrAdapterNotFound, adapterType))
-			}
-		}
-	}
-	dm.mutex.RUnlock()
-
-	// Perform discovery
-	for _, adapter := range adaptersToDiscover {
-		devices, err := adapter.Discover(dm.ctx)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("discovery failed for %s: %w", adapter.GetType(), err))
-			continue
-		}
-
-		result.Devices = append(result.Devices, devices...)
-
-		// Update local device registry
-		dm.mutex.Lock()
-		for _, device := range devices {
-			dm.devices[device.GetID()] = device
-		}
-		dm.mutex.Unlock()
-	}
-
-	return result, nil
+	
+	return adapter.Disconnect()
 }
 
-// GetDevice retrieves a specific device by ID
-func (dm *DeviceManager) GetDevice(deviceID string) (Device, error) {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
-
-	device, exists := dm.devices[deviceID]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrDeviceNotFound, deviceID)
+// ConnectAll connects all registered adapters
+func (m *Manager) ConnectAll() error {
+	m.mu.RLock()
+	adapterNames := make([]string, 0, len(m.adapters))
+	for name := range m.adapters {
+		adapterNames = append(adapterNames, name)
 	}
+	m.mu.RUnlock()
+	
+	var connectErrors []error
+	for _, name := range adapterNames {
+		if err := m.ConnectAdapter(name); err != nil {
+			connectErrors = append(connectErrors, err)
+		}
+	}
+	
+	if len(connectErrors) > 0 {
+		return fmt.Errorf("failed to connect %d adapters", len(connectErrors))
+	}
+	
+	return nil
+}
 
+// DisconnectAll disconnects all adapters
+func (m *Manager) DisconnectAll() error {
+	m.mu.RLock()
+	adapterNames := make([]string, 0, len(m.adapters))
+	for name := range m.adapters {
+		adapterNames = append(adapterNames, name)
+	}
+	m.mu.RUnlock()
+	
+	var disconnectErrors []error
+	for _, name := range adapterNames {
+		if err := m.DisconnectAdapter(name); err != nil {
+			disconnectErrors = append(disconnectErrors, err)
+		}
+	}
+	
+	if len(disconnectErrors) > 0 {
+		return fmt.Errorf("failed to disconnect %d adapters", len(disconnectErrors))
+	}
+	
+	return nil
+}
+
+// DiscoverDevices discovers devices from all connected adapters
+func (m *Manager) DiscoverDevices() ([]Device, error) {
+	m.mu.RLock()
+	adaptersCopy := make(map[string]DeviceAdapter)
+	for name, adapter := range m.adapters {
+		adaptersCopy[name] = adapter
+	}
+	m.mu.RUnlock()
+	
+	allDevices := make([]Device, 0)
+	for name, adapter := range adaptersCopy {
+		devices, err := adapter.Discover()
+		if err != nil {
+			m.logger.WithError(err).WithField("adapter", name).Warn("Discovery failed")
+			continue
+		}
+		allDevices = append(allDevices, devices...)
+	}
+	
+	// Update internal device map
+	m.mu.Lock()
+	for _, device := range allDevices {
+		m.devices[device.GetID()] = device
+		// Save to repository
+		if err := m.repository.CreateOrUpdateDevice(device); err != nil {
+			m.logger.WithError(err).WithField("device_id", device.GetID()).Warn("Failed to save device")
+		}
+	}
+	m.mu.Unlock()
+	
+	return allDevices, nil
+}
+
+// GetDevice retrieves a device by ID
+func (m *Manager) GetDevice(id string) (Device, error) {
+	m.mu.RLock()
+	device, exists := m.devices[id]
+	m.mu.RUnlock()
+	
+	if !exists {
+		// Try to load from repository
+		device, err := m.repository.GetDevice(id)
+		if err != nil {
+			return nil, ErrDeviceNotFound
+		}
+		
+		// Cache the device
+		m.mu.Lock()
+		m.devices[id] = device
+		m.mu.Unlock()
+		
+		return device, nil
+	}
+	
 	return device, nil
 }
 
-// GetDevices returns all registered devices
-func (dm *DeviceManager) GetDevices() []Device {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
-
-	devices := make([]Device, 0, len(dm.devices))
-	for _, device := range dm.devices {
+// GetAllDevices returns all devices
+func (m *Manager) GetAllDevices() []Device {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	devices := make([]Device, 0, len(m.devices))
+	for _, device := range m.devices {
 		devices = append(devices, device)
 	}
-
+	
 	return devices
 }
 
 // GetDevicesByType returns devices of a specific type
-func (dm *DeviceManager) GetDevicesByType(deviceType string) []Device {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
-
+func (m *Manager) GetDevicesByType(deviceType DeviceType) []Device {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
 	devices := make([]Device, 0)
-	for _, device := range dm.devices {
+	for _, device := range m.devices {
 		if device.GetType() == deviceType {
 			devices = append(devices, device)
 		}
 	}
-
+	
 	return devices
 }
 
-// GetDevicesByAdapter returns devices from a specific adapter
-func (dm *DeviceManager) GetDevicesByAdapter(adapterType string) []Device {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
-
-	devices := make([]Device, 0)
-	for _, device := range dm.devices {
-		if device.GetAdapterType() == adapterType {
-			devices = append(devices, device)
-		}
-	}
-
-	return devices
-}
-
-// ExecuteCommand executes a command on a specific device
-func (dm *DeviceManager) ExecuteCommand(deviceID, command string, params map[string]interface{}) (interface{}, error) {
-	device, err := dm.GetDevice(deviceID)
+// UpdateDeviceState updates a device state
+func (m *Manager) UpdateDeviceState(id string, key string, value interface{}) error {
+	device, err := m.GetDevice(id)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	result, err := device.Execute(command, params)
-	if err != nil {
-		dm.logger.WithError(err).
-			WithField("device_id", deviceID).
-			WithField("command", command).
-			Error("Command execution failed")
-		return nil, err
+	
+	if err := device.SetState(key, value); err != nil {
+		return NewDeviceError(id, device.GetType(), "set_state", err)
 	}
-
-	// Emit event for command execution
-	dm.emitEvent(DeviceEvent{
-		DeviceID:    deviceID,
-		AdapterType: device.GetAdapterType(),
-		EventType:   "command_executed",
+	
+	// Save state to repository
+	if err := m.repository.SaveDeviceState(id, device.GetState()); err != nil {
+		m.logger.WithError(err).WithField("device_id", id).Warn("Failed to save device state")
+	}
+	
+	// Emit state change event
+	m.emitEvent(DeviceEvent{
+		DeviceID:  id,
+		EventType: EventTypeStateChange,
 		Data: map[string]interface{}{
-			"command": command,
-			"params":  params,
-			"result":  result,
+			"key":   key,
+			"value": value,
 		},
 		Timestamp: time.Now(),
-		Source:    "device_manager",
 	})
+	
+	return nil
+}
 
+// ExecuteCommand executes a command on a device
+func (m *Manager) ExecuteCommand(id string, command string, params map[string]interface{}) (interface{}, error) {
+	device, err := m.GetDevice(id)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Check if device is online
+	if device.GetStatus() != DeviceStatusOnline {
+		return nil, NewDeviceError(id, device.GetType(), "execute", ErrDeviceOffline)
+	}
+	
+	result, err := device.Execute(command, params)
+	if err != nil {
+		return nil, NewDeviceError(id, device.GetType(), "execute", err)
+	}
+	
 	return result, nil
 }
 
-// SetDeviceState updates a device's state
-func (dm *DeviceManager) SetDeviceState(deviceID, key string, value interface{}) error {
-	device, err := dm.GetDevice(deviceID)
-	if err != nil {
+// RemoveDevice removes a device
+func (m *Manager) RemoveDevice(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	delete(m.devices, id)
+	
+	if err := m.repository.DeleteDevice(id); err != nil {
 		return err
 	}
-
-	oldValue := device.GetState()[key]
-	if err := device.SetState(key, value); err != nil {
-		return err
-	}
-
-	// Emit state change event
-	dm.emitEvent(DeviceEvent{
-		DeviceID:    deviceID,
-		AdapterType: device.GetAdapterType(),
-		EventType:   EventTypeStateChanged,
-		Data: map[string]interface{}{
-			"key":       key,
-			"old_value": oldValue,
-			"new_value": value,
-			"state":     device.GetState(),
-		},
-		Timestamp: time.Now(),
-		Source:    "device_manager",
-	})
-
-	// Save state to repository
-	if dm.repository != nil {
-		if err := dm.repository.SaveDeviceState(deviceID, device.GetState()); err != nil {
-			dm.logger.WithError(err).WithField("device_id", deviceID).
-				Error("Failed to save device state")
-		}
-	}
-
+	
+	m.logger.WithField("device_id", id).Info("Device removed")
+	
 	return nil
-}
-
-// RegisterDevice manually registers a device
-func (dm *DeviceManager) RegisterDevice(device Device) error {
-	if err := device.Validate(); err != nil {
-		return err
-	}
-
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-
-	dm.devices[device.GetID()] = device
-
-	// Save to repository
-	if dm.repository != nil {
-		if err := dm.repository.SaveDevice(device); err != nil {
-			dm.logger.WithError(err).WithField("device_id", device.GetID()).
-				Error("Failed to save device to repository")
-		}
-	}
-
-	dm.logger.WithField("device_id", device.GetID()).
-		WithField("device_type", device.GetType()).
-		Info("Device registered")
-
-	return nil
-}
-
-// UnregisterDevice removes a device from management
-func (dm *DeviceManager) UnregisterDevice(deviceID string) error {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-
-	if _, exists := dm.devices[deviceID]; !exists {
-		return fmt.Errorf("%w: %s", ErrDeviceNotFound, deviceID)
-	}
-
-	delete(dm.devices, deviceID)
-
-	// Remove from repository
-	if dm.repository != nil {
-		if err := dm.repository.DeleteDevice(deviceID); err != nil {
-			dm.logger.WithError(err).WithField("device_id", deviceID).
-				Error("Failed to delete device from repository")
-		}
-	}
-
-	dm.logger.WithField("device_id", deviceID).Info("Device unregistered")
-	return nil
-}
-
-// Subscribe adds an event callback
-func (dm *DeviceManager) Subscribe(callback func(DeviceEvent)) {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-	dm.eventCallbacks = append(dm.eventCallbacks, callback)
-}
-
-// Start begins the device manager's background operations
-func (dm *DeviceManager) Start() {
-	go dm.healthCheckLoop()
-	dm.logger.Info("Device manager started")
-}
-
-// Stop stops the device manager and disconnects all adapters
-func (dm *DeviceManager) Stop() {
-	dm.cancel()
-	dm.healthTicker.Stop()
-
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
-
-	for _, adapter := range dm.adapters {
-		adapter.Unsubscribe()
-		adapter.Disconnect()
-	}
-
-	dm.logger.Info("Device manager stopped")
 }
 
 // GetAdapterStatus returns the status of all adapters
-func (dm *DeviceManager) GetAdapterStatus() map[string]bool {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
-
-	status := make(map[string]bool)
-	for adapterType, adapter := range dm.adapters {
-		status[adapterType] = adapter.IsConnected()
+func (m *Manager) GetAdapterStatus() map[string]AdapterStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	status := make(map[string]AdapterStatus)
+	for name, adapter := range m.adapters {
+		status[name] = adapter.GetStatus()
 	}
-
+	
 	return status
 }
 
-// handleDeviceEvent processes events from device adapters
-func (dm *DeviceManager) handleDeviceEvent(event DeviceEvent) {
-	dm.logger.WithFields(logrus.Fields{
-		"device_id":    event.DeviceID,
-		"adapter_type": event.AdapterType,
-		"event_type":   event.EventType,
-	}).Debug("Received device event")
+// Subscribe adds an event handler
+func (m *Manager) Subscribe(handler func(DeviceEvent)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.eventHandlers = append(m.eventHandlers, handler)
+}
 
-	// Update device state if it's a state change event
-	if event.EventType == EventTypeStateChanged {
-		if device, err := dm.GetDevice(event.DeviceID); err == nil {
-			if state, ok := event.Data["state"].(map[string]interface{}); ok {
-				for key, value := range state {
-					device.SetState(key, value)
+// Start starts the device manager
+func (m *Manager) Start() error {
+	// Load devices from repository
+	devices, err := m.repository.GetAllDevices()
+	if err != nil {
+		return err
+	}
+	
+	m.mu.Lock()
+	for _, device := range devices {
+		m.devices[device.GetID()] = device
+	}
+	m.mu.Unlock()
+	
+	m.logger.WithField("devices", len(devices)).Info("Device manager started")
+	
+	// Start health check routine
+	go m.healthCheckLoop()
+	
+	return nil
+}
+
+// Stop stops the device manager
+func (m *Manager) Stop() error {
+	m.cancel()
+	return m.DisconnectAll()
+}
+
+// handleAdapterEvent handles events from adapters
+func (m *Manager) handleAdapterEvent(event DeviceEvent) {
+	// Update device status if needed
+	if event.EventType == EventTypeConnected || event.EventType == EventTypeDisconnected {
+		if device, err := m.GetDevice(event.DeviceID); err == nil {
+			if baseDevice, ok := device.(*BaseDevice); ok {
+				if event.EventType == EventTypeConnected {
+					baseDevice.SetStatus(DeviceStatusOnline)
+				} else {
+					baseDevice.SetStatus(DeviceStatusOffline)
 				}
 			}
 		}
 	}
-
+	
 	// Save event to repository
-	if dm.repository != nil {
-		if err := dm.repository.SaveDeviceEvent(event); err != nil {
-			dm.logger.WithError(err).Error("Failed to save device event")
-		}
+	if err := m.repository.SaveDeviceEvent(event); err != nil {
+		m.logger.WithError(err).WithField("device_id", event.DeviceID).Warn("Failed to save device event")
 	}
-
-	// Forward to subscribers
-	dm.emitEvent(event)
+	
+	// Forward event to handlers
+	m.emitEvent(event)
 }
 
-// emitEvent sends an event to all subscribers
-func (dm *DeviceManager) emitEvent(event DeviceEvent) {
-	dm.mutex.RLock()
-	callbacks := make([]func(DeviceEvent), len(dm.eventCallbacks))
-	copy(callbacks, dm.eventCallbacks)
-	dm.mutex.RUnlock()
-
-	for _, callback := range callbacks {
-		go func(cb func(DeviceEvent)) {
-			defer func() {
-				if r := recover(); r != nil {
-					dm.logger.WithField("panic", r).Error("Event callback panicked")
-				}
-			}()
-			cb(event)
-		}(callback)
+// emitEvent sends an event to all handlers
+func (m *Manager) emitEvent(event DeviceEvent) {
+	m.mu.RLock()
+	handlers := make([]func(DeviceEvent), len(m.eventHandlers))
+	copy(handlers, m.eventHandlers)
+	m.mu.RUnlock()
+	
+	for _, handler := range handlers {
+		go handler(event)
 	}
 }
 
-// healthCheckLoop performs periodic health checks on adapters
-func (dm *DeviceManager) healthCheckLoop() {
+// healthCheckLoop periodically checks device health
+func (m *Manager) healthCheckLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
 	for {
 		select {
-		case <-dm.ctx.Done():
+		case <-m.ctx.Done():
 			return
-		case <-dm.healthTicker.C:
-			dm.performHealthCheck()
+		case <-ticker.C:
+			m.performHealthCheck()
 		}
 	}
 }
 
-// performHealthCheck checks the health of all adapters
-func (dm *DeviceManager) performHealthCheck() {
-	dm.mutex.RLock()
-	adapters := make([]DeviceAdapter, 0, len(dm.adapters))
-	for _, adapter := range dm.adapters {
-		adapters = append(adapters, adapter)
+// performHealthCheck checks the health of all devices
+func (m *Manager) performHealthCheck() {
+	m.mu.RLock()
+	adaptersCopy := make(map[string]DeviceAdapter)
+	for name, adapter := range m.adapters {
+		adaptersCopy[name] = adapter
 	}
-	dm.mutex.RUnlock()
-
-	for _, adapter := range adapters {
-		if err := adapter.HealthCheck(); err != nil {
-			dm.logger.WithError(err).
-				WithField("adapter_type", adapter.GetType()).
-				Error("Adapter health check failed")
-
-			// Emit health check failure event
-			dm.emitEvent(DeviceEvent{
-				AdapterType: adapter.GetType(),
-				EventType:   "health_check_failed",
-				Data: map[string]interface{}{
-					"error": err.Error(),
-				},
-				Timestamp: time.Now(),
-				Source:    "health_check",
-			})
+	m.mu.RUnlock()
+	
+	for name, adapter := range adaptersCopy {
+		status := adapter.GetStatus()
+		if !status.Connected {
+			m.logger.WithField("adapter", name).Warn("Adapter disconnected, attempting reconnection")
+			if err := m.ConnectAdapter(name); err != nil {
+				m.logger.WithError(err).WithField("adapter", name).Error("Failed to reconnect adapter")
+			}
 		}
 	}
 }
