@@ -20,11 +20,11 @@ func (h *Handlers) GetRooms(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	roomsWithEntities, err := roomService.GetAll(ctx, includeEntities)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get all rooms")
+		h.log.WithError(err).Error("Failed to get all rooms")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve rooms")
 		return
 	}
@@ -49,11 +49,11 @@ func (h *Handlers) GetRoom(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	roomWithEntities, err := roomService.GetByID(ctx, roomID, includeEntities)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to get room: %d", roomID)
+		h.log.WithError(err).Errorf("Failed to get room: %d", roomID)
 		utils.SendError(c, http.StatusNotFound, "Room not found")
 		return
 	}
@@ -97,21 +97,21 @@ func (h *Handlers) CreateRoom(c *gin.Context) {
 		room.HomeAssistantAreaID.Valid = true
 	}
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	err := roomService.Create(ctx, room)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to create room: %s", request.Name)
+		h.log.WithError(err).Errorf("Failed to create room: %s", request.Name)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to create room")
 		return
 	}
 
-	h.logger.WithField("room_id", room.ID).WithField("room_name", room.Name).Info("Room created")
+	h.log.WithField("room_id", room.ID).WithField("room_name", room.Name).Info("Room created")
 
 	// Broadcast WebSocket event for room creation
 	if h.wsHub != nil {
 		message := websocket.RoomUpdatedMessage(int(room.ID), room.Name, "created")
-		h.wsHub.BroadcastToAll(message)
+		h.wsHub.BroadcastToAll(message.Type, message.Data)
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -164,21 +164,21 @@ func (h *Handlers) UpdateRoom(c *gin.Context) {
 		updates.HomeAssistantAreaID.Valid = true
 	}
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	err = roomService.Update(ctx, roomID, updates)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to update room: %d", roomID)
+		h.log.WithError(err).Errorf("Failed to update room: %d", roomID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to update room")
 		return
 	}
 
-	h.logger.WithField("room_id", roomID).WithField("room_name", updates.Name).Info("Room updated")
+	h.log.WithField("room_id", roomID).WithField("room_name", updates.Name).Info("Room updated")
 
 	// Broadcast WebSocket event for room update
 	if h.wsHub != nil {
 		message := websocket.RoomUpdatedMessage(roomID, updates.Name, "updated")
-		h.wsHub.BroadcastToAll(message)
+		h.wsHub.BroadcastToAll(message.Type, message.Data)
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -209,29 +209,29 @@ func (h *Handlers) DeleteRoom(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	// Get room name before deletion for WebSocket message
 	roomData, err := roomService.GetByID(ctx, roomID, false)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to get room data before deletion: %d", roomID)
+		h.log.WithError(err).Errorf("Failed to get room data before deletion: %d", roomID)
 		utils.SendError(c, http.StatusNotFound, "Room not found")
 		return
 	}
 
 	err = roomService.Delete(ctx, roomID, request.ReassignToRoomID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to delete room: %d", roomID)
+		h.log.WithError(err).Errorf("Failed to delete room: %d", roomID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to delete room")
 		return
 	}
 
-	h.logger.WithField("room_id", roomID).WithField("room_name", roomData.Name).Info("Room deleted")
+	h.log.WithField("room_id", roomID).WithField("room_name", roomData.Name).Info("Room deleted")
 
 	// Broadcast WebSocket event for room deletion
 	if h.wsHub != nil {
 		message := websocket.RoomUpdatedMessage(roomID, roomData.Name, "deleted")
-		h.wsHub.BroadcastToAll(message)
+		h.wsHub.BroadcastToAll(message.Type, message.Data)
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -245,11 +245,11 @@ func (h *Handlers) GetRoomStats(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	stats, err := roomService.GetStats(ctx)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get room stats")
+		h.log.WithError(err).Error("Failed to get room stats")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve room statistics")
 		return
 	}
@@ -271,11 +271,11 @@ func (h *Handlers) SyncRoomsWithHA(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.logger)
+	roomService := rooms.NewService(h.repos.Room, h.repos.Entity, h.log)
 
 	err := roomService.SyncWithHomeAssistant(ctx, request.Areas)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to sync rooms with Home Assistant")
+		h.log.WithError(err).Error("Failed to sync rooms with Home Assistant")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to synchronize with Home Assistant")
 		return
 	}

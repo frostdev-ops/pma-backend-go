@@ -12,6 +12,8 @@ const (
 	DeviceTypeRingDoorbell DeviceType = "ring_doorbell"
 	DeviceTypeRingCamera   DeviceType = "ring_camera"
 	DeviceTypeRingChime    DeviceType = "ring_chime"
+	DeviceTypeDoorbell     DeviceType = "doorbell"
+	DeviceTypeCamera       DeviceType = "camera"
 	DeviceTypeShellySwitch DeviceType = "shelly_switch"
 	DeviceTypeShellyDimmer DeviceType = "shelly_dimmer"
 	DeviceTypeShellyRGBW   DeviceType = "shelly_rgbw"
@@ -40,6 +42,11 @@ const (
 	CapabilityMotion       DeviceCapability = "motion"
 	CapabilityCamera       DeviceCapability = "camera"
 	CapabilityDoorbell     DeviceCapability = "doorbell"
+	CapabilityVideo        DeviceCapability = "video"
+	CapabilityAudio        DeviceCapability = "audio"
+	CapabilitySnapshot     DeviceCapability = "snapshot"
+	CapabilityLiveStream   DeviceCapability = "live_stream"
+	CapabilityRecording    DeviceCapability = "recording"
 	CapabilityBattery      DeviceCapability = "battery"
 	CapabilityPower        DeviceCapability = "power"
 	CapabilityTemperature  DeviceCapability = "temperature"
@@ -49,14 +56,16 @@ const (
 type EventType string
 
 const (
-	EventTypeStateChange    EventType = "state_change"
-	EventTypeMotionDetected EventType = "motion_detected"
-	EventTypeDoorbellPress  EventType = "doorbell_press"
-	EventTypeBatteryLow     EventType = "battery_low"
-	EventTypePowerLoss      EventType = "power_loss"
-	EventTypePowerRestored  EventType = "power_restored"
-	EventTypeConnected      EventType = "connected"
-	EventTypeDisconnected   EventType = "disconnected"
+	EventTypeStateChange     EventType = "state_change"
+	EventTypeStateChanged    EventType = "state_changed"
+	EventTypeMotionDetected  EventType = "motion_detected"
+	EventTypeDoorbellPress   EventType = "doorbell_press"
+	EventTypeDoorbellPressed EventType = "doorbell_pressed"
+	EventTypeBatteryLow      EventType = "battery_low"
+	EventTypePowerLoss       EventType = "power_loss"
+	EventTypePowerRestored   EventType = "power_restored"
+	EventTypeConnected       EventType = "connected"
+	EventTypeDisconnected    EventType = "disconnected"
 )
 
 // Device represents a generic device interface
@@ -86,10 +95,12 @@ type DeviceAdapter interface {
 
 // DeviceEvent represents an event from a device
 type DeviceEvent struct {
-	DeviceID  string                 `json:"device_id"`
-	EventType EventType              `json:"event_type"`
-	Data      map[string]interface{} `json:"data"`
-	Timestamp time.Time              `json:"timestamp"`
+	DeviceID    string                 `json:"device_id"`
+	AdapterType string                 `json:"adapter_type"`
+	EventType   EventType              `json:"event_type"`
+	Data        map[string]interface{} `json:"data"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Source      string                 `json:"source"`
 }
 
 // AdapterStatus represents the status of a device adapter
@@ -110,7 +121,9 @@ type BaseDevice struct {
 	Capabilities []DeviceCapability     `json:"capabilities"`
 	State        map[string]interface{} `json:"state"`
 	Adapter      string                 `json:"adapter"`
+	AdapterType  string                 `json:"adapter_type"`
 	Metadata     map[string]interface{} `json:"metadata"`
+	LastSeen     *time.Time             `json:"last_seen,omitempty"`
 	mu           sync.RWMutex
 }
 
@@ -145,7 +158,7 @@ func (d *BaseDevice) GetCapabilities() []DeviceCapability {
 func (d *BaseDevice) GetState() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	// Return a copy to prevent external modification
 	stateCopy := make(map[string]interface{})
 	for k, v := range d.State {
@@ -158,7 +171,7 @@ func (d *BaseDevice) GetState() map[string]interface{} {
 func (d *BaseDevice) SetState(key string, value interface{}) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	if d.State == nil {
 		d.State = make(map[string]interface{})
 	}
@@ -180,7 +193,7 @@ func (d *BaseDevice) GetAdapter() string {
 func (d *BaseDevice) GetMetadata() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	// Return a copy to prevent external modification
 	metadataCopy := make(map[string]interface{})
 	for k, v := range d.Metadata {
@@ -200,11 +213,11 @@ func (d *BaseDevice) SetStatus(status DeviceStatus) {
 func (d *BaseDevice) UpdateState(updates map[string]interface{}) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	if d.State == nil {
 		d.State = make(map[string]interface{})
 	}
-	
+
 	for k, v := range updates {
 		d.State[k] = v
 	}

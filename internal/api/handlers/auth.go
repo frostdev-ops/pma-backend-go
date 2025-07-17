@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/auth"
@@ -11,9 +10,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Register handles user registration
+// SetPin handles setting up a new PIN
 func (h *Handlers) Register(c *gin.Context) {
-	var request auth.RegisterRequest
+	var request struct {
+		Pin      string `json:"pin" binding:"required"`
+		ClientID string `json:"client_id,omitempty"`
+	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
@@ -23,24 +25,35 @@ func (h *Handlers) Register(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	userInfo, err := authService.Register(ctx, &request)
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	sessionResponse, err := authService.SetPin(ctx, request.Pin, request.ClientID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to register user: %s", request.Username)
+		h.log.WithError(err).Error("Failed to set PIN")
 		utils.SendError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	utils.SendSuccess(c, gin.H{
-		"message": "User registered successfully",
-		"user":    userInfo,
+		"message": "PIN set successfully",
+		"session": sessionResponse,
 	})
 }
 
-// Login handles user login
+// Login handles PIN-based login
 func (h *Handlers) Login(c *gin.Context) {
-	var request auth.LoginRequest
+	var request struct {
+		Pin      string `json:"pin" binding:"required"`
+		ClientID string `json:"client_id,omitempty"`
+	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
@@ -50,64 +63,57 @@ func (h *Handlers) Login(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	loginResponse, err := authService.Login(ctx, &request)
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	sessionResponse, err := authService.VerifyPin(ctx, request.Pin, request.ClientID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed login attempt: %s", request.Username)
+		h.log.WithError(err).Error("Failed PIN verification")
 		utils.SendError(c, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	utils.SendSuccess(c, loginResponse)
+	utils.SendSuccess(c, sessionResponse)
 }
 
-// GetProfile returns the current user's profile
+// GetProfile returns the PIN status and auth settings
 func (h *Handlers) GetProfile(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
-		utils.SendError(c, http.StatusUnauthorized, "User not authenticated")
-		return
-	}
-
-	userIDFloat, ok := userID.(float64)
-	if !ok {
-		utils.SendError(c, http.StatusInternalServerError, "Invalid user ID format")
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	userInfo, err := authService.GetUserByID(ctx, int(userIDFloat))
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	pinStatus, err := authService.GetPinStatus(ctx)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to get user profile: %f", userIDFloat)
-		utils.SendError(c, http.StatusNotFound, "User not found")
+		h.log.WithError(err).Error("Failed to get PIN status")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to get auth status")
 		return
 	}
 
-	utils.SendSuccess(c, userInfo)
+	utils.SendSuccess(c, pinStatus)
 }
 
-// UpdatePassword handles password update
+// UpdatePassword handles PIN change
 func (h *Handlers) UpdatePassword(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
-		utils.SendError(c, http.StatusUnauthorized, "User not authenticated")
-		return
-	}
-
-	userIDFloat, ok := userID.(float64)
-	if !ok {
-		utils.SendError(c, http.StatusInternalServerError, "Invalid user ID format")
-		return
-	}
-
 	var request struct {
-		CurrentPassword string `json:"current_password" binding:"required"`
-		NewPassword     string `json:"new_password" binding:"required"`
+		CurrentPin string `json:"current_pin" binding:"required"`
+		NewPin     string `json:"new_pin" binding:"required"`
+		ClientID   string `json:"client_id,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -118,67 +124,94 @@ func (h *Handlers) UpdatePassword(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	err := authService.UpdatePassword(ctx, int(userIDFloat), request.CurrentPassword, request.NewPassword)
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	err := authService.ChangePin(ctx, request.CurrentPin, request.NewPin, request.ClientID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to update password for user: %f", userIDFloat)
+		h.log.WithError(err).Error("Failed to change PIN")
 		utils.SendError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	utils.SendSuccess(c, gin.H{
-		"message": "Password updated successfully",
+		"message": "PIN updated successfully",
 	})
 }
 
-// GetAllUsers returns all users (admin only)
+// GetAllUsers returns auth statistics and session info
 func (h *Handlers) GetAllUsers(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	users, err := authService.GetAllUsers(ctx)
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	pinStatus, err := authService.GetPinStatus(ctx)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get all users")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve users")
+		h.log.WithError(err).Error("Failed to get auth info")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve auth info")
 		return
 	}
 
-	utils.SendSuccessWithMeta(c, users, gin.H{
-		"count": len(users),
+	utils.SendSuccess(c, gin.H{
+		"pin_status": pinStatus,
+		"message":    "PIN-based authentication system",
 	})
 }
 
-// DeleteUser deletes a user (admin only)
+// DeleteUser disables PIN authentication
 func (h *Handlers) DeleteUser(c *gin.Context) {
-	userIDStr := c.Param("id")
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid user ID")
+	var request struct {
+		CurrentPin string `json:"current_pin" binding:"required"`
+		ClientID   string `json:"client_id,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
 
-	err = authService.DeleteUser(ctx, userID)
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	err := authService.DisablePin(ctx, request.CurrentPin, request.ClientID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to delete user: %d", userID)
-		utils.SendError(c, http.StatusInternalServerError, "Failed to delete user")
+		h.log.WithError(err).Error("Failed to disable PIN")
+		utils.SendError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	utils.SendSuccess(c, gin.H{
-		"message": "User deleted successfully",
-		"user_id": userID,
+		"message": "PIN authentication disabled successfully",
 	})
 }
 
-// ValidateToken validates a token and returns user info
+// ValidateToken validates a session token
 func (h *Handlers) ValidateToken(c *gin.Context) {
 	var request struct {
 		Token string `json:"token" binding:"required"`
@@ -189,16 +222,27 @@ func (h *Handlers) ValidateToken(c *gin.Context) {
 		return
 	}
 
-	authService := auth.NewService(h.repos.User, h.cfg.Auth.JWTSecret, h.cfg.Auth.TokenExpiry, h.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	userInfo, err := authService.ValidateToken(request.Token)
+	// Create auth config from server config
+	authConfig := auth.AuthConfig{
+		SessionTimeout:    h.cfg.Auth.TokenExpiry,
+		MaxFailedAttempts: 3,
+		LockoutDuration:   300,
+		JWTSecret:         h.cfg.Auth.JWTSecret,
+	}
+
+	authService := auth.NewService(h.repos.Auth, authConfig, h.log)
+
+	session, err := authService.ValidateSession(ctx, request.Token)
 	if err != nil {
 		utils.SendError(c, http.StatusUnauthorized, "Invalid token")
 		return
 	}
 
 	utils.SendSuccess(c, gin.H{
-		"valid": true,
-		"user":  userInfo,
+		"valid":   true,
+		"session": session,
 	})
 }

@@ -35,6 +35,18 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// ClientInfo holds information about a connected client
+type ClientInfo struct {
+	ID            string                 `json:"id"`
+	UserAgent     string                 `json:"user_agent,omitempty"`
+	IPAddress     string                 `json:"ip_address"`
+	ConnectedAt   time.Time              `json:"connected_at"`
+	LastSeen      time.Time              `json:"last_seen"`
+	Authenticated bool                   `json:"authenticated"`
+	Subscriptions []string               `json:"subscriptions"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+}
+
 // Client is a middleman between the websocket connection and the hub
 type Client struct {
 	// Unique client identifier
@@ -67,6 +79,11 @@ type Client struct {
 
 	// Subscription mutex for thread-safe access
 	subscriptionMu sync.RWMutex
+
+	// Additional fields needed by hub
+	lastPing      time.Time
+	info          *ClientInfo
+	authenticated bool
 }
 
 // HandleWebSocket handles websocket requests from clients
@@ -133,7 +150,7 @@ func (c *Client) readPump() {
 
 		// Handle incoming message
 		c.handleMessage(message)
-		c.hub.stats.MessagesReceived++
+		c.hub.metrics.MessagesReceived++
 	}
 }
 

@@ -125,7 +125,7 @@ func main() {
 	haForwarder := websocket.NewHAEventForwarder(wsHub, log, nil)
 
 	// Initialize router
-	router := api.NewRouter(cfg, repos, log, wsHub, haForwarder)
+	router := api.NewRouter(cfg, repos, log, wsHub, haForwarder, db)
 
 	// Create HTTP server
 	srv := &http.Server{

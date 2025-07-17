@@ -7,18 +7,20 @@ import (
 
 // Common device errors
 var (
-	ErrDeviceNotFound      = errors.New("device not found")
-	ErrDeviceOffline       = errors.New("device is offline")
-	ErrCommandNotSupported = errors.New("command not supported")
-	ErrInvalidState        = errors.New("invalid device state")
-	ErrAdapterNotFound     = errors.New("adapter not found")
-	ErrConnectionFailed    = errors.New("connection failed")
+	ErrDeviceNotFound       = errors.New("device not found")
+	ErrDeviceOffline        = errors.New("device is offline")
+	ErrCommandNotSupported  = errors.New("command not supported")
+	ErrInvalidState         = errors.New("invalid device state")
+	ErrAdapterNotFound      = errors.New("adapter not found")
+	ErrAdapterNotConnected  = errors.New("adapter not connected")
+	ErrConnectionFailed     = errors.New("connection failed")
 	ErrAuthenticationFailed = errors.New("authentication failed")
-	ErrDiscoveryFailed     = errors.New("device discovery failed")
-	ErrInvalidDeviceType   = errors.New("invalid device type")
-	ErrInvalidCapability   = errors.New("invalid capability")
-	ErrTimeout             = errors.New("operation timeout")
-	ErrRateLimited         = errors.New("rate limited")
+	ErrDiscoveryFailed      = errors.New("device discovery failed")
+	ErrInvalidDeviceType    = errors.New("invalid device type")
+	ErrInvalidCapability    = errors.New("invalid capability")
+	ErrInvalidParams        = errors.New("invalid parameters")
+	ErrTimeout              = errors.New("operation timeout")
+	ErrRateLimited          = errors.New("rate limited")
 )
 
 // DeviceError represents a device-specific error
@@ -30,7 +32,7 @@ type DeviceError struct {
 }
 
 func (e *DeviceError) Error() string {
-	return fmt.Sprintf("device error: device=%s type=%s op=%s: %v", 
+	return fmt.Sprintf("device error: device=%s type=%s op=%s: %v",
 		e.DeviceID, e.Type, e.Op, e.Err)
 }
 
@@ -80,7 +82,7 @@ type ValidationError struct {
 }
 
 func (e *ValidationError) Error() string {
-	return fmt.Sprintf("validation error: field=%s value=%v: %s", 
+	return fmt.Sprintf("validation error: field=%s value=%v: %s",
 		e.Field, e.Value, e.Message)
 }
 
@@ -98,15 +100,15 @@ func IsRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Check for specific retryable errors
 	switch {
 	case errors.Is(err, ErrConnectionFailed),
-		 errors.Is(err, ErrTimeout),
-		 errors.Is(err, ErrDeviceOffline),
-		 errors.Is(err, ErrRateLimited):
+		errors.Is(err, ErrTimeout),
+		errors.Is(err, ErrDeviceOffline),
+		errors.Is(err, ErrRateLimited):
 		return true
 	}
-	
+
 	return false
 }

@@ -9,6 +9,12 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/core/devices"
 )
 
+// timePtr returns a pointer to the current time
+func timePtr() *time.Time {
+	t := time.Now()
+	return &t
+}
+
 // RingDoorbell represents a Ring doorbell device
 type RingDoorbell struct {
 	devices.BaseDevice
@@ -32,7 +38,7 @@ type RingChime struct {
 
 // NewRingDoorbell creates a new Ring doorbell device
 func NewRingDoorbell(client *RingClient, data *RingDeviceData) *RingDoorbell {
-	capabilities := []string{
+	capabilities := []devices.DeviceCapability{
 		devices.CapabilityDoorbell,
 		devices.CapabilityVideo,
 		devices.CapabilityAudio,
@@ -51,16 +57,18 @@ func NewRingDoorbell(client *RingClient, data *RingDeviceData) *RingDoorbell {
 		capabilities = append(capabilities, devices.CapabilityRecording)
 	}
 
+	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring-doorbell-%d", data.ID),
-		Name:         data.Description,
+		ID:           fmt.Sprintf("ring_%s", data.ID),
 		Type:         devices.DeviceTypeDoorbell,
 		AdapterType:  "ring",
+		Name:         data.Description,
 		Status:       devices.DeviceStatusOnline,
+		Adapter:      "ring",
 		Capabilities: capabilities,
 		State:        make(map[string]interface{}),
 		Metadata:     make(map[string]interface{}),
-		LastSeen:     time.Now(),
+		LastSeen:     timePtr(),
 	}
 
 	// Set initial state
@@ -93,7 +101,7 @@ func NewRingDoorbell(client *RingClient, data *RingDeviceData) *RingDoorbell {
 
 // NewRingCamera creates a new Ring camera device
 func NewRingCamera(client *RingClient, data *RingDeviceData) *RingCamera {
-	capabilities := []string{
+	capabilities := []devices.DeviceCapability{
 		devices.CapabilityVideo,
 		devices.CapabilityAudio,
 		devices.CapabilityMotion,
@@ -111,16 +119,18 @@ func NewRingCamera(client *RingClient, data *RingDeviceData) *RingCamera {
 		capabilities = append(capabilities, devices.CapabilityRecording)
 	}
 
+	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring-camera-%d", data.ID),
-		Name:         data.Description,
+		ID:           fmt.Sprintf("ring_%s", data.ID),
 		Type:         devices.DeviceTypeCamera,
 		AdapterType:  "ring",
+		Name:         data.Description,
 		Status:       devices.DeviceStatusOnline,
+		Adapter:      "ring",
 		Capabilities: capabilities,
 		State:        make(map[string]interface{}),
 		Metadata:     make(map[string]interface{}),
-		LastSeen:     time.Now(),
+		LastSeen:     timePtr(),
 	}
 
 	// Set initial state
@@ -153,20 +163,22 @@ func NewRingCamera(client *RingClient, data *RingDeviceData) *RingCamera {
 
 // NewRingChime creates a new Ring chime device
 func NewRingChime(client *RingClient, data *RingDeviceData) *RingChime {
-	capabilities := []string{
+	capabilities := []devices.DeviceCapability{
 		devices.CapabilityAudio,
 	}
 
+	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring-chime-%d", data.ID),
-		Name:         data.Description,
+		ID:           fmt.Sprintf("ring_%s", data.ID),
 		Type:         "chime",
 		AdapterType:  "ring",
+		Name:         data.Description,
 		Status:       devices.DeviceStatusOnline,
+		Adapter:      "ring",
 		Capabilities: capabilities,
 		State:        make(map[string]interface{}),
 		Metadata:     make(map[string]interface{}),
-		LastSeen:     time.Now(),
+		LastSeen:     timePtr(),
 	}
 
 	// Set metadata
@@ -333,7 +345,7 @@ func (c *RingChime) Execute(command string, params map[string]interface{}) (inte
 // UpdateFromRingData updates the device from fresh Ring API data
 func (d *RingDoorbell) UpdateFromRingData(data *RingDeviceData) {
 	d.deviceData = data
-	d.LastSeen = time.Now()
+	d.LastSeen = timePtr()
 
 	// Update state
 	d.State["motion_detection"] = data.MotionDetection
@@ -353,7 +365,7 @@ func (d *RingDoorbell) UpdateFromRingData(data *RingDeviceData) {
 // UpdateFromRingData updates the camera device from fresh Ring API data
 func (c *RingCamera) UpdateFromRingData(data *RingDeviceData) {
 	c.deviceData = data
-	c.LastSeen = time.Now()
+	c.LastSeen = timePtr()
 
 	// Update state
 	c.State["motion_detection"] = data.MotionDetection
@@ -373,7 +385,7 @@ func (c *RingCamera) UpdateFromRingData(data *RingDeviceData) {
 // UpdateFromRingData updates the chime device from fresh Ring API data
 func (c *RingChime) UpdateFromRingData(data *RingDeviceData) {
 	c.deviceData = data
-	c.LastSeen = time.Now()
+	c.LastSeen = timePtr()
 }
 
 // GetRingDeviceID returns the internal Ring device ID

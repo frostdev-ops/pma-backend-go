@@ -1,3 +1,6 @@
+-- Initial Schema Migration
+-- Core tables for PMA system: users, entities, rooms, system configuration
+
 -- Users table for authentication
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,18 +19,6 @@ CREATE TABLE IF NOT EXISTS system_config (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Entities table (Home Assistant entities)
-CREATE TABLE IF NOT EXISTS entities (
-    entity_id TEXT PRIMARY KEY,
-    friendly_name TEXT,
-    domain TEXT NOT NULL,
-    state TEXT,
-    attributes TEXT, -- JSON
-    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
-    room_id INTEGER,
-    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL
-);
-
 -- Rooms table
 CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,13 +30,16 @@ CREATE TABLE IF NOT EXISTS rooms (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Display settings
-CREATE TABLE IF NOT EXISTS display_settings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key TEXT NOT NULL UNIQUE,
-    value TEXT NOT NULL, -- JSON
-    category TEXT DEFAULT 'general',
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+-- Entities table (Home Assistant entities)
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id TEXT PRIMARY KEY,
+    friendly_name TEXT,
+    domain TEXT NOT NULL,
+    state TEXT,
+    attributes TEXT, -- JSON
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+    room_id INTEGER,
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL
 );
 
 -- Automation rules
@@ -63,7 +57,7 @@ CREATE TABLE IF NOT EXISTS automation_rules (
 );
 
 -- Create indexes for performance
-CREATE INDEX idx_entities_room_id ON entities(room_id);
-CREATE INDEX idx_entities_domain ON entities(domain);
-CREATE INDEX idx_automation_rules_enabled ON automation_rules(enabled);
-CREATE INDEX idx_system_config_key ON system_config(key); 
+CREATE INDEX IF NOT EXISTS idx_entities_room_id ON entities(room_id);
+CREATE INDEX IF NOT EXISTS idx_entities_domain ON entities(domain);
+CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules(enabled);
+CREATE INDEX IF NOT EXISTS idx_system_config_key ON system_config(key); 

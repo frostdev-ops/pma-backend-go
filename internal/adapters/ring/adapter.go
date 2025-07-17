@@ -373,7 +373,7 @@ func (a *RingAdapter) processRingEvent(ringEvent RingEvent) {
 	a.mutex.RUnlock()
 
 	// Determine event type
-	var eventType string
+	var eventType devices.EventType
 	eventData := map[string]interface{}{
 		"ring_event_id": ringEvent.ID,
 		"state":         ringEvent.State,

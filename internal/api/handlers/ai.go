@@ -31,7 +31,7 @@ func (h *Handlers) ChatWithAI(c *gin.Context) {
 	// Perform chat
 	response, err := chatService.Chat(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("Chat request failed")
+		h.log.WithError(err).Error("Chat request failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
 		return
 	}
@@ -57,7 +57,7 @@ func (h *Handlers) CompleteText(c *gin.Context) {
 	// Perform completion
 	response, err := chatService.Complete(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("Completion request failed")
+		h.log.WithError(err).Error("Completion request failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Completion request failed"})
 		return
 	}
@@ -90,7 +90,7 @@ func (h *Handlers) GetModels(c *gin.Context) {
 
 	models, err := llmManager.GetModels(c.Request.Context())
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get models")
+		h.log.WithError(err).Error("Failed to get models")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve models"})
 		return
 	}
@@ -142,7 +142,7 @@ func (h *Handlers) AnalyzeEntity(c *gin.Context) {
 	// Perform analysis
 	response, err := chatService.AnalyzeEntity(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("Entity analysis failed")
+		h.log.WithError(err).Error("Entity analysis failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Entity analysis failed"})
 		return
 	}
@@ -179,7 +179,7 @@ func (h *Handlers) GenerateAutomation(c *gin.Context) {
 	// Generate automation
 	response, err := chatService.GenerateAutomation(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("Automation generation failed")
+		h.log.WithError(err).Error("Automation generation failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Automation generation failed"})
 		return
 	}
@@ -213,7 +213,7 @@ func (h *Handlers) GetSystemSummary(c *gin.Context) {
 	// Generate summary
 	response, err := chatService.SummarizeSystem(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("System summary generation failed")
+		h.log.WithError(err).Error("System summary generation failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "System summary generation failed"})
 		return
 	}
@@ -268,7 +268,7 @@ func (h *Handlers) TestAIProvider(c *gin.Context) {
 
 	response, err := chatService.Chat(c.Request.Context(), testReq)
 	if err != nil {
-		h.logger.WithError(err).WithField("provider", provider).Error("Provider test failed")
+		h.log.WithError(err).WithField("provider", provider).Error("Provider test failed")
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":    "Provider test failed",
 			"provider": provider,
@@ -308,7 +308,7 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 	// Enhance context with actual entity and room data
 	entities, err := h.repos.Entity.GetAll(c.Request.Context())
 	if err != nil {
-		h.logger.WithError(err).Warn("Failed to fetch entities for AI context")
+		h.log.WithError(err).Warn("Failed to fetch entities for AI context")
 	} else {
 		// Convert entities to EntityContext slice
 		entityContexts := make([]ai.EntityContext, 0, len(entities))
@@ -336,7 +336,7 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 
 	rooms, err := h.repos.Room.GetAll(c.Request.Context())
 	if err != nil {
-		h.logger.WithError(err).Warn("Failed to fetch rooms for AI context")
+		h.log.WithError(err).Warn("Failed to fetch rooms for AI context")
 	} else {
 		// Convert rooms to RoomContext slice
 		roomContexts := make([]ai.RoomContext, 0, len(rooms))
@@ -409,7 +409,7 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 	// Perform chat with enhanced context
 	response, err := chatService.Chat(c.Request.Context(), req)
 	if err != nil {
-		h.logger.WithError(err).Error("Context-aware chat failed")
+		h.log.WithError(err).Error("Context-aware chat failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
 		return
 	}

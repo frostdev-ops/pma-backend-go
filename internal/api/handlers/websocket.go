@@ -54,7 +54,7 @@ func (h *Handlers) BroadcastMessage(hub *websocket.Hub) gin.HandlerFunc {
 			Data: request.Data,
 		}
 
-		hub.BroadcastToAll(message)
+		hub.BroadcastToAll(message.Type, message.Data)
 
 		utils.SendSuccess(c, gin.H{
 			"message":       "Message broadcasted successfully",

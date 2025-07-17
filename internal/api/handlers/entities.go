@@ -21,13 +21,13 @@ func (h *Handlers) GetEntities(c *gin.Context) {
 	defer cancel()
 
 	// Create entity service
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	if domain != "" {
 		// Filter by domain
 		domainEntities, err := entityService.GetByDomain(ctx, domain)
 		if err != nil {
-			h.logger.WithError(err).Error("Failed to get entities by domain")
+			h.log.WithError(err).Error("Failed to get entities by domain")
 			utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve entities")
 			return
 		}
@@ -42,7 +42,7 @@ func (h *Handlers) GetEntities(c *gin.Context) {
 	// Get all entities
 	entitiesWithRooms, err := entityService.GetAll(ctx, includeRoom)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get all entities")
+		h.log.WithError(err).Error("Failed to get all entities")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve entities")
 		return
 	}
@@ -61,11 +61,11 @@ func (h *Handlers) GetEntity(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	entityWithRoom, err := entityService.GetByID(ctx, entityID, includeRoom)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to get entity: %s", entityID)
+		h.log.WithError(err).Errorf("Failed to get entity: %s", entityID)
 		utils.SendError(c, http.StatusNotFound, "Entity not found")
 		return
 	}
@@ -90,11 +90,11 @@ func (h *Handlers) UpdateEntityState(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	err := entityService.UpdateState(ctx, entityID, request.State, request.Attributes)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to update entity state: %s", entityID)
+		h.log.WithError(err).Errorf("Failed to update entity state: %s", entityID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to update entity state")
 		return
 	}
@@ -122,11 +122,11 @@ func (h *Handlers) AssignEntityToRoom(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	err := entityService.AssignToRoom(ctx, entityID, request.RoomID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to assign entity to room: %s", entityID)
+		h.log.WithError(err).Errorf("Failed to assign entity to room: %s", entityID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to assign entity to room")
 		return
 	}
@@ -187,11 +187,11 @@ func (h *Handlers) CreateOrUpdateEntity(c *gin.Context) {
 		entity.Attributes = attributesJSON
 	}
 
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	err := entityService.CreateOrUpdate(ctx, entity)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to create/update entity: %s", request.EntityID)
+		h.log.WithError(err).Errorf("Failed to create/update entity: %s", request.EntityID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to save entity")
 		return
 	}
@@ -209,11 +209,11 @@ func (h *Handlers) DeleteEntity(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.logger)
+	entityService := entities.NewService(h.repos.Entity, h.repos.Room, h.log)
 
 	err := entityService.Delete(ctx, entityID)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to delete entity: %s", entityID)
+		h.log.WithError(err).Errorf("Failed to delete entity: %s", entityID)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to delete entity")
 		return
 	}

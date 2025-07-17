@@ -1,6 +1,8 @@
 package api
 
 import (
+	"database/sql"
+
 	"github.com/frostdev-ops/pma-backend-go/internal/api/handlers"
 	"github.com/frostdev-ops/pma-backend-go/internal/api/middleware"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
@@ -11,7 +13,7 @@ import (
 )
 
 // NewRouter creates and configures the main HTTP router
-func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, haForwarder *websocket.HAEventForwarder) *gin.Engine {
+func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, haForwarder *websocket.HAEventForwarder, db *sql.DB) *gin.Engine {
 	// Set gin mode based on config
 	if cfg.Server.Mode == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -31,7 +33,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 	router.Use(rateLimiter.RateLimitMiddleware())
 
 	// Initialize handlers
-	h := handlers.NewHandlers(cfg, repos, logger, wsHub)
+	h := handlers.NewHandlers(cfg, repos, logger, wsHub, db)
 
 	// Public routes
 	router.GET("/health", h.Health)
@@ -48,13 +50,28 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			auth.POST("/register", h.Register)
 			auth.POST("/login", h.Login)
 			auth.POST("/validate", h.ValidateToken)
+
+			// PIN-based authentication (compatible with Node backend)
+			auth.POST("/verify-pin", h.VerifyPin)
+			auth.POST("/set-pin", h.SetPin)
+			auth.GET("/pin-status", h.GetPinStatus)
+			auth.GET("/session", h.GetSession)
 		}
 
 		// Public API routes (no auth required)
 		public := api.Group("/")
 		{
 			public.GET("/status", h.Health)
+
+			// SSE stream endpoint (public for real-time updates)
+			public.GET("/events/stream", h.GetEventStream)
+
+			// Image serving endpoint (public for screensaver display)
+			public.GET("/screensaver/images/:filename", h.GetScreensaverImage)
 		}
+
+		// Mobile upload page (public)
+		router.GET("/upload", h.GetMobileUploadPage)
 
 		// Protected API routes (auth required)
 		protected := api.Group("/")
@@ -65,6 +82,14 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			{
 				profile.GET("/", h.GetProfile)
 				profile.PUT("/password", h.UpdatePassword)
+			}
+
+			// Protected PIN authentication routes
+			authProtected := protected.Group("/auth")
+			{
+				authProtected.POST("/change-pin", h.ChangePin)
+				authProtected.POST("/disable-pin", h.DisablePin)
+				authProtected.POST("/logout", h.Logout)
 			}
 
 			// User management routes (admin functionality)
@@ -102,6 +127,14 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				rooms.DELETE("/:id", h.DeleteRoom)
 				rooms.GET("/stats", h.GetRoomStats)
 				rooms.POST("/sync-ha", h.SyncRoomsWithHA)
+			}
+
+			// Scene endpoints
+			scenes := protected.Group("/scenes")
+			{
+				scenes.GET("/", h.GetScenes)
+				scenes.GET("/:id", h.GetScene)
+				scenes.POST("/:id/activate", h.ActivateScene)
 			}
 
 			// WebSocket management endpoints (protected)
@@ -154,7 +187,255 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				automation.GET("/templates", h.GetAutomationTemplates)
 				automation.GET("/history", h.GetAutomationHistory)
 			}
+
+			// Network management endpoints
+			network := protected.Group("/network")
+			{
+				// Status and monitoring
+				network.GET("/status", h.GetNetworkStatus)
+				network.GET("/interfaces", h.GetNetworkInterfaces)
+				network.GET("/traffic", h.GetTrafficStatistics)
+				network.GET("/metrics", h.GetNetworkMetrics)
+				network.GET("/config", h.GetNetworkConfiguration)
+				network.POST("/test-connection", h.TestRouterConnection)
+
+				// Device discovery and management
+				network.GET("/devices", h.GetDiscoveredDevices)
+				network.POST("/devices/scan", h.ScanNetworkDevices)
+				network.GET("/devices/suggestions", h.GetDevicesWithPortSuggestions)
+
+				// Port forwarding management
+				network.GET("/port-forwarding", h.GetPortForwardingRules)
+				network.POST("/port-forwarding", h.CreatePortForwardingRule)
+				network.PUT("/port-forwarding/:ruleId", h.UpdatePortForwardingRule)
+				network.DELETE("/port-forwarding/:ruleId", h.DeletePortForwardingRule)
+			}
+
+			// UPS monitoring endpoints
+			ups := protected.Group("/ups")
+			{
+				// Status and monitoring
+				ups.GET("/status", h.GetUPSStatus)
+				ups.GET("/history", h.GetUPSHistory)
+				ups.GET("/battery-trends", h.GetUPSBatteryTrends)
+				ups.GET("/metrics", h.GetUPSMetrics)
+				ups.GET("/config", h.GetUPSConfiguration)
+
+				// UPS information and variables
+				ups.GET("/info", h.GetUPSInfo)
+				ups.GET("/variables", h.GetUPSVariables)
+				ups.GET("/connection", h.GetUPSConnectionInfo)
+				ups.POST("/test-connection", h.TestUPSConnection)
+
+				// Monitoring control
+				ups.POST("/monitoring/start", h.StartUPSMonitoring)
+				ups.POST("/monitoring/stop", h.StopUPSMonitoring)
+
+				// Alert configuration
+				ups.PUT("/alerts/thresholds", h.UpdateUPSAlertThresholds)
+			}
+
+			// System management endpoints
+			system := protected.Group("/system")
+			{
+				// Basic information and health
+				system.GET("/info", h.GetSystemInfo)
+				system.GET("/status", h.GetSystemStatus)
+				system.GET("/health", h.GetBasicSystemHealth)
+				system.GET("/health/detailed", h.GetSystemHealth)
+				system.GET("/device-info", h.GetDeviceInfo)
+
+				// System logs
+				system.GET("/logs", h.GetSystemLogs)
+
+				// Power management
+				system.POST("/reboot", h.RebootSystem)
+				system.POST("/shutdown", h.ShutdownSystem)
+
+				// Configuration
+				system.GET("/config", h.GetSystemConfig)
+				system.POST("/config", h.UpdateSystemConfig)
+
+				// Health reporting (for external monitoring)
+				system.POST("/health-report", h.ReportHealth)
+			}
+
+			// Display settings endpoints
+			display := protected.Group("/display-settings")
+			{
+				// Main display settings
+				display.GET("/", h.GetDisplaySettings)
+				display.POST("/", h.UpdateDisplaySettings)
+				display.PUT("/", h.PutDisplaySettings)
+
+				// Hardware capabilities and control
+				display.GET("/capabilities", h.GetDisplayCapabilities)
+				display.GET("/hardware", h.GetDisplayHardwareInfo)
+				display.POST("/wake", h.WakeScreen)
+			}
+
+			// Bluetooth management endpoints
+			bluetooth := protected.Group("/bluetooth")
+			{
+				// Status and adapter management
+				bluetooth.GET("/status", h.GetBluetoothStatus)
+				bluetooth.GET("/capabilities", h.GetBluetoothCapabilities)
+				bluetooth.POST("/power", h.SetBluetoothPower)
+				bluetooth.POST("/discoverable", h.SetBluetoothDiscoverable)
+
+				// Device scanning and discovery
+				bluetooth.POST("/scan", h.ScanForDevices)
+				bluetooth.GET("/devices", h.GetAllBluetoothDevices)
+				bluetooth.GET("/devices/paired", h.GetPairedDevices)
+				bluetooth.GET("/devices/connected", h.GetConnectedDevices)
+				bluetooth.GET("/devices/:address", h.GetBluetoothDevice)
+
+				// Device pairing and connection
+				bluetooth.POST("/devices/:address/pair", h.PairBluetoothDevice)
+				bluetooth.POST("/devices/:address/connect", h.ConnectBluetoothDevice)
+				bluetooth.POST("/devices/:address/disconnect", h.DisconnectBluetoothDevice)
+				bluetooth.DELETE("/devices/:address", h.RemoveBluetoothDevice)
+
+				// Statistics and monitoring
+				bluetooth.GET("/stats", h.GetBluetoothStats)
+			}
+
+			// Energy management endpoints
+			energy := protected.Group("/energy")
+			{
+				// Settings management
+				energy.GET("/settings", h.GetEnergySettings)
+				energy.PUT("/settings", h.UpdateEnergySettings)
+
+				// Current energy data
+				energy.GET("/data", h.GetEnergyData)
+				energy.GET("/metrics", h.GetEnergyMetrics)
+
+				// Energy history and statistics
+				energy.GET("/history", h.GetEnergyHistory)
+				energy.GET("/statistics", h.GetEnergyStatistics)
+
+				// Device-specific energy data
+				energy.GET("/devices/breakdown", h.GetEnergyDeviceBreakdown)
+				energy.GET("/devices/:entityId/history", h.GetDeviceEnergyHistory)
+				energy.GET("/devices/:entityId/data", h.GetDeviceEnergyData)
+
+				// Tracking control
+				energy.POST("/tracking/start", h.StartEnergyTracking)
+				energy.POST("/tracking/stop", h.StopEnergyTracking)
+
+				// Service management
+				energy.GET("/service/status", h.GetEnergyServiceStatus)
+				energy.POST("/cleanup", h.CleanupOldEnergyData)
+			}
+
+			// Ring camera integration endpoints
+			ring := protected.Group("/ring")
+			{
+				// Configuration endpoints
+				ring.GET("/config/status", h.GetRingConfigStatus)
+				ring.POST("/config/setup", h.SetupRingConfig)
+				ring.POST("/config/test", h.TestRingConnection)
+				ring.DELETE("/config", h.DeleteRingConfig)
+				ring.POST("/config/restart", h.RestartRingService)
+
+				// Authentication endpoints
+				ring.POST("/auth/start", h.StartRingAuthentication)
+				ring.POST("/auth/verify", h.Complete2FA)
+
+				// Camera endpoints
+				ring.GET("/cameras", h.GetRingCameras)
+				ring.GET("/cameras/:cameraId", h.GetRingCamera)
+				ring.GET("/cameras/:cameraId/snapshot", h.GetRingCameraSnapshot)
+				ring.POST("/cameras/:cameraId/light", h.ControlRingLight)
+				ring.POST("/cameras/:cameraId/siren", h.ControlRingSiren)
+				ring.GET("/cameras/:cameraId/events", h.GetRingCameraEvents)
+
+				// Service status
+				ring.GET("/status", h.GetRingStatus)
+			}
+
+			// Shelly device integration endpoints
+			shelly := protected.Group("/shelly")
+			{
+				// Device management
+				shelly.POST("/devices", h.AddShellyDevice)
+				shelly.DELETE("/devices/:id", h.RemoveShellyDevice)
+				shelly.GET("/devices", h.GetShellyDevices)
+				shelly.GET("/devices/:id/status", h.GetShellyDeviceStatus)
+				shelly.POST("/devices/:id/control", h.ControlShellyDevice)
+				shelly.GET("/devices/:id/energy", h.GetShellyDeviceEnergy)
+
+				// Discovery endpoints
+				shelly.GET("/discovery/devices", h.GetDiscoveredShellyDevices)
+				shelly.POST("/discovery/start", h.StartShellyDiscovery)
+				shelly.POST("/discovery/stop", h.StopShellyDiscovery)
+			}
+
+			// Enhanced conversation management endpoints
+			conversations := protected.Group("/conversations")
+			{
+				// Conversation CRUD operations
+				conversations.POST("", h.CreateConversation)
+				conversations.GET("", h.GetConversations)
+				conversations.GET("/:id", h.GetConversation)
+				conversations.PUT("/:id", h.UpdateConversation)
+				conversations.DELETE("/:id", h.DeleteConversation)
+
+				// Message management
+				conversations.GET("/:id/messages", h.GetConversationMessages)
+				conversations.POST("/:id/messages", h.SendMessage)
+
+				// Conversation actions
+				conversations.POST("/:id/archive", h.ArchiveConversation)
+				conversations.POST("/:id/unarchive", h.UnarchiveConversation)
+				conversations.POST("/:id/generate-title", h.GenerateConversationTitle)
+
+				// Analytics and management
+				conversations.GET("/statistics", h.GetConversationStatistics)
+				conversations.POST("/cleanup", h.CleanupConversations)
+			}
+
+			// Events and Server-Sent Events (SSE) endpoints
+			events := protected.Group("/events")
+			{
+				events.GET("/status", h.GetEventStatus)
+			}
+
+			// MCP (Model Context Protocol) endpoints
+			mcp := protected.Group("/mcp")
+			{
+				mcp.GET("/status", h.GetMCPStatus)
+				mcp.GET("/servers", h.GetMCPServers)
+				mcp.POST("/servers", h.AddMCPServer)
+				mcp.DELETE("/servers/:serverId", h.RemoveMCPServer)
+				mcp.GET("/servers/:serverId/connect", h.ConnectMCPServer)
+				mcp.GET("/servers/:serverId/disconnect", h.DisconnectMCPServer)
+				mcp.GET("/tools", h.GetMCPTools)
+				mcp.POST("/tools/execute", h.ExecuteMCPTools)
+			}
+
+			// File upload and screensaver management endpoints
+			screensaver := protected.Group("/screensaver")
+			{
+				screensaver.GET("/images", h.GetScreensaverImages)
+				screensaver.GET("/storage", h.GetScreensaverStorage)
+				screensaver.POST("/images/upload", h.UploadScreensaverImages)
+				screensaver.DELETE("/images/:id", h.DeleteScreensaverImage)
+			}
 		}
+
+		// Legacy display settings endpoints for backward compatibility
+		api.GET("/display-settings", h.GetDisplaySettingsLegacy)
+		api.POST("/display-settings", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.UpdateDisplaySettingsLegacy)
+		api.GET("/display-settings/capabilities", h.GetDisplayCapabilitiesLegacy)
+		api.POST("/display-settings/wake", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.WakeScreenLegacy)
+		api.GET("/display-settings/hardware", h.GetDisplayHardwareInfoLegacy)
+
+		// Legacy scene endpoints for backward compatibility
+		api.GET("/scenes", h.GetScenes)
+		api.GET("/scenes/:id", h.GetScene)
+		api.POST("/scenes/:id/activate", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.ActivateScene)
 	}
 
 	return router

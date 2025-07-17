@@ -724,7 +724,7 @@ func (s *SyncService) broadcastSyncEvent(eventType string, data map[string]inter
 			},
 		}
 
-		s.wsHub.BroadcastToAll(message)
+		s.wsHub.BroadcastToAll(message.Type, message.Data)
 	}
 }
 

@@ -23,7 +23,7 @@ func (h *Handlers) GetConfig(c *gin.Context) {
 
 	config, err := h.repos.Config.Get(ctx, key)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to get config key: %s", key)
+		h.log.WithError(err).Errorf("Failed to get config key: %s", key)
 		utils.SendError(c, http.StatusNotFound, "Configuration not found")
 		return
 	}
@@ -67,7 +67,7 @@ func (h *Handlers) SetConfig(c *gin.Context) {
 
 	err := h.repos.Config.Set(ctx, config)
 	if err != nil {
-		h.logger.WithError(err).Errorf("Failed to set config key: %s", key)
+		h.log.WithError(err).Errorf("Failed to set config key: %s", key)
 		utils.SendError(c, http.StatusInternalServerError, "Failed to save configuration")
 		return
 	}
@@ -82,7 +82,7 @@ func (h *Handlers) GetAllConfig(c *gin.Context) {
 
 	configs, err := h.repos.Config.GetAll(ctx)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to get all configs")
+		h.log.WithError(err).Error("Failed to get all configs")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve configurations")
 		return
 	}
