@@ -90,6 +90,9 @@ type SyncService struct {
 
 	// Entity mapping
 	mapper *EntityMapper
+
+	// WebSocket integration
+	eventForwarder *websocket.HAEventForwarder
 }
 
 // EventHandler processes different types of Home Assistant events
@@ -747,4 +750,101 @@ func (s *SyncService) handleAreaRegistryUpdated(event homeassistant.Event) error
 	}()
 
 	return nil
+}
+
+// Event Forwarder Integration
+
+// SetEventForwarder sets the HA event forwarder for WebSocket integration
+func (s *SyncService) SetEventForwarder(forwarder *websocket.HAEventForwarder) {
+	s.eventForwarder = forwarder
+	s.logger.Info("HA Event Forwarder connected to sync service")
+}
+
+// GetEventForwarder returns the current event forwarder
+func (s *SyncService) GetEventForwarder() *websocket.HAEventForwarder {
+	return s.eventForwarder
+}
+
+// forwardStateChangeEvent forwards a state change event to WebSocket clients
+func (s *SyncService) forwardStateChangeEvent(entityID string, oldState, newState *homeassistant.EntityState) {
+	if s.eventForwarder == nil {
+		return
+	}
+
+	var oldStateStr string
+	if oldState != nil {
+		oldStateStr = oldState.State
+	}
+
+	var attributes map[string]interface{}
+	if newState.Attributes != nil {
+		attributes = newState.Attributes
+	} else {
+		attributes = make(map[string]interface{})
+	}
+
+	err := s.eventForwarder.ForwardStateChanged(entityID, oldStateStr, newState.State, attributes)
+	if err != nil {
+		s.logger.WithError(err).WithField("entity_id", entityID).Warn("Failed to forward state change event")
+	}
+}
+
+// forwardEntityAddedEvent forwards an entity added event to WebSocket clients
+func (s *SyncService) forwardEntityAddedEvent(entityID string, entityState *homeassistant.EntityState) {
+	if s.eventForwarder == nil {
+		return
+	}
+
+	entityData := map[string]interface{}{
+		"entity_id":    entityID,
+		"state":        entityState.State,
+		"attributes":   entityState.Attributes,
+		"last_changed": entityState.LastChanged,
+		"last_updated": entityState.LastUpdated,
+	}
+
+	err := s.eventForwarder.ForwardEntityAdded(entityID, entityData)
+	if err != nil {
+		s.logger.WithError(err).WithField("entity_id", entityID).Warn("Failed to forward entity added event")
+	}
+}
+
+// forwardEntityRemovedEvent forwards an entity removed event to WebSocket clients
+func (s *SyncService) forwardEntityRemovedEvent(entityID string) {
+	if s.eventForwarder == nil {
+		return
+	}
+
+	err := s.eventForwarder.ForwardEntityRemoved(entityID)
+	if err != nil {
+		s.logger.WithError(err).WithField("entity_id", entityID).Warn("Failed to forward entity removed event")
+	}
+}
+
+// forwardSyncStatusEvent forwards a sync status event to WebSocket clients
+func (s *SyncService) forwardSyncStatusEvent(status, message string, entityCount int) {
+	if s.eventForwarder == nil {
+		return
+	}
+
+	err := s.eventForwarder.ForwardSyncStatus(status, message, entityCount)
+	if err != nil {
+		s.logger.WithError(err).Warn("Failed to forward sync status event")
+	}
+}
+
+// updateRoomFilters updates the event forwarder's room filters based on current entity-room mappings
+func (s *SyncService) updateRoomFilters() error {
+	if s.eventForwarder == nil {
+		return nil
+	}
+
+	// This would need to be implemented based on your entity-room mapping logic
+	// For now, we'll create an empty mapping
+	entityRoomMap := make(map[string]string)
+
+	// TODO: Populate entityRoomMap with actual entity-to-room mappings
+	// This would typically involve querying your database for entity room associations
+
+	return s.eventForwarder.UpdateRoomFilters(entityRoomMap)
 }

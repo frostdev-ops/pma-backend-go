@@ -46,6 +46,20 @@ type WebSocketConfig struct {
 	PingInterval int `mapstructure:"ping_interval"`
 	PongTimeout  int `mapstructure:"pong_timeout"`
 	WriteTimeout int `mapstructure:"write_timeout"`
+
+	// Home Assistant event forwarding configuration
+	HomeAssistant WebSocketHAConfig `mapstructure:"homeassistant"`
+}
+
+// WebSocketHAConfig contains Home Assistant specific WebSocket configuration
+type WebSocketHAConfig struct {
+	Enabled              bool     `mapstructure:"enabled"`
+	MaxEventsPerSecond   int      `mapstructure:"max_events_per_second"`
+	BatchEvents          bool     `mapstructure:"batch_events"`
+	BatchWindow          string   `mapstructure:"batch_window"` // Parse to time.Duration
+	DefaultSubscriptions []string `mapstructure:"default_subscriptions"`
+	ForwardAllEntities   bool     `mapstructure:"forward_all_entities"`
+	MaxErrorsRetained    int      `mapstructure:"max_errors_retained"`
 }
 
 func Load() (*Config, error) {
@@ -105,4 +119,16 @@ func setDefaults() {
 	viper.SetDefault("websocket.ping_interval", 30)
 	viper.SetDefault("websocket.pong_timeout", 60)
 	viper.SetDefault("websocket.write_timeout", 10)
+	
+	// WebSocket Home Assistant defaults
+	viper.SetDefault("websocket.homeassistant.enabled", true)
+	viper.SetDefault("websocket.homeassistant.max_events_per_second", 50)
+	viper.SetDefault("websocket.homeassistant.batch_events", true)
+	viper.SetDefault("websocket.homeassistant.batch_window", "100ms")
+	viper.SetDefault("websocket.homeassistant.default_subscriptions", []string{
+		"ha_state_changed",
+		"ha_sync_status",
+	})
+	viper.SetDefault("websocket.homeassistant.forward_all_entities", false)
+	viper.SetDefault("websocket.homeassistant.max_errors_retained", 100)
 }

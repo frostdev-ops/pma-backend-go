@@ -11,7 +11,7 @@ import (
 )
 
 // NewRouter creates and configures the main HTTP router
-func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub) *gin.Engine {
+func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, haForwarder *websocket.HAEventForwarder) *gin.Engine {
 	// Set gin mode based on config
 	if cfg.Server.Mode == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -109,6 +109,16 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			{
 				ws.GET("/stats", h.GetWebSocketStats(wsHub))
 				ws.POST("/broadcast", h.BroadcastMessage(wsHub))
+				
+				// Home Assistant WebSocket event subscriptions
+				ha := ws.Group("/ha")
+				{
+					ha.POST("/subscribe", h.SubscribeToHAEvents(wsHub))
+					ha.POST("/unsubscribe", h.UnsubscribeFromHAEvents(wsHub))
+					ha.GET("/subscriptions", h.GetHASubscriptions(wsHub))
+					ha.GET("/stats", h.GetHAEventStats(haForwarder))
+					ha.POST("/test", h.TestHAEventForwarding(haForwarder))
+				}
 			}
 
 			// TODO: Add more protected endpoints here

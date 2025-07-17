@@ -220,3 +220,30 @@ func (h *Hub) GetClientCount() int {
 	defer h.mu.RUnlock()
 	return len(h.clients)
 }
+
+// GetClientByID returns a client by its ID, or nil if not found
+func (h *Hub) GetClientByID(clientID string) *Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for client := range h.clients {
+		if client.ID == clientID {
+			return client
+		}
+	}
+
+	return nil
+}
+
+// GetAllClients returns a copy of all connected clients
+func (h *Hub) GetAllClients() []*Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	clients := make([]*Client, 0, len(h.clients))
+	for client := range h.clients {
+		clients = append(clients, client)
+	}
+
+	return clients
+}
