@@ -38,8 +38,22 @@ type AuthConfig struct {
 }
 
 type HomeAssistantConfig struct {
-	URL   string `mapstructure:"url"`
-	Token string `mapstructure:"token"`
+	URL   string            `mapstructure:"url"`
+	Token string            `mapstructure:"token"`
+	Sync  HomeAssistantSync `mapstructure:"sync"`
+}
+
+// HomeAssistantSync contains sync service configuration
+type HomeAssistantSync struct {
+	Enabled              bool     `mapstructure:"enabled"`
+	FullSyncInterval     string   `mapstructure:"full_sync_interval"`
+	SupportedDomains     []string `mapstructure:"supported_domains"`
+	ConflictResolution   string   `mapstructure:"conflict_resolution"`
+	BatchSize            int      `mapstructure:"batch_size"`
+	RetryAttempts        int      `mapstructure:"retry_attempts"`
+	RetryDelay           string   `mapstructure:"retry_delay"`
+	EventBufferSize      int      `mapstructure:"event_buffer_size"`
+	EventProcessingDelay string   `mapstructure:"event_processing_delay"`
 }
 
 type LoggingConfig struct {

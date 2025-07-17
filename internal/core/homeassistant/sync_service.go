@@ -551,13 +551,13 @@ func (s *SyncService) syncAreas(ctx context.Context) error {
 // syncSingleArea synchronizes a single Home Assistant area to a PMA room
 func (s *SyncService) syncSingleArea(ctx context.Context, area *homeassistant.Area) error {
 	// Check if room already exists by getting all rooms and filtering
-	rooms, err := s.roomSvc.GetAll(ctx, false)
+	roomList, err := s.roomSvc.GetAll(ctx, false)
 	if err != nil {
 		return fmt.Errorf("failed to get rooms: %w", err)
 	}
 
 	var existingRoom *rooms.RoomWithEntities
-	for _, room := range rooms {
+	for _, room := range roomList {
 		if room.HomeAssistantAreaID.Valid && room.HomeAssistantAreaID.String == area.AreaID {
 			existingRoom = room
 			break
@@ -610,7 +610,7 @@ func (s *SyncService) syncSingleEntity(ctx context.Context, state *homeassistant
 	existingEntity, err := s.entitySvc.GetByID(ctx, entity.EntityID, false)
 	if err == nil {
 		// Update existing entity
-		return s.updateExistingEntity(ctx, existingEntity, entity)
+		return s.updateExistingEntity(ctx, existingEntity.Entity, entity)
 	}
 
 	// Create new entity
@@ -715,11 +715,13 @@ func (s *SyncService) recordError(errorType, entityID, operation string, err err
 // broadcastSyncEvent broadcasts sync events via WebSocket
 func (s *SyncService) broadcastSyncEvent(eventType string, data map[string]interface{}) {
 	if s.wsHub != nil {
-		message := map[string]interface{}{
-			"type":      "sync_event",
-			"event":     eventType,
-			"data":      data,
-			"timestamp": time.Now(),
+		message := websocket.Message{
+			Type: "ha_sync_event",
+			Data: map[string]interface{}{
+				"event":     eventType,
+				"data":      data,
+				"timestamp": time.Now(),
+			},
 		}
 
 		s.wsHub.BroadcastToAll(message)

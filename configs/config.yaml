@@ -16,7 +16,17 @@ auth:
 
 home_assistant:
   url: "http://192.168.100.2:8123"
-  token: "" # Override with environment variable
+  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJiYzkzMGUwZThlZmY0ZWEyOTc3NmI3MTIwYjc2NTAyYyIsImlhdCI6MTc1MjYxMTUxOSwiZXhwIjoyMDY3OTcxNTE5fQ.Dilak2Vad3GpSnRfrFBkAK3TRSUVQ42uOI4DMORJGoc" # Override with environment variable
+  sync:
+    enabled: true
+    full_sync_interval: "1h"
+    supported_domains: ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "lock", "alarm_control_panel"]
+    conflict_resolution: "homeassistant_wins"
+    batch_size: 100
+    retry_attempts: 3
+    retry_delay: "5s"
+    event_buffer_size: 1000
+    event_processing_delay: "100ms"
 
 logging:
   level: "info" # debug, info, warn, error
