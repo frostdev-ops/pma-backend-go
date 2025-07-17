@@ -136,8 +136,24 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				ai.POST("/generate/automation", h.GenerateAutomation)
 			}
 
-			// TODO: Add more protected endpoints here
-			// automation := protected.Group("/automation")
+			// Automation endpoints
+			automation := protected.Group("/automation")
+			{
+				automation.GET("/rules", h.GetAutomations)
+				automation.GET("/rules/:id", h.GetAutomation)
+				automation.POST("/rules", h.CreateAutomation)
+				automation.PUT("/rules/:id", h.UpdateAutomation)
+				automation.DELETE("/rules/:id", h.DeleteAutomation)
+				automation.POST("/rules/:id/enable", h.EnableAutomation)
+				automation.POST("/rules/:id/disable", h.DisableAutomation)
+				automation.POST("/rules/:id/test", h.TestAutomation)
+				automation.POST("/rules/import", h.ImportAutomations)
+				automation.GET("/rules/export", h.ExportAutomations)
+				automation.POST("/rules/validate", h.ValidateAutomation)
+				automation.GET("/statistics", h.GetAutomationStatistics)
+				automation.GET("/templates", h.GetAutomationTemplates)
+				automation.GET("/history", h.GetAutomationHistory)
+			}
 		}
 	}
 

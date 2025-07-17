@@ -1,0 +1,187 @@
+{
+  "locale": "en-US",
+  "version": "1.0",
+  "namespace": "default",
+  "metadata": {
+    "author": "PMA System",
+    "updated_at": "2024-01-15T12:00:00Z"
+  },
+  "translations": {
+    "common.save": {
+      "key": "common.save",
+      "value": "Save",
+      "context": "Generic save action"
+    },
+    "common.cancel": {
+      "key": "common.cancel",
+      "value": "Cancel",
+      "context": "Generic cancel action"
+    },
+    "common.delete": {
+      "key": "common.delete",
+      "value": "Delete",
+      "context": "Generic delete action"
+    },
+    "common.edit": {
+      "key": "common.edit",
+      "value": "Edit",
+      "context": "Generic edit action"
+    },
+    "common.settings": {
+      "key": "common.settings",
+      "value": "Settings",
+      "context": "Settings page or section"
+    },
+    "dashboard.title": {
+      "key": "dashboard.title",
+      "value": "Dashboard",
+      "context": "Main dashboard page title"
+    },
+    "dashboard.add_widget": {
+      "key": "dashboard.add_widget",
+      "value": "Add Widget",
+      "context": "Button to add new widget"
+    },
+    "dashboard.no_widgets": {
+      "key": "dashboard.no_widgets",
+      "value": "No widgets configured. Add your first widget to get started.",
+      "context": "Empty state message"
+    },
+    "dashboard.widget_removed": {
+      "key": "dashboard.widget_removed",
+      "value": "Widget removed successfully",
+      "context": "Success message after removing widget"
+    },
+    "devices.turn_on": {
+      "key": "devices.turn_on",
+      "value": "Turn On",
+      "context": "Action to turn on a device"
+    },
+    "devices.turn_off": {
+      "key": "devices.turn_off",
+      "value": "Turn Off",
+      "context": "Action to turn off a device"
+    },
+    "devices.offline": {
+      "key": "devices.offline",
+      "value": "Device Offline",
+      "context": "Status when device is not reachable"
+    },
+    "preferences.title": {
+      "key": "preferences.title",
+      "value": "Preferences",
+      "context": "Preferences page title"
+    },
+    "preferences.theme": {
+      "key": "preferences.theme",
+      "value": "Theme",
+      "context": "Theme preferences section"
+    },
+    "preferences.notifications": {
+      "key": "preferences.notifications",
+      "value": "Notifications",
+      "context": "Notification preferences section"
+    },
+    "preferences.language": {
+      "key": "preferences.language",
+      "value": "Language",
+      "context": "Language selection"
+    },
+    "preferences.reset_confirm": {
+      "key": "preferences.reset_confirm",
+      "value": "Are you sure you want to reset all preferences to defaults?",
+      "context": "Confirmation dialog for resetting preferences"
+    },
+    "theme.light": {
+      "key": "theme.light",
+      "value": "Light Theme",
+      "context": "Light color scheme option"
+    },
+    "theme.dark": {
+      "key": "theme.dark",
+      "value": "Dark Theme",
+      "context": "Dark color scheme option"
+    },
+    "theme.auto": {
+      "key": "theme.auto",
+      "value": "Auto (System)",
+      "context": "Automatic theme based on system preference"
+    },
+    "automation.title": {
+      "key": "automation.title",
+      "value": "Automation",
+      "context": "Automation section title"
+    },
+    "automation.suggestions": {
+      "key": "automation.suggestions",
+      "value": "Automation Suggestions",
+      "context": "AI-generated automation suggestions"
+    },
+    "automation.create_new": {
+      "key": "automation.create_new",
+      "value": "Create New Automation",
+      "context": "Button to create new automation"
+    },
+    "notifications.enabled": {
+      "key": "notifications.enabled",
+      "value": "Enable Notifications",
+      "context": "Toggle for enabling notifications"
+    },
+    "notifications.quiet_hours": {
+      "key": "notifications.quiet_hours",
+      "value": "Quiet Hours",
+      "context": "Do not disturb time period"
+    },
+    "privacy.title": {
+      "key": "privacy.title",
+      "value": "Privacy & Security",
+      "context": "Privacy settings section"
+    },
+    "privacy.data_collection": {
+      "key": "privacy.data_collection",
+      "value": "Data Collection",
+      "context": "Settings for what data is collected"
+    },
+    "accessibility.title": {
+      "key": "accessibility.title",
+      "value": "Accessibility",
+      "context": "Accessibility settings section"
+    },
+    "accessibility.high_contrast": {
+      "key": "accessibility.high_contrast",
+      "value": "High Contrast",
+      "context": "High contrast mode toggle"
+    },
+    "widget.welcome.title": {
+      "key": "widget.welcome.title",
+      "value": "Welcome to PMA",
+      "context": "Default welcome widget title"
+    },
+    "widget.device_control.title": {
+      "key": "widget.device_control.title",
+      "value": "Device Control",
+      "context": "Device control widget title"
+    },
+    "widget.system_status.title": {
+      "key": "widget.system_status.title",
+      "value": "System Status",
+      "context": "System monitoring widget title"
+    },
+    "error.generic": {
+      "key": "error.generic",
+      "value": "An error occurred. Please try again.",
+      "context": "Generic error message"
+    },
+    "error.network": {
+      "key": "error.network",
+      "value": "Network error. Please check your connection.",
+      "context": "Network connectivity error"
+    },
+    "success.saved": {
+      "key": "success.saved",
+      "value": "Settings saved successfully",
+      "context": "Success message after saving"
+    }
+  },
+  "updated_at": "2024-01-15T12:00:00Z"
+} 

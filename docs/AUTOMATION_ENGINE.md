@@ -1,614 +1,730 @@
-# PMA Automation Engine Documentation
+# PMA Backend Go - Automation Engine
+
+The PMA Backend Go Automation Engine is a powerful, extensible automation system that allows you to create complex automation rules using triggers, conditions, and actions. It integrates seamlessly with Home Assistant, WebSocket events, and various external services.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Core Components](#core-components)
+- [API Endpoints](#api-endpoints)
+- [Configuration](#configuration)
+- [Automation Rules](#automation-rules)
+- [Examples](#examples)
+- [Best Practices](#best-practices)
+- [Troubleshooting](#troubleshooting)
 
 ## Overview
 
-The PMA Automation Engine is a powerful, flexible system for creating and executing complex automation rules based on triggers, conditions, and actions. It integrates seamlessly with Home Assistant entities and provides extensive customization options for home automation scenarios.
+The Automation Engine provides:
 
-## Features
-
-- **Multiple Trigger Types**: State changes, time-based scheduling, events, webhooks, and composite triggers
-- **Flexible Conditions**: State conditions, time conditions, numeric comparisons, templates, and composite logic
-- **Comprehensive Actions**: Service calls, notifications, delays, variables, HTTP requests, scripts, and conditional execution
-- **Execution Modes**: Single, parallel, and queued execution strategies
-- **Real-time Scheduling**: Cron-based scheduling with timezone support
-- **Rule Validation**: Comprehensive syntax and semantic validation
-- **Execution Tracing**: Detailed execution logs and performance metrics
-- **YAML/JSON Support**: Import/export rules in both formats
-- **Thread-safe**: Concurrent rule execution with worker pools
-- **Circuit Breaker**: Automatic protection against problematic rules
+- **Event-driven automation** based on state changes, time, webhooks, and custom events
+- **Complex condition evaluation** with logical operators (AND/OR) and various condition types
+- **Powerful action execution** supporting services, notifications, delays, and variables
+- **Concurrent execution** with configurable worker pools and execution modes
+- **Scheduling system** with cron expressions and time-based triggers
+- **Circuit breaker protection** for problematic rules
+- **Performance monitoring** and detailed statistics
+- **YAML/JSON rule format** compatible with Home Assistant
 
 ## Architecture
 
-### Core Components
-
-1. **AutomationEngine**: Main orchestrator managing rules and execution
-2. **Scheduler**: Time-based trigger management with cron support
-3. **RuleParser**: YAML/JSON rule parsing and validation
-4. **ExecutionContext**: Rule execution tracking and debugging
-5. **Triggers**: Event detection and subscription management
-6. **Conditions**: Rule condition evaluation
-7. **Actions**: Rule action execution
-
-### File Structure
-
 ```
-internal/core/automation/
-├── engine.go           # Main automation engine
-├── rule.go            # Rule definition and models
-├── trigger.go         # Trigger types and handlers
-├── condition.go       # Condition evaluator
-├── action.go          # Action executor
-├── scheduler.go       # Time-based scheduling
-├── parser.go          # Rule parser (YAML/JSON)
-├── context.go         # Execution context
-└── automation_test.go # Comprehensive tests
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   HTTP API      │    │  WebSocket Hub  │    │ Home Assistant  │
+└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
+          │                      │                      │
+          ▼                      ▼                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Automation Engine                            │
+├─────────────────┬─────────────────┬─────────────────────────────┤
+│   Rule Parser   │   Scheduler     │     Execution Context      │
+├─────────────────┼─────────────────┼─────────────────────────────┤
+│    Triggers     │   Conditions    │         Actions             │
+├─────────────────┼─────────────────┼─────────────────────────────┤
+│  Worker Pool    │   Statistics    │     Circuit Breaker        │
+└─────────────────┴─────────────────┴─────────────────────────────┘
 ```
 
-## Rule Structure
+## Core Components
 
-### Basic Rule Format
+### 1. Automation Engine (`engine.go`)
 
-```yaml
-id: unique_rule_id
-name: "Human Readable Name"
-description: "Rule description"
-enabled: true
-mode: single  # single, parallel, queued
-triggers:
-  - # Trigger definitions
-conditions:
-  - # Condition definitions (optional)
-actions:
-  - # Action definitions
-variables:
-  # Rule-specific variables (optional)
+The main orchestrator that manages rules, workers, and execution.
+
+**Key Features:**
+- Rule lifecycle management (add, update, remove, enable/disable)
+- Worker pool for concurrent execution
+- Event queue and processing
+- Statistics and performance monitoring
+- Circuit breaker pattern for problematic rules
+
+**Configuration:**
+```go
+type EngineConfig struct {
+    Workers              int
+    QueueSize           int
+    ExecutionTimeout    time.Duration
+    MaxConcurrentRules  int
+    EnableCircuitBreaker bool
+    CircuitBreakerConfig *CircuitBreakerConfig
+    SchedulerConfig     *SchedulerConfig
+}
 ```
 
-### Execution Modes
+### 2. Rule Structure (`rule.go`)
 
-- **single**: Only one instance of the rule can run at a time
-- **parallel**: Multiple instances can run simultaneously
-- **queued**: Queue executions if the rule is busy
+Defines automation rules with validation.
 
-## Trigger Types
-
-### State Triggers
-
-Trigger when entity state changes:
-
-```yaml
-triggers:
-  - platform: state
-    entity_id: sensor.temperature
-    from: "20"
-    to: "25"
-    for: "00:05:00"  # Optional duration
-    attribute: "battery_level"  # Optional attribute
+```go
+type AutomationRule struct {
+    ID            string        `json:"id"`
+    Name          string        `json:"name"`
+    Description   string        `json:"description"`
+    Enabled       bool          `json:"enabled"`
+    ExecutionMode ExecutionMode `json:"execution_mode"`
+    Triggers      []Trigger     `json:"triggers"`
+    Conditions    []Condition   `json:"conditions"`
+    Actions       []Action      `json:"actions"`
+    Variables     Variables     `json:"variables"`
+    CreatedAt     time.Time     `json:"created_at"`
+    UpdatedAt     time.Time     `json:"updated_at"`
+    LastRun       *time.Time    `json:"last_run,omitempty"`
+    RunCount      int64         `json:"run_count"`
+}
 ```
 
-### Time Triggers
+**Execution Modes:**
+- `single`: Only one instance can run at a time
+- `parallel`: Multiple instances can run simultaneously  
+- `queued`: Instances are queued and executed sequentially
 
-Trigger at specific times:
+### 3. Triggers (`trigger.go`)
 
-```yaml
-triggers:
-  # Time of day
-  - platform: time
-    at: "07:00:00"
-  
-  # Cron expression
-  - platform: time
-    cron: "0 0 */2 * * *"  # Every 2 hours
-  
-  # Interval
-  - platform: time
-    interval: "5m"
-```
+Define when automation rules should be executed.
 
-### Event Triggers
+**Trigger Types:**
 
-Trigger on specific events:
-
+#### State Trigger
+Triggers when an entity's state changes.
 ```yaml
 triggers:
-  - platform: event
-    event_type: "automation_triggered"
+  - type: "state"
+    entity_id: "binary_sensor.motion"
+    from: "off"
+    to: "on"
+    for: "5m"
+    attribute: "temperature"
+    above: 25
+```
+
+#### Time Trigger
+Triggers at specific times or intervals.
+```yaml
+triggers:
+  - type: "time"
+    at: "07:00:00"           # Specific time
+    # OR
+    cron: "0 */15 * * * *"   # Cron expression
+    # OR  
+    interval: "5m"           # Interval (1m, 5m, 15m, 30m, 1h)
+```
+
+#### Event Trigger
+Triggers on custom events.
+```yaml
+triggers:
+  - type: "event"
+    event_type: "garage_door_opened"
     event_data:
-      source: "motion_sensor"
+      user: "john"
 ```
 
-### Sun Triggers
-
-Trigger based on sunrise/sunset:
-
+#### Webhook Trigger
+Triggers via HTTP webhooks.
 ```yaml
 triggers:
-  - platform: sun
-    event: sunset
-    offset: "-00:30:00"  # 30 minutes before sunset
+  - type: "webhook"
+    webhook_id: "automation_webhook"
+    method: "POST"
 ```
 
-### Webhook Triggers
-
-Trigger via HTTP webhooks:
-
+#### Composite Trigger
+Combines multiple triggers with logical operators.
 ```yaml
 triggers:
-  - platform: webhook
-    webhook_id: "my_webhook"
-    method: POST
-```
-
-### Composite Triggers
-
-Combine multiple triggers with AND/OR logic:
-
-```yaml
-triggers:
-  - platform: composite
-    operator: and  # or "or"
+  - type: "composite"
+    logic: "or"
     triggers:
-      - platform: state
-        entity_id: sensor.motion
-        to: "on"
-      - platform: time
-        after: "sunset"
+      - type: "state"
+        entity_id: "sensor.temperature"
+        above: 25
+      - type: "time"
+        at: "14:00:00"
 ```
 
-## Condition Types
+### 4. Conditions (`condition.go`)
 
-### State Conditions
+Define when actions should be executed after triggers fire.
 
-Check entity states:
+**Condition Types:**
 
+#### State Condition
 ```yaml
 conditions:
-  - condition: state
-    entity_id: person.john
-    state: "home"
-    attribute: "battery_level"  # Optional
-    for: "00:10:00"  # Optional duration
+  - type: "state"
+    entity_id: "sun.sun"
+    state: "below_horizon"
 ```
 
-### Time Conditions
-
-Check time-based criteria:
-
+#### Time Condition
 ```yaml
 conditions:
-  - condition: time
-    after: "08:00:00"
-    before: "22:00:00"
-    weekday:
-      - mon
-      - tue
-      - wed
-      - thu
-      - fri
+  - type: "time"
+    after: "sunset"
+    before: "23:00:00"
+    weekday: ["mon", "tue", "wed", "thu", "fri"]
 ```
 
-### Numeric Conditions
-
-Compare numeric values:
-
+#### Numeric Condition
 ```yaml
 conditions:
-  - condition: numeric_state
-    entity_id: sensor.temperature
-    above: 20.0
-    below: 30.0
-    attribute: "humidity"  # Optional
+  - type: "numeric"
+    entity_id: "sensor.temperature"
+    above: 20
+    below: 30
 ```
 
-### Template Conditions
-
-Use template expressions:
-
+#### Template Condition
 ```yaml
 conditions:
-  - condition: template
-    value_template: "{{ states('sensor.temperature') | float > 25 }}"
+  - type: "template"
+    template: "{{ states('sensor.temperature') | float > 25 }}"
 ```
 
-### Composite Conditions
-
-Combine conditions with AND/OR logic:
-
+#### Composite Condition
 ```yaml
 conditions:
-  - condition: and
+  - type: "and"
     conditions:
-      - condition: state
-        entity_id: person.john
-        state: "home"
-      - condition: time
-        after: "18:00"
+      - type: "state"
+        entity_id: "binary_sensor.someone_home"
+        state: "on"
+      - type: "time"
+        after: "18:00:00"
 ```
 
-## Action Types
+### 5. Actions (`action.go`)
 
-### Service Actions
+Define what should happen when triggers fire and conditions are met.
 
-Call Home Assistant or PMA services:
+**Action Types:**
 
+#### Service Action
+Call Home Assistant or PMA services.
 ```yaml
 actions:
-  - service: light.turn_on
-    entity_id: light.living_room
+  - type: "service"
+    service: "light.turn_on"
     data:
+      entity_id: "light.living_room"
       brightness: 255
       color_name: "blue"
-    target:
-      area_id: living_room
 ```
 
-### Notification Actions
-
-Send notifications:
-
+#### Notification Action
+Send notifications via various channels.
 ```yaml
 actions:
-  - service: notify.mobile_app
+  - type: "notification"
+    message: "Motion detected in living room!"
+    target: "mobile"
+    priority: "high"
     data:
-      title: "Alert"
-      message: "Temperature is {{ states('sensor.temp') }}°C"
-      data:
-        priority: high
+      tag: "motion_alert"
 ```
 
-### Delay Actions
-
-Introduce delays:
-
+#### Delay Action
+Add delays between actions.
 ```yaml
 actions:
-  - delay: "00:05:00"  # 5 minutes
-  # or
-  - delay:
-      hours: 1
-      minutes: 30
-      seconds: 15
+  - type: "delay"
+    duration: "30s"
 ```
 
-### Variable Actions
-
-Set variables:
-
+#### Variable Action
+Manipulate variables.
 ```yaml
 actions:
-  - service: variable.set
+  - type: "variable"
+    action: "set"
+    variable: "last_motion_time"
+    value: "{{ now() }}"
+```
+
+#### HTTP Action
+Make HTTP requests.
+```yaml
+actions:
+  - type: "http"
+    url: "https://api.example.com/webhook"
+    method: "POST"
+    headers:
+      Authorization: "Bearer {{ token }}"
     data:
-      variable: "last_motion_time"
-      value: "{{ now() }}"
-      scope: "global"  # or "rule"
+      message: "Automation triggered"
 ```
 
-### HTTP Actions
-
-Make HTTP requests:
-
+#### Script Action
+Execute shell commands.
 ```yaml
 actions:
-  - service: http.request
-    data:
-      url: "https://api.example.com/webhook"
-      method: POST
-      headers:
-        Authorization: "Bearer {{ token }}"
-      body:
-        temperature: "{{ states('sensor.temp') }}"
+  - type: "script"
+    command: "/usr/local/bin/backup.sh"
+    args: ["--quick"]
+    timeout: "5m"
 ```
 
-### Script Actions
-
-Execute shell commands:
-
+#### Conditional Action
+Execute actions based on conditions.
 ```yaml
 actions:
-  - service: script.execute
-    data:
-      command: "/usr/bin/backup_script.sh"
-      args:
-        - "--config"
-        - "/etc/backup.conf"
-      timeout: "300s"
+  - type: "conditional"
+    condition:
+      type: "state"
+      entity_id: "sun.sun"
+      state: "below_horizon"
+    actions:
+      - type: "service"
+        service: "light.turn_on"
+        data:
+          entity_id: "light.entrance"
 ```
 
-### Conditional Actions
+### 6. Scheduler (`scheduler.go`)
 
-Execute actions based on conditions:
+Manages time-based triggers and scheduling.
 
-```yaml
-actions:
-  - service: conditional
-    conditions:
-      - condition: state
-        entity_id: light.living_room
-        state: "off"
-    then_actions:
-      - service: light.turn_on
-        entity_id: light.living_room
-    else_actions:
-      - service: light.turn_off
-        entity_id: light.living_room
-```
+**Features:**
+- Cron expression support (5-field format)
+- Timezone handling
+- Trigger scheduling and unscheduling
+- Next execution time calculation
+- Statistics and monitoring
+
+### 7. Parser (`parser.go`)
+
+Parses YAML and JSON automation rules.
+
+**Features:**
+- Home Assistant compatibility
+- Rule validation
+- Import/export functionality
+- Template processing
+- Error reporting
+
+### 8. Execution Context (`context.go`)
+
+Manages execution state and variables.
+
+**Features:**
+- Variable scoping
+- Execution tracing
+- Performance metrics
+- Context cleanup
+- Stack management
 
 ## API Endpoints
 
 ### Rule Management
 
-- `GET /api/v1/automations` - List all rules
-- `POST /api/v1/automations` - Create new rule
-- `GET /api/v1/automations/{id}` - Get rule details
-- `PUT /api/v1/automations/{id}` - Update rule
-- `DELETE /api/v1/automations/{id}` - Delete rule
+#### Get All Rules
+```http
+GET /api/v1/automation/rules
+```
 
-### Rule Operations
+Query parameters:
+- `enabled`: Filter by enabled status
+- `category`: Filter by category
+- `page`: Page number for pagination
+- `limit`: Number of rules per page
 
-- `POST /api/v1/automations/{id}/enable` - Enable rule
-- `POST /api/v1/automations/{id}/disable` - Disable rule
-- `POST /api/v1/automations/{id}/test` - Test rule execution
-- `GET /api/v1/automations/{id}/history` - Get execution history
+#### Get Single Rule
+```http
+GET /api/v1/automation/rules/{id}
+```
+
+#### Create Rule
+```http
+POST /api/v1/automation/rules
+Content-Type: application/json
+
+{
+  "name": "My Automation",
+  "description": "Sample automation rule",
+  "enabled": true,
+  "execution_mode": "single",
+  "triggers": [...],
+  "conditions": [...],
+  "actions": [...]
+}
+```
+
+#### Update Rule
+```http
+PUT /api/v1/automation/rules/{id}
+Content-Type: application/json
+
+{
+  "name": "Updated Automation",
+  "enabled": false
+}
+```
+
+#### Delete Rule
+```http
+DELETE /api/v1/automation/rules/{id}
+```
+
+### Rule Control
+
+#### Enable Rule
+```http
+POST /api/v1/automation/rules/{id}/enable
+```
+
+#### Disable Rule
+```http
+POST /api/v1/automation/rules/{id}/disable
+```
+
+#### Test Rule
+```http
+POST /api/v1/automation/rules/{id}/test
+Content-Type: application/json
+
+{
+  "trigger_data": {
+    "entity_id": "binary_sensor.test",
+    "new_state": "on"
+  }
+}
+```
 
 ### Import/Export
 
-- `GET /api/v1/automations/{id}/export?format=yaml` - Export rule
-- `POST /api/v1/automations/import` - Import rule
-- `POST /api/v1/automations/validate` - Validate rule syntax
+#### Import Rules
+```http
+POST /api/v1/automation/rules/import
+Content-Type: multipart/form-data
 
-### Utilities
-
-- `GET /api/v1/automations/templates` - Get rule templates
-- `GET /api/v1/automations/statistics` - Get engine statistics
-
-## Usage Examples
-
-### Basic Motion Light
-
-```yaml
-id: motion_light
-name: "Motion Activated Light"
-description: "Turn on light when motion detected"
-enabled: true
-triggers:
-  - platform: state
-    entity_id: binary_sensor.motion
-    to: "on"
-conditions:
-  - condition: state
-    entity_id: sun.sun
-    state: "below_horizon"
-actions:
-  - service: light.turn_on
-    entity_id: light.living_room
-    data:
-      brightness: 255
+file: automation_rules.yaml
 ```
 
-### Advanced Morning Routine
+#### Export Rules
+```http
+GET /api/v1/automation/rules/export?format=yaml
+```
 
-```yaml
-id: morning_routine
-name: "Weekday Morning Routine"
-description: "Complex morning automation"
-enabled: true
-mode: single
-variables:
-  coffee_time: "07:00"
-  wake_brightness: 30
-triggers:
-  - platform: time
-    at: "{{ variables.coffee_time }}"
-conditions:
-  - condition: time
-    weekday: [mon, tue, wed, thu, fri]
-  - condition: state
-    entity_id: person.john
-    state: "home"
-actions:
-  - service: light.turn_on
-    target:
-      area_id: bedroom
-    data:
-      brightness: "{{ variables.wake_brightness }}"
-      transition: 300
-  - delay: "00:05:00"
-  - service: switch.turn_on
-    entity_id: switch.coffee_maker
-  - service: media_player.play_media
-    entity_id: media_player.bedroom
-    data:
-      media_content_id: "spotify:playlist:morning"
-      media_content_type: "music"
+### Validation
+
+#### Validate Rule
+```http
+POST /api/v1/automation/rules/validate
+Content-Type: application/json
+
+{
+  "rule": {...}
+}
+```
+
+### Statistics and Templates
+
+#### Get Statistics
+```http
+GET /api/v1/automation/statistics
+```
+
+#### Get Templates
+```http
+GET /api/v1/automation/templates
+```
+
+#### Get Execution History
+```http
+GET /api/v1/automation/history?rule_id={id}&limit=50
 ```
 
 ## Configuration
 
 ### Engine Configuration
 
+Create an automation engine with custom configuration:
+
 ```go
-config := &EngineConfig{
-    Workers:              4,
+config := &automation.EngineConfig{
+    Workers:              10,
     QueueSize:           1000,
     ExecutionTimeout:    30 * time.Second,
     MaxConcurrentRules:  100,
     EnableCircuitBreaker: true,
-    CircuitBreakerConfig: &CircuitBreakerConfig{
+    CircuitBreakerConfig: &automation.CircuitBreakerConfig{
         FailureThreshold: 5,
         ResetTimeout:     60 * time.Second,
         MaxRequests:      10,
     },
-    SchedulerConfig: &SchedulerConfig{
+    SchedulerConfig: &automation.SchedulerConfig{
         Timezone: "America/New_York",
     },
 }
+
+engine, err := automation.NewAutomationEngine(config, haClient, wsHub, logger)
 ```
 
 ### Scheduler Configuration
 
 ```go
-schedulerConfig := &SchedulerConfig{
-    Timezone:         "UTC",
-    MissedJobMaxAge:  "1h",
-    MaxConcurrentJobs: 10,
+schedulerConfig := &automation.SchedulerConfig{
+    Timezone: "UTC",
+    // Additional scheduler settings
 }
 ```
 
-## Monitoring and Debugging
+## Automation Rules
 
-### Execution Context
+### Rule Format
 
-Every rule execution creates an ExecutionContext that tracks:
+Automation rules can be defined in YAML or JSON format:
 
-- Variable state
-- Execution stack
-- Performance metrics
-- Detailed trace logs
-- Error information
+```yaml
+# YAML Format
+id: "sample_automation"
+name: "Sample Automation"
+description: "A sample automation rule"
+enabled: true
+execution_mode: "single"
 
-### Statistics
+triggers:
+  - type: "state"
+    entity_id: "binary_sensor.motion"
+    to: "on"
 
-The engine provides comprehensive statistics:
+conditions:
+  - type: "state"
+    entity_id: "sun.sun"
+    state: "below_horizon"
+
+actions:
+  - type: "service"
+    service: "light.turn_on"
+    data:
+      entity_id: "light.living_room"
+      brightness: 255
+
+variables:
+  last_triggered: "{{ now() }}"
+```
 
 ```json
+// JSON Format
 {
-  "total_rules": 25,
-  "active_rules": 20,
-  "total_executions": 1500,
-  "successful_executions": 1485,
-  "failed_executions": 15,
-  "average_execution_time": "150ms",
-  "queue_length": 3,
-  "active_workers": 2
+  "id": "sample_automation",
+  "name": "Sample Automation",
+  "description": "A sample automation rule",
+  "enabled": true,
+  "execution_mode": "single",
+  "triggers": [
+    {
+      "type": "state",
+      "entity_id": "binary_sensor.motion",
+      "to": "on"
+    }
+  ],
+  "conditions": [
+    {
+      "type": "state",
+      "entity_id": "sun.sun",
+      "state": "below_horizon"
+    }
+  ],
+  "actions": [
+    {
+      "type": "service",
+      "service": "light.turn_on",
+      "data": {
+        "entity_id": "light.living_room",
+        "brightness": 255
+      }
+    }
+  ],
+  "variables": {
+    "last_triggered": "{{ now() }}"
+  }
 }
 ```
 
-### Logging
+### Rule Validation
 
-The system provides structured logging with multiple levels:
+Rules are automatically validated when created or updated. Validation checks:
 
-- DEBUG: Detailed execution traces
-- INFO: Rule lifecycle events
-- WARN: Non-critical issues
-- ERROR: Execution failures
+- Required fields (id, name, triggers, actions)
+- Trigger type and configuration
+- Condition syntax and logic
+- Action type and parameters
+- Variable references
+- Template syntax
+
+### Variables and Templates
+
+Rules support variables and template expressions:
+
+```yaml
+variables:
+  user_name: "John"
+  temperature_threshold: 25
+
+actions:
+  - type: "notification"
+    message: "Hello {{ variables.user_name }}, temperature is {{ states('sensor.temperature') }}°C"
+    
+  - type: "service"
+    service: "climate.set_temperature"
+    data:
+      entity_id: "climate.living_room"
+      temperature: "{{ variables.temperature_threshold }}"
+```
+
+## Examples
+
+See `examples/automation_rules.yaml` for comprehensive examples including:
+
+1. **Basic Light Control** - Motion-activated lighting
+2. **Security System** - Door alerts with notifications
+3. **Morning Routine** - Scheduled morning automation
+4. **Energy Management** - Power consumption optimization
+5. **Weather Response** - Weather-based environment control
+6. **Presence Detection** - Welcome home automation
+7. **Night Security** - Comprehensive night routine
+8. **Complex Automation** - Multi-trigger composite rules
 
 ## Best Practices
 
 ### Rule Design
 
-1. **Keep rules simple**: Break complex logic into multiple rules
-2. **Use descriptive names**: Make rules self-documenting
-3. **Test thoroughly**: Use the test endpoint before enabling
-4. **Handle edge cases**: Consider failure scenarios
-5. **Use appropriate modes**: Choose single/parallel/queued based on needs
+1. **Keep rules focused** - One rule should handle one specific scenario
+2. **Use descriptive names** - Make rules easy to understand and maintain
+3. **Add conditions wisely** - Prevent unwanted executions
+4. **Handle edge cases** - Consider what happens when sensors are unavailable
 
 ### Performance
 
-1. **Minimize conditions**: Evaluate expensive conditions last
-2. **Use efficient triggers**: Avoid overly broad state triggers
-3. **Batch actions**: Group related actions together
-4. **Monitor execution times**: Watch for slow rules
-5. **Set reasonable timeouts**: Prevent runaway executions
+1. **Limit concurrent rules** - Use appropriate execution modes
+2. **Optimize conditions** - Put fast conditions first in AND chains
+3. **Use circuit breakers** - Protect against problematic rules
+4. **Monitor statistics** - Track execution times and failure rates
 
 ### Security
 
-1. **Validate inputs**: Check webhook and HTTP data
-2. **Limit script execution**: Restrict shell command access
-3. **Use HTTPS**: Encrypt external communications
-4. **Monitor logs**: Watch for suspicious activity
-5. **Regular backups**: Export rules regularly
+1. **Validate inputs** - Always validate webhook and external data
+2. **Limit script actions** - Restrict shell command execution
+3. **Use secure templates** - Sanitize template inputs
+4. **Audit rule changes** - Track who modifies rules
+
+### Maintenance
+
+1. **Version control** - Keep rules in version control
+2. **Test rules** - Use the test endpoint before deployment
+3. **Monitor logs** - Watch for errors and warnings
+4. **Regular backups** - Export rules regularly
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Rule not triggering**: Check trigger conditions and entity states
-2. **Actions failing**: Verify service availability and parameters
-3. **Template errors**: Test templates in development environment
-4. **Timing issues**: Check timezone configuration
-5. **Memory usage**: Monitor execution context cleanup
+#### Rule Not Triggering
 
-### Debugging Tools
+1. Check if rule is enabled
+2. Verify trigger configuration
+3. Check condition evaluation
+4. Review entity states
+5. Check scheduler status (for time triggers)
 
-1. **Test endpoint**: Manually test rules with custom data
-2. **Execution trace**: Review detailed execution logs
-3. **Statistics endpoint**: Monitor engine performance
-4. **Validation endpoint**: Check rule syntax before deployment
-5. **Log analysis**: Search structured logs for patterns
+#### Actions Not Executing
 
-## Integration Examples
+1. Verify action syntax
+2. Check service availability
+3. Review execution logs
+4. Check circuit breaker status
+5. Verify permissions
 
-### Home Assistant Integration
+#### Performance Issues
+
+1. Review worker pool size
+2. Check queue length
+3. Analyze execution times
+4. Look for blocking actions
+5. Consider rule optimization
+
+### Debug Tools
+
+#### Get Rule Statistics
+```http
+GET /api/v1/automation/statistics
+```
+
+Returns execution counts, timing, and error information.
+
+#### Test Rule Execution
+```http
+POST /api/v1/automation/rules/{id}/test
+```
+
+Test rules without affecting the real system.
+
+#### View Execution History
+```http
+GET /api/v1/automation/history?rule_id={id}
+```
+
+See detailed execution logs and results.
+
+### Logging
+
+The automation engine provides detailed logging at different levels:
+
+- **DEBUG**: Detailed execution flow
+- **INFO**: Rule lifecycle events
+- **WARN**: Non-critical issues
+- **ERROR**: Failures and exceptions
+
+Configure logging in your application:
 
 ```go
-// Initialize automation engine with HA client
-engine, err := automation.NewAutomationEngine(
-    config,
-    haClient,
-    wsHub,
-    logger,
-)
-
-// Start the engine
-err = engine.Start(context.Background())
-
-// Add rules from Home Assistant
-rule, err := parser.ParseFromYAML(yamlData)
-err = engine.AddRule(rule)
+logger := logrus.New()
+logger.SetLevel(logrus.DebugLevel)
 ```
 
-### WebSocket Events
+### Monitoring
+
+Monitor key metrics:
+
+- **Rule execution count** - How often rules run
+- **Execution duration** - How long rules take
+- **Success/failure rates** - Rule reliability
+- **Queue length** - System load
+- **Worker utilization** - Performance optimization
+
+Use the statistics endpoint to gather metrics:
 
 ```go
-// Listen for Home Assistant events
-go func() {
-    for event := range haEventChan {
-        automationEvent := automation.Event{
-            Type:      "state_changed",
-            EntityID:  event.EntityID,
-            Data:      event.Data,
-            Timestamp: time.Now(),
-        }
-        engine.HandleEvent(automationEvent)
-    }
-}()
+stats := engine.GetStatistics()
+fmt.Printf("Total executions: %d\n", stats.TotalExecutions)
+fmt.Printf("Average duration: %v\n", stats.AverageExecutionTime)
 ```
 
-## Migration and Backup
+---
 
-### Export Rules
-
-```bash
-curl -X GET "http://localhost:3001/api/v1/automations/export?format=yaml" \
-  -H "Authorization: Bearer $TOKEN" \
-  -o backup.yaml
-```
-
-### Import Rules
-
-```bash
-curl -X POST "http://localhost:3001/api/v1/automations/import" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-yaml" \
-  --data-binary @backup.yaml
-```
-
-### Bulk Operations
-
-```bash
-# Export all rules
-for id in $(curl -s "http://localhost:3001/api/v1/automations" | jq -r '.data.rules[].id'); do
-  curl -s "http://localhost:3001/api/v1/automations/$id/export?format=yaml" > "rule_$id.yaml"
-done
-```
-
-## Future Enhancements
-
-1. **Visual Rule Editor**: Web-based drag-and-drop interface
-2. **Rule Dependencies**: Manage rule execution order
-3. **Advanced Templates**: Extended templating engine
-4. **Rule Versioning**: Track and rollback rule changes
-5. **Performance Analytics**: Detailed execution metrics
-6. **Machine Learning**: Predictive automation suggestions
-7. **Mobile App**: Remote rule management
-8. **Cloud Sync**: Multi-instance rule synchronization 
+For more information and examples, see:
+- `examples/automation_rules.yaml` - Sample automation rules
+- `internal/core/automation/` - Source code
+- API documentation - Interactive API reference 

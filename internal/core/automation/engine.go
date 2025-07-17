@@ -449,9 +449,17 @@ func (ae *AutomationEngine) GetStatistics() *EngineStatistics {
 	ae.stats.mu.RLock()
 	defer ae.stats.mu.RUnlock()
 
-	// Create a copy
-	stats := *ae.stats
-	stats.QueueLength = len(ae.executionQueue)
+	// Create a copy without copying the mutex
+	stats := EngineStatistics{
+		TotalRules:           ae.stats.TotalRules,
+		ActiveRules:          ae.stats.ActiveRules,
+		TotalExecutions:      ae.stats.TotalExecutions,
+		SuccessfulExecutions: ae.stats.SuccessfulExecutions,
+		FailedExecutions:     ae.stats.FailedExecutions,
+		AverageExecutionTime: ae.stats.AverageExecutionTime,
+		QueueLength:          len(ae.executionQueue),
+		ActiveWorkers:        0, // Will be calculated below
+	}
 
 	// Count active workers
 	activeWorkers := 0

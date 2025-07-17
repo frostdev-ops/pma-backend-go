@@ -1,0 +1,137 @@
+{
+  "locale": "es-ES",
+  "version": "1.0",
+  "namespace": "default",
+  "metadata": {
+    "author": "PMA System",
+    "updated_at": "2024-01-15T12:00:00Z"
+  },
+  "translations": {
+    "common.save": {
+      "key": "common.save",
+      "value": "Guardar",
+      "context": "Acción genérica de guardar"
+    },
+    "common.cancel": {
+      "key": "common.cancel",
+      "value": "Cancelar",
+      "context": "Acción genérica de cancelar"
+    },
+    "common.delete": {
+      "key": "common.delete",
+      "value": "Eliminar",
+      "context": "Acción genérica de eliminar"
+    },
+    "common.edit": {
+      "key": "common.edit",
+      "value": "Editar",
+      "context": "Acción genérica de editar"
+    },
+    "common.settings": {
+      "key": "common.settings",
+      "value": "Configuración",
+      "context": "Página o sección de configuración"
+    },
+    "dashboard.title": {
+      "key": "dashboard.title",
+      "value": "Panel de Control",
+      "context": "Título de la página principal del panel"
+    },
+    "dashboard.add_widget": {
+      "key": "dashboard.add_widget",
+      "value": "Añadir Widget",
+      "context": "Botón para añadir nuevo widget"
+    },
+    "dashboard.no_widgets": {
+      "key": "dashboard.no_widgets",
+      "value": "No hay widgets configurados. Añade tu primer widget para comenzar.",
+      "context": "Mensaje de estado vacío"
+    },
+    "devices.turn_on": {
+      "key": "devices.turn_on",
+      "value": "Encender",
+      "context": "Acción para encender un dispositivo"
+    },
+    "devices.turn_off": {
+      "key": "devices.turn_off",
+      "value": "Apagar",
+      "context": "Acción para apagar un dispositivo"
+    },
+    "devices.offline": {
+      "key": "devices.offline",
+      "value": "Dispositivo Desconectado",
+      "context": "Estado cuando el dispositivo no está accesible"
+    },
+    "preferences.title": {
+      "key": "preferences.title",
+      "value": "Preferencias",
+      "context": "Título de la página de preferencias"
+    },
+    "preferences.theme": {
+      "key": "preferences.theme",
+      "value": "Tema",
+      "context": "Sección de preferencias de tema"
+    },
+    "preferences.notifications": {
+      "key": "preferences.notifications",
+      "value": "Notificaciones",
+      "context": "Sección de preferencias de notificaciones"
+    },
+    "preferences.language": {
+      "key": "preferences.language",
+      "value": "Idioma",
+      "context": "Selección de idioma"
+    },
+    "theme.light": {
+      "key": "theme.light",
+      "value": "Tema Claro",
+      "context": "Opción de esquema de color claro"
+    },
+    "theme.dark": {
+      "key": "theme.dark",
+      "value": "Tema Oscuro",
+      "context": "Opción de esquema de color oscuro"
+    },
+    "theme.auto": {
+      "key": "theme.auto",
+      "value": "Automático (Sistema)",
+      "context": "Tema automático basado en preferencia del sistema"
+    },
+    "automation.title": {
+      "key": "automation.title",
+      "value": "Automatización",
+      "context": "Título de la sección de automatización"
+    },
+    "notifications.enabled": {
+      "key": "notifications.enabled",
+      "value": "Habilitar Notificaciones",
+      "context": "Interruptor para habilitar notificaciones"
+    },
+    "privacy.title": {
+      "key": "privacy.title",
+      "value": "Privacidad y Seguridad",
+      "context": "Sección de configuración de privacidad"
+    },
+    "accessibility.title": {
+      "key": "accessibility.title",
+      "value": "Accesibilidad",
+      "context": "Sección de configuración de accesibilidad"
+    },
+    "widget.welcome.title": {
+      "key": "widget.welcome.title",
+      "value": "Bienvenido a PMA",
+      "context": "Título predeterminado del widget de bienvenida"
+    },
+    "error.generic": {
+      "key": "error.generic",
+      "value": "Ocurrió un error. Por favor, inténtalo de nuevo.",
+      "context": "Mensaje de error genérico"
+    },
+    "success.saved": {
+      "key": "success.saved",
+      "value": "Configuración guardada correctamente",
+      "context": "Mensaje de éxito después de guardar"
+    }
+  },
+  "updated_at": "2024-01-15T12:00:00Z"
+} 

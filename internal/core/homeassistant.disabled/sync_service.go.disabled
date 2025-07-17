@@ -2,6 +2,7 @@ package homeassistant
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -549,20 +550,43 @@ func (s *SyncService) syncAreas(ctx context.Context) error {
 
 // syncSingleArea synchronizes a single Home Assistant area to a PMA room
 func (s *SyncService) syncSingleArea(ctx context.Context, area *homeassistant.Area) error {
-	// Check if room already exists
-	existingRoom, err := s.roomSvc.GetByHAAreaID(ctx, area.AreaID)
-	if err == nil {
+	// Check if room already exists by getting all rooms and filtering
+	rooms, err := s.roomSvc.GetAll(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to get rooms: %w", err)
+	}
+
+	var existingRoom *rooms.RoomWithEntities
+	for _, room := range rooms {
+		if room.HomeAssistantAreaID.Valid && room.HomeAssistantAreaID.String == area.AreaID {
+			existingRoom = room
+			break
+		}
+	}
+
+	if existingRoom != nil {
 		// Update existing room
-		existingRoom.Name = area.Name
-		if _, err := s.roomSvc.Update(ctx, fmt.Sprintf("%d", existingRoom.ID), existingRoom.Name, existingRoom.Description.String, existingRoom.Icon.String); err != nil {
+		updateRoom := &models.Room{
+			ID:                  existingRoom.ID,
+			Name:                area.Name,
+			Description:         existingRoom.Description,
+			Icon:                existingRoom.Icon,
+			HomeAssistantAreaID: sql.NullString{String: area.AreaID, Valid: true},
+		}
+		if err := s.roomSvc.Update(ctx, existingRoom.ID, updateRoom); err != nil {
 			return fmt.Errorf("failed to update room: %w", err)
 		}
 		return nil
 	}
 
 	// Create new room
-	_, err = s.roomSvc.Create(ctx, area.Name, "", "", area.AreaID)
-	if err != nil {
+	newRoom := &models.Room{
+		Name:                area.Name,
+		HomeAssistantAreaID: sql.NullString{String: area.AreaID, Valid: true},
+		Description:         sql.NullString{String: "", Valid: false},
+		Icon:                sql.NullString{String: "", Valid: false},
+	}
+	if err := s.roomSvc.Create(ctx, newRoom); err != nil {
 		return fmt.Errorf("failed to create room: %w", err)
 	}
 
@@ -586,20 +610,20 @@ func (s *SyncService) syncSingleEntity(ctx context.Context, state *homeassistant
 	existingEntity, err := s.entitySvc.GetByID(ctx, entity.EntityID, false)
 	if err == nil {
 		// Update existing entity
-		return s.updateExistingEntity(ctx, existingEntity.Entity, entity)
+		return s.updateExistingEntity(ctx, existingEntity, entity)
 	}
 
 	// Create new entity
 	return s.createNewEntity(ctx, entity)
 }
 
-// updateExistingEntity updates an existing entity with new data
-func (s *SyncService) updateExistingEntity(ctx context.Context, existing, updated *models.Entity) error {
-	// Apply conflict resolution strategy
-	if s.config.ConflictResolution == "homeassistant_wins" ||
+// updateExistingEntity updates an existing entity with new state
+func (s *SyncService) updateExistingEntity(ctx context.Context, existing *models.Entity, updated *models.Entity) error {
+	// Check conflict resolution strategy
+	if s.config.ConflictResolution == "ha_wins" ||
 		(s.config.ConflictResolution == "timestamp" && updated.LastUpdated.After(existing.LastUpdated)) {
 
-		_, err := s.entitySvc.Update(ctx, existing.EntityID, updated.FriendlyName.String, updated.State.String, updated.Attributes)
+		err := s.entitySvc.UpdateState(ctx, existing.EntityID, updated.State.String, map[string]interface{}{})
 		return err
 	}
 
@@ -608,8 +632,7 @@ func (s *SyncService) updateExistingEntity(ctx context.Context, existing, update
 
 // createNewEntity creates a new entity in the database
 func (s *SyncService) createNewEntity(ctx context.Context, entity *models.Entity) error {
-	_, err := s.entitySvc.Create(ctx, entity.EntityID, entity.FriendlyName.String, entity.Domain, entity.State.String, entity.Attributes)
-	return err
+	return s.entitySvc.CreateOrUpdate(ctx, entity)
 }
 
 // filterSupportedEntities filters entities to only supported domains
