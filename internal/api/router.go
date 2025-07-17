@@ -109,7 +109,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			{
 				ws.GET("/stats", h.GetWebSocketStats(wsHub))
 				ws.POST("/broadcast", h.BroadcastMessage(wsHub))
-				
+
 				// Home Assistant WebSocket event subscriptions
 				ha := ws.Group("/ha")
 				{
@@ -119,6 +119,21 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 					ha.GET("/stats", h.GetHAEventStats(haForwarder))
 					ha.POST("/test", h.TestHAEventForwarding(haForwarder))
 				}
+			}
+
+			// AI endpoints
+			ai := protected.Group("/ai")
+			{
+				ai.POST("/chat", h.ChatWithAI)
+				ai.POST("/complete", h.CompleteText)
+				ai.POST("/chat/context", h.ChatWithContext)
+				ai.GET("/providers", h.GetProviders)
+				ai.GET("/models", h.GetModels)
+				ai.GET("/statistics", h.GetAIStatistics)
+				ai.POST("/test/:provider", h.TestAIProvider)
+				ai.GET("/summary", h.GetSystemSummary)
+				ai.POST("/analyze/entity/:id", h.AnalyzeEntity)
+				ai.POST("/generate/automation", h.GenerateAutomation)
 			}
 
 			// TODO: Add more protected endpoints here

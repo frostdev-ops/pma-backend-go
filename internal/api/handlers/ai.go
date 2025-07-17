@@ -1,0 +1,386 @@
+package handlers
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/ai"
+	"github.com/gin-gonic/gin"
+)
+
+// AI-related handlers
+
+// ChatWithAI handles chat requests to the AI system
+func (h *Handlers) ChatWithAI(c *gin.Context) {
+	var req ai.ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Get chat service from context or handlers
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform chat
+	response, err := chatService.Chat(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("Chat request failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// CompleteText handles text completion requests
+func (h *Handlers) CompleteText(c *gin.Context) {
+	var req ai.CompletionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Get chat service from context or handlers
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform completion
+	response, err := chatService.Complete(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("Completion request failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Completion request failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetProviders returns information about available AI providers
+func (h *Handlers) GetProviders(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	providers := llmManager.GetProviders(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{
+		"providers": providers,
+		"count":     len(providers),
+	})
+}
+
+// GetModels returns available models from all providers
+func (h *Handlers) GetModels(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	models, err := llmManager.GetModels(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get models")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve models"})
+		return
+	}
+
+	// Group models by provider
+	modelsByProvider := make(map[string][]ai.ModelInfo)
+	for _, model := range models {
+		modelsByProvider[model.Provider] = append(modelsByProvider[model.Provider], model)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"models":             models,
+		"models_by_provider": modelsByProvider,
+		"total_count":        len(models),
+	})
+}
+
+// AnalyzeEntity analyzes specific entities and returns insights
+func (h *Handlers) AnalyzeEntity(c *gin.Context) {
+	entityID := c.Param("id")
+	if entityID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Entity ID is required"})
+		return
+	}
+
+	var req ai.EntityAnalysisRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Add the entity ID from the URL parameter
+	if len(req.EntityIDs) == 0 {
+		req.EntityIDs = []string{entityID}
+	}
+
+	// Set default analysis type if not specified
+	if req.AnalysisType == "" {
+		req.AnalysisType = "general"
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform analysis
+	response, err := chatService.AnalyzeEntity(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("Entity analysis failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Entity analysis failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GenerateAutomation generates automation rules from natural language
+func (h *Handlers) GenerateAutomation(c *gin.Context) {
+	var req ai.AutomationGenerationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Validate required fields
+	if req.Description == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Description is required"})
+		return
+	}
+
+	// Set default complexity if not specified
+	if req.Complexity == "" {
+		req.Complexity = "simple"
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Generate automation
+	response, err := chatService.GenerateAutomation(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("Automation generation failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Automation generation failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetSystemSummary generates an AI-powered system summary
+func (h *Handlers) GetSystemSummary(c *gin.Context) {
+	var req ai.SystemSummaryRequest
+
+	// Parse query parameters
+	req.IncludeEntities = c.DefaultQuery("include_entities", "true") == "true"
+	req.IncludeRooms = c.DefaultQuery("include_rooms", "true") == "true"
+	req.IncludeAutomation = c.DefaultQuery("include_automation", "true") == "true"
+	req.IncludeAlerts = c.DefaultQuery("include_alerts", "true") == "true"
+	req.DetailLevel = c.DefaultQuery("detail_level", "normal")
+
+	// Parse entity types if provided
+	if entityTypes := c.QueryArray("entity_types"); len(entityTypes) > 0 {
+		req.EntityTypes = entityTypes
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Generate summary
+	response, err := chatService.SummarizeSystem(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("System summary generation failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "System summary generation failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetAIStatistics returns AI system usage statistics
+func (h *Handlers) GetAIStatistics(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	stats := llmManager.GetStatistics()
+	c.JSON(http.StatusOK, stats)
+}
+
+// TestAIProvider tests connectivity to a specific AI provider
+func (h *Handlers) TestAIProvider(c *gin.Context) {
+	provider := c.Param("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Provider name is required"})
+		return
+	}
+
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Simple test chat request
+	testReq := ai.ChatRequest{
+		Messages: []ai.ChatMessage{
+			{
+				Role:    "user",
+				Content: "Hello, this is a test message. Please respond with 'Test successful'.",
+			},
+		},
+		Provider:    provider,
+		MaxTokens:   50,
+		Temperature: 0.1,
+	}
+
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Chat service not available"})
+		return
+	}
+
+	response, err := chatService.Chat(c.Request.Context(), testReq)
+	if err != nil {
+		h.logger.WithError(err).WithField("provider", provider).Error("Provider test failed")
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":    "Provider test failed",
+			"provider": provider,
+			"details":  err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":             "success",
+		"provider":           provider,
+		"response":           response.Message.Content,
+		"processing_time_ms": response.ProcessingTimeMs,
+		"tokens_used":        response.TokensUsed,
+		"model":              response.Model,
+	})
+}
+
+// ChatWithContext performs a chat with enhanced context from PMA system
+func (h *Handlers) ChatWithContext(c *gin.Context) {
+	var req ai.ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Extract user ID from token/context if available
+	userID := h.getUserIDFromContext(c)
+
+	// Build conversation context from PMA system
+	context := &ai.ConversationContext{
+		UserID:    userID,
+		SessionID: c.GetHeader("X-Session-ID"),
+		Timestamp: time.Now(),
+	}
+
+	// TODO: Enhance context with actual entity and room data
+	// This would typically involve calling the entity and room repositories
+	// For now, we'll use the provided context or create a minimal one
+	if req.Context == nil {
+		req.Context = context
+	} else {
+		// Merge with provided context
+		if req.Context.UserID == "" {
+			req.Context.UserID = userID
+		}
+		if req.Context.SessionID == "" {
+			req.Context.SessionID = context.SessionID
+		}
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform chat with enhanced context
+	response, err := chatService.Chat(c.Request.Context(), req)
+	if err != nil {
+		h.logger.WithError(err).Error("Context-aware chat failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// Helper methods
+
+// getChatService returns the chat service instance
+// This would typically be injected or retrieved from a service container
+func (h *Handlers) getChatService() *ai.ChatService {
+	// TODO: Implement proper service injection
+	// For now, return nil to indicate service not available
+	// In a real implementation, this would be injected during handler creation
+	return nil
+}
+
+// getLLMManager returns the LLM manager instance
+func (h *Handlers) getLLMManager() *ai.LLMManager {
+	// TODO: Implement proper service injection
+	// For now, return nil to indicate service not available
+	return nil
+}
+
+// getUserIDFromContext extracts user ID from the request context
+func (h *Handlers) getUserIDFromContext(c *gin.Context) string {
+	// This would typically extract from JWT token or session
+	if userID, exists := c.Get("user_id"); exists {
+		if uid, ok := userID.(string); ok {
+			return uid
+		}
+	}
+	return ""
+}
+
+// Helper function to parse int query parameter
+func parseIntQuery(c *gin.Context, key string, defaultValue int) int {
+	if value := c.Query(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// Helper function to parse float query parameter
+func parseFloatQuery(c *gin.Context, key string, defaultValue float64) float64 {
+	if value := c.Query(key); value != "" {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}

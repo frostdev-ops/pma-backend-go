@@ -11,6 +11,7 @@ type Config struct {
 	HomeAssistant HomeAssistantConfig `mapstructure:"home_assistant"`
 	Logging       LoggingConfig       `mapstructure:"logging"`
 	WebSocket     WebSocketConfig     `mapstructure:"websocket"`
+	AI            AIConfig            `mapstructure:"ai"`
 }
 
 type ServerConfig struct {
@@ -62,6 +63,38 @@ type WebSocketHAConfig struct {
 	MaxErrorsRetained    int      `mapstructure:"max_errors_retained"`
 }
 
+// AIConfig contains AI/LLM provider configuration
+type AIConfig struct {
+	Providers       []AIProviderConfig `mapstructure:"providers"`
+	FallbackEnabled bool               `mapstructure:"fallback_enabled"`
+	FallbackDelay   string             `mapstructure:"fallback_delay"`
+	DefaultProvider string             `mapstructure:"default_provider"`
+	MaxRetries      int                `mapstructure:"max_retries"`
+	Timeout         string             `mapstructure:"timeout"`
+}
+
+// AIProviderConfig contains configuration for a specific AI provider
+type AIProviderConfig struct {
+	Type           string                 `mapstructure:"type"`
+	Enabled        bool                   `mapstructure:"enabled"`
+	URL            string                 `mapstructure:"url,omitempty"`
+	APIKey         string                 `mapstructure:"api_key,omitempty"`
+	DefaultModel   string                 `mapstructure:"default_model"`
+	MaxTokens      int                    `mapstructure:"max_tokens,omitempty"`
+	AutoStart      bool                   `mapstructure:"auto_start,omitempty"`
+	ResourceLimits AIResourceLimits       `mapstructure:"resource_limits,omitempty"`
+	Models         []string               `mapstructure:"models,omitempty"`
+	Priority       int                    `mapstructure:"priority"`
+	Extra          map[string]interface{} `mapstructure:"extra,omitempty"`
+}
+
+// AIResourceLimits contains resource limits for local providers like Ollama
+type AIResourceLimits struct {
+	MaxMemory string `mapstructure:"max_memory"`
+	MaxCPU    int    `mapstructure:"max_cpu"`
+	MaxGPU    int    `mapstructure:"max_gpu"`
+}
+
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -80,6 +113,11 @@ func Load() (*Config, error) {
 	viper.BindEnv("server.port", "PORT")
 	viper.BindEnv("database.path", "DATABASE_PATH")
 	viper.BindEnv("logging.level", "LOG_LEVEL")
+
+	// AI environment bindings
+	viper.BindEnv("ai.providers.0.api_key", "OPENAI_API_KEY")
+	viper.BindEnv("ai.providers.1.api_key", "CLAUDE_API_KEY")
+	viper.BindEnv("ai.providers.2.api_key", "GEMINI_API_KEY")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -119,7 +157,7 @@ func setDefaults() {
 	viper.SetDefault("websocket.ping_interval", 30)
 	viper.SetDefault("websocket.pong_timeout", 60)
 	viper.SetDefault("websocket.write_timeout", 10)
-	
+
 	// WebSocket Home Assistant defaults
 	viper.SetDefault("websocket.homeassistant.enabled", true)
 	viper.SetDefault("websocket.homeassistant.max_events_per_second", 50)
@@ -131,4 +169,48 @@ func setDefaults() {
 	})
 	viper.SetDefault("websocket.homeassistant.forward_all_entities", false)
 	viper.SetDefault("websocket.homeassistant.max_errors_retained", 100)
+
+	// AI defaults
+	viper.SetDefault("ai.fallback_enabled", true)
+	viper.SetDefault("ai.fallback_delay", "2s")
+	viper.SetDefault("ai.default_provider", "ollama")
+	viper.SetDefault("ai.max_retries", 3)
+	viper.SetDefault("ai.timeout", "30s")
+
+	// Default AI providers
+	viper.SetDefault("ai.providers", []map[string]interface{}{
+		{
+			"type":          "ollama",
+			"enabled":       true,
+			"url":           "http://localhost:11434",
+			"default_model": "llama2",
+			"auto_start":    true,
+			"priority":      1,
+			"resource_limits": map[string]interface{}{
+				"max_memory": "4GB",
+				"max_cpu":    80,
+			},
+		},
+		{
+			"type":          "openai",
+			"enabled":       false,
+			"default_model": "gpt-3.5-turbo",
+			"max_tokens":    4096,
+			"priority":      2,
+		},
+		{
+			"type":          "claude",
+			"enabled":       false,
+			"default_model": "claude-3-haiku-20240307",
+			"max_tokens":    4096,
+			"priority":      3,
+		},
+		{
+			"type":          "gemini",
+			"enabled":       false,
+			"default_model": "gemini-pro",
+			"max_tokens":    4096,
+			"priority":      4,
+		},
+	})
 }
