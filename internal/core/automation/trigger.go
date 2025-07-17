@@ -93,6 +93,9 @@ type StateTrigger struct {
 	To        interface{} `json:"to,omitempty"`
 	Attribute string      `json:"attribute,omitempty"`
 	For       *Duration   `json:"for,omitempty"`
+
+	// Internal state tracking for duration checks
+	stateChangeTime *time.Time `json:"-"`
 }
 
 func NewStateTrigger(id, entityID string) *StateTrigger {
@@ -133,7 +136,42 @@ func (st *StateTrigger) Evaluate(ctx context.Context, event Event) (bool, map[st
 		}
 	}
 
-	// TODO: Implement duration check for "for" field
+	// Implement duration check for "for" field
+	if st.For != nil && st.For.Duration > 0 {
+		now := time.Now()
+
+		// Get new state from event data
+		newState, _ := event.Data["new_state"]
+
+		// Check if state matches the target condition
+		targetStateMatches := true
+		if st.To != nil {
+			targetStateMatches = compareValues(newState, st.To)
+		}
+
+		if targetStateMatches {
+			// State matches target - track when this started
+			if st.stateChangeTime == nil {
+				// First time we see the target state - record the time
+				st.stateChangeTime = &now
+				return false, nil, nil // Don't trigger yet, wait for duration
+			}
+
+			// Check if enough time has passed
+			if now.Sub(*st.stateChangeTime) >= st.For.Duration {
+				// Duration requirement met - trigger fires
+				st.stateChangeTime = nil // Reset for next time
+				return true, data, nil
+			}
+
+			// Still waiting for duration to complete
+			return false, nil, nil
+		} else {
+			// State no longer matches target - reset timing
+			st.stateChangeTime = nil
+			return false, nil, nil
+		}
+	}
 
 	return true, data, nil
 }

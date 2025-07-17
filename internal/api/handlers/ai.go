@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -303,9 +305,81 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 		Timestamp: time.Now(),
 	}
 
-	// TODO: Enhance context with actual entity and room data
-	// This would typically involve calling the entity and room repositories
-	// For now, we'll use the provided context or create a minimal one
+	// Enhance context with actual entity and room data
+	entities, err := h.repos.Entity.GetAll(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to fetch entities for AI context")
+	} else {
+		// Convert entities to EntityContext slice
+		entityContexts := make([]ai.EntityContext, 0, len(entities))
+		for _, entity := range entities {
+			entityContext := ai.EntityContext{
+				ID:          entity.EntityID,
+				Name:        entity.FriendlyName.String,
+				Type:        entity.Domain,
+				State:       entity.State.String,
+				LastChanged: entity.LastUpdated,
+			}
+
+			// Parse attributes if they exist
+			if len(entity.Attributes) > 0 {
+				var attributes map[string]interface{}
+				if err := json.Unmarshal(entity.Attributes, &attributes); err == nil {
+					entityContext.Attributes = attributes
+				}
+			}
+
+			entityContexts = append(entityContexts, entityContext)
+		}
+		context.Entities = entityContexts
+	}
+
+	rooms, err := h.repos.Room.GetAll(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to fetch rooms for AI context")
+	} else {
+		// Convert rooms to RoomContext slice
+		roomContexts := make([]ai.RoomContext, 0, len(rooms))
+		for _, room := range rooms {
+			roomContext := ai.RoomContext{
+				ID:   fmt.Sprintf("room_%d", room.ID),
+				Name: room.Name,
+			}
+
+			// Get entities in this room for entity count
+			roomEntities, err := h.repos.Entity.GetByRoom(c.Request.Context(), room.ID)
+			if err == nil {
+				roomContext.EntityCount = len(roomEntities)
+
+				// Convert room entities to EntityContext
+				roomEntityContexts := make([]ai.EntityContext, 0, len(roomEntities))
+				for _, entity := range roomEntities {
+					entityContext := ai.EntityContext{
+						ID:          entity.EntityID,
+						Name:        entity.FriendlyName.String,
+						Type:        entity.Domain,
+						State:       entity.State.String,
+						Room:        room.Name,
+						LastChanged: entity.LastUpdated,
+					}
+
+					if len(entity.Attributes) > 0 {
+						var attributes map[string]interface{}
+						if err := json.Unmarshal(entity.Attributes, &attributes); err == nil {
+							entityContext.Attributes = attributes
+						}
+					}
+
+					roomEntityContexts = append(roomEntityContexts, entityContext)
+				}
+				roomContext.Entities = roomEntityContexts
+			}
+
+			roomContexts = append(roomContexts, roomContext)
+		}
+		context.Rooms = roomContexts
+	}
+
 	if req.Context == nil {
 		req.Context = context
 	} else {
@@ -315,6 +389,13 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 		}
 		if req.Context.SessionID == "" {
 			req.Context.SessionID = context.SessionID
+		}
+		// Merge entity and room data
+		if req.Context.Entities == nil {
+			req.Context.Entities = context.Entities
+		}
+		if req.Context.Rooms == nil {
+			req.Context.Rooms = context.Rooms
 		}
 	}
 
@@ -339,19 +420,13 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 // Helper methods
 
 // getChatService returns the chat service instance
-// This would typically be injected or retrieved from a service container
 func (h *Handlers) getChatService() *ai.ChatService {
-	// TODO: Implement proper service injection
-	// For now, return nil to indicate service not available
-	// In a real implementation, this would be injected during handler creation
-	return nil
+	return h.chatService
 }
 
 // getLLMManager returns the LLM manager instance
 func (h *Handlers) getLLMManager() *ai.LLMManager {
-	// TODO: Implement proper service injection
-	// For now, return nil to indicate service not available
-	return nil
+	return h.llmManager
 }
 
 // getUserIDFromContext extracts user ID from the request context

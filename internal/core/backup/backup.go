@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"crypto/sha256"
+
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/google/uuid"
@@ -684,7 +686,103 @@ func (lbm *LocalBackupManager) ValidateBackup(backupID string) error {
 		return fmt.Errorf("backup file not found: %s", backup.FilePath)
 	}
 
-	// TODO: Add checksum validation, archive integrity checks, etc.
+	// Add checksum validation, archive integrity checks, etc.
+	if err := lbm.validateBackupIntegrity(backup); err != nil {
+		return fmt.Errorf("backup integrity validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateBackupIntegrity performs detailed integrity checks on a backup file
+func (lbm *LocalBackupManager) validateBackupIntegrity(backup *Backup) error {
+	// 1. Checksum validation
+	if backup.Checksum != "" {
+		if err := lbm.validateChecksum(backup.FilePath, backup.Checksum); err != nil {
+			return fmt.Errorf("checksum validation failed: %w", err)
+		}
+	}
+
+	// 2. Archive integrity check
+	if err := lbm.validateArchiveIntegrity(backup.FilePath, backup.Options.Compress); err != nil {
+		return fmt.Errorf("archive integrity validation failed: %w", err)
+	}
+
+	// 3. Size validation
+	fileInfo, err := os.Stat(backup.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	if backup.Size > 0 && fileInfo.Size() != backup.Size {
+		return fmt.Errorf("file size mismatch: expected %d, got %d", backup.Size, fileInfo.Size())
+	}
+
+	return nil
+}
+
+// validateChecksum validates the checksum of a backup file
+func (lbm *LocalBackupManager) validateChecksum(filePath, expectedChecksum string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return err
+	}
+
+	actualChecksum := fmt.Sprintf("%x", hash.Sum(nil))
+	if actualChecksum != expectedChecksum {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
+	}
+
+	return nil
+}
+
+// validateArchiveIntegrity checks if the archive file is valid and not corrupted
+func (lbm *LocalBackupManager) validateArchiveIntegrity(filePath string, compressed bool) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var reader io.Reader = file
+
+	// Handle compressed files
+	if compressed {
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzReader.Close()
+		reader = gzReader
+	}
+
+	// Try to read the tar archive
+	tarReader := tar.NewReader(reader)
+
+	// Iterate through files to check archive structure
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			return fmt.Errorf("archive is corrupted: %w", err)
+		}
+
+		// Validate header information
+		if header.Name == "" {
+			return fmt.Errorf("invalid header: empty filename")
+		}
+
+		// Skip file content validation for performance unless needed
+		// You could add content validation here if required
+	}
 
 	return nil
 }

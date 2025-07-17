@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -321,12 +322,94 @@ func (h *DeviceHandler) RegisterDevice(c *gin.Context) {
 		return
 	}
 
-	// This is a simplified implementation
-	// In a real scenario, you'd need to create device instances based on adapter type
-	c.JSON(http.StatusNotImplemented, ErrorResponse{
-		Error:   "Not implemented",
-		Message: "Device registration not yet implemented",
-	})
+	// Validate required fields
+	deviceID, ok := deviceConfig["id"].(string)
+	if !ok || deviceID == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "Invalid device configuration",
+			Message: "Device ID is required",
+		})
+		return
+	}
+
+	deviceType, ok := deviceConfig["type"].(string)
+	if !ok || deviceType == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "Invalid device configuration",
+			Message: "Device type is required",
+		})
+		return
+	}
+
+	deviceName, ok := deviceConfig["name"].(string)
+	if !ok || deviceName == "" {
+		deviceName = deviceID // Default to ID if name not provided
+	}
+
+	adapterType, ok := deviceConfig["adapter_type"].(string)
+	if !ok || adapterType == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "Invalid device configuration",
+			Message: "Adapter type is required",
+		})
+		return
+	}
+
+	// Extract capabilities (optional)
+	var capabilities []string
+	if capsList, ok := deviceConfig["capabilities"]; ok {
+		switch caps := capsList.(type) {
+		case []interface{}:
+			for _, cap := range caps {
+				if capStr, ok := cap.(string); ok {
+					capabilities = append(capabilities, capStr)
+				}
+			}
+		case []string:
+			capabilities = caps
+		}
+	}
+
+	// Extract metadata (optional)
+	metadata := make(map[string]interface{})
+	if meta, ok := deviceConfig["metadata"].(map[string]interface{}); ok {
+		metadata = meta
+	}
+
+	// Extract initial state (optional)
+	state := make(map[string]interface{})
+	if stateData, ok := deviceConfig["state"].(map[string]interface{}); ok {
+		state = stateData
+	}
+
+	// Create a generic device instance
+	device := &GenericDevice{
+		id:           deviceID,
+		name:         deviceName,
+		deviceType:   deviceType,
+		adapterType:  adapterType,
+		capabilities: capabilities,
+		state:        state,
+		metadata:     metadata,
+		status:       devices.DeviceStatusOnline,
+		lastSeen:     time.Now(),
+	}
+
+	// Register the device with the device manager
+	if err := h.deviceManager.RegisterDevice(device); err != nil {
+		h.logger.WithError(err).WithField("device_id", deviceID).Error("Failed to register device")
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "Registration failed",
+			Message: fmt.Sprintf("Failed to register device: %v", err),
+		})
+		return
+	}
+
+	h.logger.WithField("device_id", deviceID).WithField("device_type", deviceType).Info("Device registered successfully")
+
+	// Return the registered device
+	response := h.deviceToResponse(device)
+	c.JSON(http.StatusCreated, response)
 }
 
 // UnregisterDevice godoc
@@ -489,4 +572,93 @@ func parseCommaSeparated(s string) []string {
 	}
 
 	return parts
+}
+
+// GenericDevice implements the Device interface for generic device registration
+type GenericDevice struct {
+	id           string
+	name         string
+	deviceType   string
+	adapterType  string
+	capabilities []string
+	state        map[string]interface{}
+	metadata     map[string]interface{}
+	status       devices.DeviceStatus
+	lastSeen     time.Time
+}
+
+func (d *GenericDevice) GetID() string {
+	return d.id
+}
+
+func (d *GenericDevice) GetType() string {
+	return d.deviceType
+}
+
+func (d *GenericDevice) GetName() string {
+	return d.name
+}
+
+func (d *GenericDevice) GetAdapterType() string {
+	return d.adapterType
+}
+
+func (d *GenericDevice) GetStatus() devices.DeviceStatus {
+	return d.status
+}
+
+func (d *GenericDevice) GetCapabilities() []string {
+	return d.capabilities
+}
+
+func (d *GenericDevice) GetState() map[string]interface{} {
+	return d.state
+}
+
+func (d *GenericDevice) SetState(key string, value interface{}) error {
+	if d.state == nil {
+		d.state = make(map[string]interface{})
+	}
+	d.state[key] = value
+	d.lastSeen = time.Now()
+	return nil
+}
+
+func (d *GenericDevice) Execute(command string, params map[string]interface{}) (interface{}, error) {
+	// Basic command execution - in a real implementation this would be adapter-specific
+	switch command {
+	case "get_state":
+		return d.state, nil
+	case "set_state":
+		if newState, ok := params["state"].(map[string]interface{}); ok {
+			for k, v := range newState {
+				d.SetState(k, v)
+			}
+			return d.state, nil
+		}
+		return nil, fmt.Errorf("invalid state parameter")
+	default:
+		return nil, fmt.Errorf("unsupported command: %s", command)
+	}
+}
+
+func (d *GenericDevice) GetLastSeen() time.Time {
+	return d.lastSeen
+}
+
+func (d *GenericDevice) GetMetadata() map[string]interface{} {
+	return d.metadata
+}
+
+func (d *GenericDevice) Validate() error {
+	if d.id == "" {
+		return fmt.Errorf("device ID cannot be empty")
+	}
+	if d.deviceType == "" {
+		return fmt.Errorf("device type cannot be empty")
+	}
+	if d.adapterType == "" {
+		return fmt.Errorf("adapter type cannot be empty")
+	}
+	return nil
 }

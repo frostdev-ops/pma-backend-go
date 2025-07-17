@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"context"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/ai"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
@@ -10,11 +13,13 @@ import (
 
 // Handlers holds all HTTP handlers and their dependencies
 type Handlers struct {
-	cfg        *config.Config
-	repos      *database.Repositories
-	logger     *logrus.Logger
-	wsHub      *websocket.Hub
-	automation *SimpleAutomationHandler
+	cfg         *config.Config
+	repos       *database.Repositories
+	logger      *logrus.Logger
+	wsHub       *websocket.Hub
+	automation  *SimpleAutomationHandler
+	llmManager  *ai.LLMManager
+	chatService *ai.ChatService
 }
 
 // NewHandlers creates a new handlers instance
@@ -24,12 +29,35 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		logger: logger,
 	}
 
+	// Initialize AI services
+	var llmManager *ai.LLMManager
+	var chatService *ai.ChatService
+
+	// Try to initialize LLM manager
+	if manager, err := ai.NewLLMManager(cfg, logger); err != nil {
+		logger.WithError(err).Warn("Failed to initialize LLM manager")
+	} else {
+		llmManager = manager
+		// Initialize the manager
+		// Note: We'll do this asynchronously to avoid blocking startup
+		go func() {
+			if err := llmManager.Initialize(context.Background()); err != nil {
+				logger.WithError(err).Warn("Failed to initialize LLM providers")
+			}
+		}()
+
+		// Create chat service
+		chatService = ai.NewChatService(llmManager, logger)
+	}
+
 	return &Handlers{
-		cfg:        cfg,
-		repos:      repos,
-		logger:     logger,
-		wsHub:      wsHub,
-		automation: automationHandler,
+		cfg:         cfg,
+		repos:       repos,
+		logger:      logger,
+		wsHub:       wsHub,
+		automation:  automationHandler,
+		llmManager:  llmManager,
+		chatService: chatService,
 	}
 }
 

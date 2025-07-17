@@ -87,8 +87,12 @@ func (fh *FileHandler) UploadFile(c *gin.Context) {
 		metadata.Tags = strings.Split(tagsStr, ",")
 	}
 
-	// TODO: Get user ID from authentication context
-	// metadata.UploadedBy = getUserID(c)
+	// Get user ID from authentication context
+	if userID, exists := c.Get("user_id"); exists {
+		if uid, ok := userID.(float64); ok {
+			metadata.UploadedBy = int(uid)
+		}
+	}
 
 	// Upload file
 	uploadedFile, err := fh.fileManager.Upload(header.Filename, file, metadata)
@@ -119,11 +123,11 @@ func (fh *FileHandler) DownloadFile(c *gin.Context) {
 		return
 	}
 
-	// TODO: Check permissions
-	// if !hasPermission(c, fileID, "read") {
-	//     c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
-	//     return
-	// }
+	// Check permissions - ensure user can read this file
+	if !fh.hasFilePermission(c, fileInfo, "read") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
 
 	// Open file for reading
 	reader, err := fh.fileManager.Download(fileID)
@@ -151,11 +155,18 @@ func (fh *FileHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 
-	// TODO: Check permissions
-	// if !hasPermission(c, fileID, "delete") {
-	//     c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
-	//     return
-	// }
+	// Get file info for permission checking
+	fileInfo, err := fh.fileManager.GetFileInfo(fileID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	// Check permissions - ensure user can delete this file
+	if !fh.hasFilePermission(c, fileInfo, "delete") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Permission denied"})
+		return
+	}
 
 	if err := fh.fileManager.Delete(fileID); err != nil {
 		fh.logger.Errorf("Failed to delete file %s: %v", fileID, err)
@@ -733,4 +744,34 @@ func (fh *FileHandler) GetLogStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}
+
+// hasFilePermission checks if the current user has permission to perform an action on a file
+func (fh *FileHandler) hasFilePermission(c *gin.Context, file *filemanager.File, action string) bool {
+	// Get current user ID from context
+	userID, exists := c.Get("user_id")
+	if !exists {
+		return false
+	}
+
+	uid, ok := userID.(float64)
+	if !ok {
+		return false
+	}
+
+	currentUserID := int(uid)
+
+	// Simple permission logic:
+	// - Users can always read/delete their own files
+	// - Admin users (user ID 1) can access all files
+	// - For other actions, default to allow for now
+
+	switch action {
+	case "read", "delete":
+		// Allow if file was uploaded by current user or if user is admin
+		return file.Metadata.UploadedBy == currentUserID || currentUserID == 1
+	default:
+		// For other actions, allow by default
+		return true
+	}
 }

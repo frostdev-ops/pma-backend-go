@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -192,11 +193,109 @@ func (lms *LocalMediaStreamer) GetMediaInfo(fileID string) (*MediaInfo, error) {
 func (lms *LocalMediaStreamer) TranscodeVideo(fileID string, profile TranscodeProfile) error {
 	lms.logger.Infof("Starting video transcoding for file %s with profile %s", fileID, profile.Name)
 
-	// This is a placeholder for video transcoding
-	// In a real implementation, you would use FFmpeg or similar
-	// For now, we'll just log the operation
+	// Get file info from file manager
+	fileInfo, err := lms.fileManager.GetFileInfo(fileID)
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
 
-	return fmt.Errorf("video transcoding not implemented yet")
+	// Check if FFmpeg is available
+	if err := lms.checkFFmpeg(); err != nil {
+		return fmt.Errorf("FFmpeg not available: %w", err)
+	}
+
+	// Generate output filename based on profile
+	inputPath := fileInfo.Path
+	outputDir := filepath.Dir(inputPath)
+	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+	outputExt := profile.Format
+	if outputExt == "" {
+		outputExt = "mp4" // Default to MP4
+	}
+	outputPath := filepath.Join(outputDir, fmt.Sprintf("%s_%s.%s", baseName, profile.Name, outputExt))
+
+	// Build FFmpeg command arguments
+	args := lms.buildFFmpegArgs(inputPath, outputPath, profile)
+
+	// Execute FFmpeg
+	lms.logger.Debugf("Running FFmpeg with args: %v", args)
+	cmd := exec.Command("ffmpeg", args...)
+
+	// Capture output for logging
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		lms.logger.WithError(err).Errorf("FFmpeg transcoding failed: %s", string(output))
+		return fmt.Errorf("transcoding failed: %w", err)
+	}
+
+	lms.logger.Infof("Video transcoding completed successfully for file %s", fileID)
+	return nil
+}
+
+// checkFFmpeg verifies that FFmpeg is available on the system
+func (lms *LocalMediaStreamer) checkFFmpeg() error {
+	cmd := exec.Command("ffmpeg", "-version")
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("FFmpeg is not installed or not in PATH")
+	}
+	return nil
+}
+
+// buildFFmpegArgs constructs FFmpeg command arguments based on the transcode profile
+func (lms *LocalMediaStreamer) buildFFmpegArgs(inputPath, outputPath string, profile TranscodeProfile) []string {
+	args := []string{
+		"-i", inputPath, // Input file
+		"-y",                   // Overwrite output file if it exists
+		"-loglevel", "warning", // Reduce verbose output
+	}
+
+	// Video codec settings
+	if profile.Quality != "" {
+		switch profile.Quality {
+		case "low":
+			args = append(args, "-c:v", "libx264", "-preset", "fast", "-crf", "28")
+		case "medium":
+			args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23")
+		case "high":
+			args = append(args, "-c:v", "libx264", "-preset", "slow", "-crf", "18")
+		default:
+			args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23")
+		}
+	} else {
+		args = append(args, "-c:v", "libx264", "-preset", "medium")
+	}
+
+	// Resolution settings
+	if profile.Resolution != "" {
+		args = append(args, "-s", profile.Resolution)
+	}
+
+	// Bitrate settings
+	if profile.Bitrate > 0 {
+		args = append(args, "-b:v", fmt.Sprintf("%dk", profile.Bitrate))
+	}
+
+	// Audio codec settings
+	args = append(args, "-c:a", "aac", "-b:a", "128k")
+
+	// Format-specific settings
+	switch profile.Format {
+	case "mp4":
+		args = append(args, "-f", "mp4", "-movflags", "+faststart")
+	case "webm":
+		args = append(args, "-f", "webm", "-c:v", "libvp9", "-c:a", "libvorbis")
+	case "avi":
+		args = append(args, "-f", "avi")
+	default:
+		// Default to MP4
+		args = append(args, "-f", "mp4", "-movflags", "+faststart")
+	}
+
+	// Output file
+	args = append(args, outputPath)
+
+	return args
 }
 
 // GetStreamingURL implements MediaStreamer.GetStreamingURL

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -289,9 +290,17 @@ func (m *Manager) GetWidgetData(userID string, widgetID string) (*WidgetData, er
 
 	// Create render context
 	dashboard, _ := m.GetUserDashboard(userID)
+
+	// Convert userID to int for permission checking
+	userIDInt := 0
+	if id, err := strconv.Atoi(userID); err == nil {
+		userIDInt = id
+	}
+
+	permissions := m.getUserPermissions(userIDInt)
 	context := RenderContext{
 		UserID:      userID,
-		Permissions: []string{}, // TODO: Get user permissions
+		Permissions: permissions,
 		Preferences: make(map[string]interface{}),
 		Dashboard:   dashboard,
 		Request:     make(map[string]interface{}),
@@ -475,4 +484,38 @@ func (m *Manager) ImportDashboard(userID string, exportData *DashboardExport) er
 	}
 
 	return m.SaveDashboard(userID, &dashboard)
+}
+
+// getUserPermissions returns the permissions for a given user
+func (m *Manager) getUserPermissions(userID int) []string {
+	// Simple permission system based on user ID
+	// In a production system, this would query a permissions table or role system
+
+	permissions := []string{
+		"dashboard:read",
+		"dashboard:write",
+		"entities:read",
+		"rooms:read",
+	}
+
+	// User ID 1 is considered admin with full permissions
+	if userID == 1 {
+		permissions = append(permissions, []string{
+			"admin:all",
+			"users:read",
+			"users:write",
+			"users:delete",
+			"entities:write",
+			"entities:delete",
+			"rooms:write",
+			"rooms:delete",
+			"config:read",
+			"config:write",
+			"automation:read",
+			"automation:write",
+			"automation:delete",
+		}...)
+	}
+
+	return permissions
 }
