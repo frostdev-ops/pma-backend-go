@@ -437,6 +437,8 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 	// Legacy API routes without v1 prefix for frontend compatibility
 	legacyAPI := router.Group("/api")
 	{
+		logger.Info("DEBUG: Setting up legacy API routes")
+
 		// Legacy auth routes (public)
 		legacyAuth := legacyAPI.Group("/auth")
 		{
@@ -464,6 +466,8 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		legacyProtected := legacyAPI.Group("/")
 		legacyProtected.Use(middleware.OptionalAuthMiddleware(cfg, repos.Config, logger))
 		{
+			logger.Info("DEBUG: Registering legacy protected routes with OptionalAuthMiddleware")
+
 			// System endpoints that were causing 401 errors
 			legacyProtected.GET("/system/health/detailed", h.GetSystemHealth)
 			legacyProtected.GET("/system/status", h.GetSystemStatus)
@@ -481,6 +485,8 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			// Settings endpoints that frontend expects
 			legacyProtected.GET("/settings/system", h.GetAllConfig)
 			legacyProtected.GET("/settings/theme", h.GetConfig)
+
+			logger.Info("DEBUG: Registered /api/settings/system and /api/settings/theme with OptionalAuthMiddleware")
 
 			// Other commonly used endpoints (with and without trailing slashes to prevent redirects)
 			legacyProtected.GET("/entities", h.GetEntities)
