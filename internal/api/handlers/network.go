@@ -298,10 +298,10 @@ func (h *Handlers) GetNetworkConfiguration(c *gin.Context) {
 	// For now, return static configuration info
 	// In the future, this could fetch actual router configuration
 	config := map[string]interface{}{
-		"router_api_base_url": "http://localhost:8080", // This would come from actual config
-		"monitoring_enabled":  true,
-		"auto_discovery":      true,
-		"traffic_logging":     true,
+		"router_api_base_url": h.cfg.Router.BaseURL,
+		"monitoring_enabled":  h.cfg.Router.MonitoringEnabled,
+		"auto_discovery":      h.cfg.Router.AutoDiscovery,
+		"traffic_logging":     h.cfg.Router.TrafficLogging,
 		"features": map[string]bool{
 			"port_forwarding":    true,
 			"device_discovery":   true,

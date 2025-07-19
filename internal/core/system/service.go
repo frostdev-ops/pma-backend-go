@@ -22,6 +22,8 @@ import (
 	psnet "github.com/shirou/gopsutil/v3/net"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 )
 
 // Service provides system management functionality
@@ -37,25 +39,61 @@ type Service struct {
 	trackedServices []ServiceConfig
 
 	// Configuration
-	config SystemConfig
+	config     SystemConfig
+	fullConfig *config.Config
 }
 
-// NewService creates a new system management service
-func NewService(logger *logrus.Logger, maxLogEntries int) *Service {
-	s := &Service{
-		deviceID:      generateDeviceID(),
-		startTime:     time.Now(),
-		logger:        logger,
-		maxLogEntries: maxLogEntries,
-		logBuffer:     make([]LogEntry, 0, maxLogEntries),
-		trackedServices: []ServiceConfig{
-			{Name: "homeAssistant", Type: "network_service", Host: "localhost", Port: 8123, DisplayName: "Home Assistant"},
+// NewService creates a new system service
+func NewService(cfg *config.Config, logger *logrus.Logger) *Service {
+	maxLogEntries := cfg.System.MaxLogEntries
+	if maxLogEntries <= 0 {
+		maxLogEntries = 1000 // fallback default
+	}
+
+	// Build tracked services from configuration
+	var trackedServices []ServiceConfig
+	for name, serviceConfig := range cfg.System.Services {
+		if serviceConfig.Enabled {
+			tracked := ServiceConfig{
+				Name:        name,
+				Type:        serviceConfig.Type,
+				DisplayName: serviceConfig.DisplayName,
+			}
+
+			// Set service-specific fields based on type
+			switch serviceConfig.Type {
+			case "network_service":
+				tracked.Host = serviceConfig.Host
+				tracked.Port = serviceConfig.Port
+			case "file_service":
+				tracked.Path = serviceConfig.Path
+			case "systemd_service":
+				tracked.ServiceName = serviceConfig.ServiceName
+			}
+
+			trackedServices = append(trackedServices, tracked)
+		}
+	}
+
+	// Fallback to default services if none configured
+	if len(trackedServices) == 0 {
+		trackedServices = []ServiceConfig{
+			{Name: "homeAssistant", Type: "network_service", Host: "192.168.100.2", Port: 8123, DisplayName: "Home Assistant"},
 			{Name: "database", Type: "file_service", Path: "./data/pma.db", DisplayName: "SQLite Database"},
 			{Name: "webSocket", Type: "internal_service", DisplayName: "WebSocket Service"},
 			{Name: "pma-backend", Type: "systemd_service", ServiceName: "pma-backend", DisplayName: "PMA Backend"},
 			{Name: "nginx", Type: "systemd_service", ServiceName: "nginx", DisplayName: "Nginx Web Server"},
 			{Name: "pma-router", Type: "systemd_service", ServiceName: "pma-router", DisplayName: "PMA Router"},
-		},
+		}
+	}
+
+	s := &Service{
+		deviceID:        generateDeviceID(),
+		startTime:       time.Now(),
+		logger:          logger,
+		maxLogEntries:   maxLogEntries,
+		logBuffer:       make([]LogEntry, 0, maxLogEntries),
+		trackedServices: trackedServices,
 		config: SystemConfig{
 			Environment:     getEnvironment(),
 			Debug:           false,
@@ -67,6 +105,7 @@ func NewService(logger *logrus.Logger, maxLogEntries int) *Service {
 			Services:        make(map[string]interface{}),
 			Features:        make(map[string]bool),
 		},
+		fullConfig: cfg,
 	}
 
 	s.logger.Info("System management service initialized", "device_id", s.deviceID)
@@ -395,12 +434,16 @@ func (s *Service) getNetworkConnectivity(ctx context.Context) NetworkConnectivit
 		Timeout: 5 * time.Second,
 	}
 
-	if resp, err := client.Get("http://httpbin.org/ip"); err == nil {
+	// Use configured external service URLs
+	primaryURL := s.fullConfig.ExternalServices.IPCheckServices.Primary
+	fallbackURL := s.fullConfig.ExternalServices.IPCheckServices.Fallback
+
+	if resp, err := client.Get(primaryURL); err == nil {
 		resp.Body.Close()
 		connectivity.HasInternet = true
 
-		// Try to get external IP
-		if resp, err := client.Get("http://ipv4.icanhazip.com"); err == nil {
+		// Try to get external IP using fallback service
+		if resp, err := client.Get(fallbackURL); err == nil {
 			defer resp.Body.Close()
 			if body, err := io.ReadAll(resp.Body); err == nil {
 				connectivity.ExternalIP = strings.TrimSpace(string(body))

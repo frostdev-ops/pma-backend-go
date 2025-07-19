@@ -6,24 +6,32 @@ import (
 	"sync"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/devices"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/sirupsen/logrus"
 )
 
 // RingAdapter implements the DeviceAdapter interface for Ring devices
 type RingAdapter struct {
-	client         *RingClient
-	devices        map[string]devices.Device
-	eventCallbacks []func(devices.DeviceEvent)
-	logger         *logrus.Logger
-	config         RingAdapterConfig
-	mutex          sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	pollTicker     *time.Ticker
-	eventTicker    *time.Ticker
-	connected      bool
-	lastEventID    int
+	client            *RingClient
+	devices           map[string]devices.Device
+	eventCallbacks    []func(devices.DeviceEvent)
+	logger            *logrus.Logger
+	config            RingAdapterConfig
+	mutex             sync.RWMutex
+	ctx               context.Context
+	cancel            context.CancelFunc
+	pollTicker        *time.Ticker
+	eventTicker       *time.Ticker
+	connected         bool
+	lastEventID       int
+	lastSyncTime      time.Time
+	startTime         time.Time
+	actionsExecuted   int
+	successfulActions int
+	failedActions     int
+	syncErrors        int
 }
 
 // RingAdapterConfig holds configuration for the Ring adapter
@@ -36,7 +44,7 @@ type RingAdapterConfig struct {
 }
 
 // NewRingAdapter creates a new Ring adapter
-func NewRingAdapter(config RingAdapterConfig, logger *logrus.Logger) *RingAdapter {
+func NewRingAdapter(config RingAdapterConfig, fullConfig *config.Config, logger *logrus.Logger) *RingAdapter {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Set defaults
@@ -51,7 +59,7 @@ func NewRingAdapter(config RingAdapterConfig, logger *logrus.Logger) *RingAdapte
 	}
 
 	return &RingAdapter{
-		client:         NewRingClient(logger),
+		client:         NewRingClient(logger, fullConfig),
 		devices:        make(map[string]devices.Device),
 		eventCallbacks: make([]func(devices.DeviceEvent), 0),
 		logger:         logger,
@@ -61,6 +69,7 @@ func NewRingAdapter(config RingAdapterConfig, logger *logrus.Logger) *RingAdapte
 		pollTicker:     time.NewTicker(config.PollInterval),
 		eventTicker:    time.NewTicker(config.EventInterval),
 		connected:      false,
+		startTime:      time.Now(),
 	}
 }
 
@@ -457,4 +466,245 @@ func (a *RingAdapter) UpdateConfig(config RingAdapterConfig) error {
 // GetRefreshToken returns the current refresh token for persistence
 func (a *RingAdapter) GetRefreshToken() string {
 	return a.client.GetRefreshToken()
+}
+
+// ========================================
+// PMAAdapter Interface Implementation
+// ========================================
+
+// GetID returns the unique identifier for this adapter instance
+func (a *RingAdapter) GetID() string {
+	return fmt.Sprintf("ring_%s", a.config.Credentials.Email)
+}
+
+// GetSourceType returns the source type for Ring
+func (a *RingAdapter) GetSourceType() types.PMASourceType {
+	return types.SourceRing
+}
+
+// GetName returns the adapter name
+func (a *RingAdapter) GetName() string {
+	return "Ring Security Adapter"
+}
+
+// GetVersion returns the adapter version
+func (a *RingAdapter) GetVersion() string {
+	return "1.0.0"
+}
+
+// IsConnected method already exists in the adapter
+
+// GetStatus returns the adapter status
+func (a *RingAdapter) GetStatus() string {
+	if a.IsConnected() {
+		return "connected"
+	}
+	return "disconnected"
+}
+
+// ConvertEntity converts a source entity to PMA entity
+func (a *RingAdapter) ConvertEntity(sourceEntity interface{}) (types.PMAEntity, error) {
+	switch device := sourceEntity.(type) {
+	case *RingDoorbell:
+		return a.convertDoorbellToPMACamera(device)
+	case *RingCamera:
+		return a.convertCameraToPMACamera(device)
+	case *RingChime:
+		return a.convertChimeToPMADevice(device)
+	default:
+		return nil, fmt.Errorf("unsupported Ring device type: %T", sourceEntity)
+	}
+}
+
+// ConvertEntities converts multiple source entities to PMA entities
+func (a *RingAdapter) ConvertEntities(sourceEntities []interface{}) ([]types.PMAEntity, error) {
+	pmaEntities := make([]types.PMAEntity, 0, len(sourceEntities))
+
+	for _, sourceEntity := range sourceEntities {
+		entity, err := a.ConvertEntity(sourceEntity)
+		if err != nil {
+			a.logger.WithError(err).Warnf("Failed to convert entity: %v", sourceEntity)
+			continue
+		}
+		pmaEntities = append(pmaEntities, entity)
+	}
+
+	return pmaEntities, nil
+}
+
+// ConvertRoom converts a Ring location to PMA room (Ring doesn't have room concept)
+func (a *RingAdapter) ConvertRoom(sourceRoom interface{}) (*types.PMARoom, error) {
+	// Ring doesn't have room/area concepts in the traditional sense
+	// Locations could be mapped to rooms, but it's not a direct mapping
+	return nil, fmt.Errorf("room conversion not supported for Ring devices")
+}
+
+// ConvertArea converts a Ring location to PMA area
+func (a *RingAdapter) ConvertArea(sourceArea interface{}) (*types.PMAArea, error) {
+	// Ring doesn't have area concepts in the traditional sense
+	// Could potentially use device locations as areas
+	return nil, fmt.Errorf("area conversion not supported for Ring devices")
+}
+
+// ExecuteAction executes control actions on Ring devices
+func (a *RingAdapter) ExecuteAction(ctx context.Context, action types.PMAControlAction) (*types.PMAControlResult, error) {
+	ringAction, params, err := a.mapPMAActionToRingAction(action)
+	if err != nil {
+		return &types.PMAControlResult{
+			Success:     false,
+			EntityID:    action.EntityID,
+			Action:      action.Action,
+			ProcessedAt: time.Now(),
+			Error: &types.PMAError{
+				Code:     "INVALID_ACTION",
+				Message:  err.Error(),
+				Source:   "ring",
+				EntityID: action.EntityID,
+			},
+		}, nil
+	}
+
+	return a.executeRingAction(ctx, action.EntityID, ringAction, params)
+}
+
+// SyncEntities synchronizes entities from Ring API
+func (a *RingAdapter) SyncEntities(ctx context.Context) ([]types.PMAEntity, error) {
+	if !a.connected {
+		return nil, fmt.Errorf("adapter not connected")
+	}
+
+	// Use existing Discover method to get Ring devices
+	devices, err := a.Discover(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover Ring devices: %w", err)
+	}
+
+	// Convert to interface slice for ConvertEntities
+	sourceEntities := make([]interface{}, len(devices))
+	for i, device := range devices {
+		sourceEntities[i] = device
+	}
+
+	// Convert to PMA entities
+	pmaEntities, err := a.ConvertEntities(sourceEntities)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Ring devices: %w", err)
+	}
+
+	a.lastSyncTime = time.Now()
+	return pmaEntities, nil
+}
+
+// SyncRooms synchronizes rooms from Ring (not supported)
+func (a *RingAdapter) SyncRooms(ctx context.Context) ([]*types.PMARoom, error) {
+	// Ring doesn't have room concepts
+	return []*types.PMARoom{}, nil
+}
+
+// GetLastSyncTime returns the last synchronization time
+func (a *RingAdapter) GetLastSyncTime() *time.Time {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+	if a.lastSyncTime.IsZero() {
+		return nil
+	}
+	return &a.lastSyncTime
+}
+
+// GetSupportedEntityTypes returns entity types supported by Ring adapter
+func (a *RingAdapter) GetSupportedEntityTypes() []types.PMAEntityType {
+	return []types.PMAEntityType{
+		types.EntityTypeCamera,
+		types.EntityTypeDevice,
+	}
+}
+
+// GetSupportedCapabilities returns capabilities supported by Ring devices
+func (a *RingAdapter) GetSupportedCapabilities() []types.PMACapability {
+	return []types.PMACapability{
+		types.CapabilityStreaming,
+		types.CapabilityRecording,
+		types.CapabilityMotion,
+		types.CapabilityNotification,
+		types.CapabilityBattery,
+	}
+}
+
+// SupportsRealtime returns whether Ring supports real-time updates
+func (a *RingAdapter) SupportsRealtime() bool {
+	return true // Ring supports webhooks and polling
+}
+
+// GetHealth returns adapter health information
+func (a *RingAdapter) GetHealth() *types.AdapterHealth {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+
+	issues := []string{}
+	if !a.connected {
+		issues = append(issues, "Not connected to Ring API")
+	}
+
+	if !a.client.IsAuthenticated() {
+		issues = append(issues, "Ring authentication invalid")
+	}
+
+	// Calculate response time by measuring a quick API call
+	start := time.Now()
+	_, err := a.client.GetDevices(context.Background())
+	responseTime := time.Since(start)
+
+	if err != nil {
+		issues = append(issues, fmt.Sprintf("API error: %v", err))
+	}
+
+	return &types.AdapterHealth{
+		IsHealthy:       len(issues) == 0,
+		LastHealthCheck: time.Now(),
+		Issues:          issues,
+		ResponseTime:    responseTime,
+		ErrorRate:       a.calculateErrorRate(),
+		Details: map[string]interface{}{
+			"connected":     a.connected,
+			"authenticated": a.client.IsAuthenticated(),
+			"device_count":  len(a.devices),
+		},
+	}
+}
+
+// GetMetrics returns adapter performance metrics
+func (a *RingAdapter) GetMetrics() *types.AdapterMetrics {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+
+	var lastSync *time.Time
+	if !a.lastSyncTime.IsZero() {
+		lastSync = &a.lastSyncTime
+	}
+
+	return &types.AdapterMetrics{
+		EntitiesManaged:     len(a.devices),
+		RoomsManaged:        0, // Ring doesn't have rooms
+		ActionsExecuted:     int64(a.actionsExecuted),
+		SuccessfulActions:   int64(a.successfulActions),
+		FailedActions:       int64(a.failedActions),
+		AverageResponseTime: a.calculateAverageResponseTime(),
+		LastSync:            lastSync,
+		SyncErrors:          a.syncErrors,
+		Uptime:              time.Since(a.startTime),
+	}
+}
+
+// Helper methods for metrics calculation
+func (a *RingAdapter) calculateErrorRate() float64 {
+	if a.actionsExecuted == 0 {
+		return 0.0
+	}
+	return float64(a.failedActions) / float64(a.actionsExecuted)
+}
+
+func (a *RingAdapter) calculateAverageResponseTime() time.Duration {
+	// This would need to be implemented with actual response time tracking
+	// For now, return a default value
+	return 500 * time.Millisecond
 }

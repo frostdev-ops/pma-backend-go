@@ -13,7 +13,7 @@ import (
 )
 
 // NewRouter creates and configures the main HTTP router
-func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, haForwarder *websocket.HAEventForwarder, db *sql.DB) *gin.Engine {
+func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, db *sql.DB) *gin.Engine {
 	// Set gin mode based on config
 	if cfg.Server.Mode == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -149,8 +149,6 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 					ha.POST("/subscribe", h.SubscribeToHAEvents(wsHub))
 					ha.POST("/unsubscribe", h.UnsubscribeFromHAEvents(wsHub))
 					ha.GET("/subscriptions", h.GetHASubscriptions(wsHub))
-					ha.GET("/stats", h.GetHAEventStats(haForwarder))
-					ha.POST("/test", h.TestHAEventForwarding(haForwarder))
 				}
 			}
 
@@ -428,14 +426,74 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		// Legacy display settings endpoints for backward compatibility
 		api.GET("/display-settings", h.GetDisplaySettingsLegacy)
 		api.POST("/display-settings", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.UpdateDisplaySettingsLegacy)
-		api.GET("/display-settings/capabilities", h.GetDisplayCapabilitiesLegacy)
-		api.POST("/display-settings/wake", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.WakeScreenLegacy)
-		api.GET("/display-settings/hardware", h.GetDisplayHardwareInfoLegacy)
+		// Note: /display-settings/capabilities removed due to conflict with protected route
+		// Note: /display-settings/wake removed due to conflict with protected route
+		// Note: /display-settings/hardware removed due to conflict with protected route
 
 		// Legacy scene endpoints for backward compatibility
-		api.GET("/scenes", h.GetScenes)
-		api.GET("/scenes/:id", h.GetScene)
-		api.POST("/scenes/:id/activate", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.ActivateScene)
+		// Note: All scene endpoints removed due to conflicts with protected routes
+	}
+
+	// Legacy API routes without v1 prefix for frontend compatibility
+	legacyAPI := router.Group("/api")
+	{
+		// Legacy auth routes (public)
+		legacyAuth := legacyAPI.Group("/auth")
+		{
+			legacyAuth.POST("/register", h.Register)
+			legacyAuth.POST("/login", h.Login)
+			legacyAuth.POST("/validate", h.ValidateToken)
+			legacyAuth.POST("/verify-pin", h.VerifyPin)
+			legacyAuth.POST("/set-pin", h.SetPin)
+			legacyAuth.GET("/pin-status", h.GetPinStatus)
+			legacyAuth.GET("/session", h.GetSession)
+		}
+
+		// Legacy public routes (no auth required)
+		legacyAPI.GET("/status", h.Health)
+		legacyAPI.GET("/health", h.Health) // Health endpoint alias
+		legacyAPI.GET("/events/stream", h.GetEventStream)
+		legacyAPI.GET("/screensaver/images", h.GetScreensaverImages)
+		legacyAPI.GET("/screensaver/images/:filename", h.GetScreensaverImage)
+
+		// Legacy display settings routes
+		legacyAPI.GET("/display-settings", h.GetDisplaySettingsLegacy)
+		legacyAPI.POST("/display-settings", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.UpdateDisplaySettingsLegacy)
+
+		// Legacy protected routes (optional auth based on configuration)
+		legacyProtected := legacyAPI.Group("/")
+		legacyProtected.Use(middleware.OptionalAuthMiddleware(cfg, repos.Config, logger))
+		{
+			// System endpoints that were causing 401 errors
+			legacyProtected.GET("/system/health/detailed", h.GetSystemHealth)
+			legacyProtected.GET("/system/status", h.GetSystemStatus)
+			legacyProtected.GET("/system/config", h.GetAllConfig)
+			legacyProtected.POST("/system/config", h.SetConfig)
+
+			// Additional system config alias
+			legacyProtected.GET("/system/settings", h.GetAllConfig)
+
+			// Configuration endpoints
+			legacyProtected.GET("/config", h.GetAllConfig)
+			legacyProtected.GET("/config/:key", h.GetConfig)
+			legacyProtected.PUT("/config/:key", h.SetConfig)
+
+			// Settings endpoints that frontend expects
+			legacyProtected.GET("/settings/system", h.GetAllConfig)
+			legacyProtected.GET("/settings/theme", h.GetConfig)
+
+			// Other commonly used endpoints (with and without trailing slashes to prevent redirects)
+			legacyProtected.GET("/entities", h.GetEntities)
+			legacyProtected.GET("/entities/", h.GetEntities)
+			legacyProtected.GET("/scenes", h.GetScenes)
+			legacyProtected.GET("/scenes/", h.GetScenes)
+			legacyProtected.GET("/rooms", h.GetRooms)
+			legacyProtected.GET("/rooms/", h.GetRooms)
+
+			// Screensaver upload endpoints
+			legacyProtected.POST("/screensaver/images/upload", h.UploadScreensaverImages)
+			legacyProtected.DELETE("/screensaver/images/:id", h.DeleteScreensaverImage)
+		}
 	}
 
 	return router

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -30,9 +30,9 @@ type AutomationEngine struct {
 	contextManager *ExecutionContextManager
 
 	// External dependencies
-	haClient *homeassistant.Client
-	wsHub    *websocket.Hub
-	logger   *logrus.Logger
+	unifiedService *unified.UnifiedEntityService
+	wsHub          *websocket.Hub
+	logger         *logrus.Logger
 
 	// Execution management
 	executionQueue chan *ExecutionRequest
@@ -92,7 +92,7 @@ type worker struct {
 }
 
 // NewAutomationEngine creates a new automation engine
-func NewAutomationEngine(config *EngineConfig, haClient *homeassistant.Client, wsHub *websocket.Hub, logger *logrus.Logger) (*AutomationEngine, error) {
+func NewAutomationEngine(config *EngineConfig, unifiedService *unified.UnifiedEntityService, wsHub *websocket.Hub, logger *logrus.Logger) (*AutomationEngine, error) {
 	if config == nil {
 		config = &EngineConfig{
 			Workers:              runtime.NumCPU(),
@@ -122,7 +122,7 @@ func NewAutomationEngine(config *EngineConfig, haClient *homeassistant.Client, w
 		scheduler:      scheduler,
 		parser:         NewRuleParser(),
 		contextManager: NewExecutionContextManager(logger),
-		haClient:       haClient,
+		unifiedService: unifiedService,
 		wsHub:          wsHub,
 		logger:         logger,
 		executionQueue: make(chan *ExecutionRequest, config.QueueSize),

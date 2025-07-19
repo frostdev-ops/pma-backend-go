@@ -1,16 +1,19 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // ShellyDeviceRequest represents a Shelly device configuration
@@ -165,56 +168,104 @@ func (h *Handlers) RemoveShellyDevice(c *gin.Context) {
 	})
 }
 
-// GetShellyDevices returns all configured Shelly devices
+// GetShellyDevices returns all Shelly devices using the unified PMA service
 func (h *Handlers) GetShellyDevices(c *gin.Context) {
-	// Get all Shelly device configs
-	allConfigs, err := h.repos.Config.GetAll(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get Shelly device entities through unified service
+	options := unified.GetAllOptions{
+		AvailableOnly: false, // Include offline devices too
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetBySource(ctx, types.SourceShelly, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to get configurations")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve devices")
+		h.log.WithError(err).Error("Failed to get Shelly devices from unified service")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve Shelly devices")
 		return
 	}
 
-	var devices []ShellyDeviceResponse
-	for _, config := range allConfigs {
-		if strings.HasPrefix(config.Key, "shelly.device.") {
-			var deviceData map[string]interface{}
-			if err := json.Unmarshal([]byte(config.Value), &deviceData); err == nil {
-				device := ShellyDeviceResponse{
-					ID:         deviceData["id"].(string),
-					IP:         deviceData["ip"].(string),
-					Name:       deviceData["name"].(string),
-					DeviceType: getString(deviceData, "device_type"),
-					Online:     getBool(deviceData, "online"),
-					LastUpdate: time.Now(), // In real implementation, get actual last update
-				}
+	// Convert PMA entities to Shelly device format for backward compatibility
+	devices := make([]ShellyDeviceResponse, 0, len(entitiesWithRooms))
+	for _, entityWithRoom := range entitiesWithRooms {
+		entity := entityWithRoom.Entity
+		attributes := entity.GetAttributes()
 
-				// Mock some additional data
-				device.Model = "Shelly 1PM"
-				device.Firmware = "20230913-114340/v1.14.0-gcb84623"
-				device.Components = []ShellyComponent{
-					{
-						ID:    0,
-						Type:  "switch",
-						Name:  "Switch 0",
-						State: "off",
-					},
-				}
-
-				// Mock power data for devices that support it
-				if strings.Contains(device.DeviceType, "pm") || device.DeviceType == "" {
-					device.Power = &ShellyPowerInfo{
-						Current:      12.5,
-						Total:        156.7,
-						Voltage:      230.2,
-						PowerFactor:  0.85,
-						LastMeasured: time.Now(),
-					}
-				}
-
-				devices = append(devices, device)
-			}
+		device := ShellyDeviceResponse{
+			ID:         entity.GetID(),
+			Name:       entity.GetFriendlyName(),
+			Online:     entity.IsAvailable(),
+			LastUpdate: entity.GetLastUpdated(),
 		}
+
+		// Extract device-specific attributes if available
+		if ip, ok := attributes["ip"].(string); ok {
+			device.IP = ip
+		}
+		if deviceType, ok := attributes["device_type"].(string); ok {
+			device.DeviceType = deviceType
+		}
+		if model, ok := attributes["model"].(string); ok {
+			device.Model = model
+		}
+		if firmware, ok := attributes["firmware"].(string); ok {
+			device.Firmware = firmware
+		}
+		if mac, ok := attributes["mac"].(string); ok {
+			device.MAC = mac
+		}
+
+		// Extract components if available
+		if componentsData, ok := attributes["components"].([]interface{}); ok {
+			components := make([]ShellyComponent, 0, len(componentsData))
+			for _, compData := range componentsData {
+				if comp, ok := compData.(map[string]interface{}); ok {
+					component := ShellyComponent{
+						Name:  getString(comp, "name"),
+						Type:  getString(comp, "type"),
+						State: getString(comp, "state"),
+					}
+					if id, ok := comp["id"].(float64); ok {
+						component.ID = int(id)
+					}
+					if config, ok := comp["config"].(map[string]interface{}); ok {
+						component.Config = config
+					}
+					components = append(components, component)
+				}
+			}
+			device.Components = components
+		}
+
+		// Extract power information if available
+		if powerData, ok := attributes["power"].(map[string]interface{}); ok {
+			power := &ShellyPowerInfo{}
+			if current, ok := powerData["current"].(float64); ok {
+				power.Current = current
+			}
+			if total, ok := powerData["total"].(float64); ok {
+				power.Total = total
+			}
+			if voltage, ok := powerData["voltage"].(float64); ok {
+				power.Voltage = voltage
+			}
+			if powerFactor, ok := powerData["power_factor"].(float64); ok {
+				power.PowerFactor = powerFactor
+			}
+			if lastMeasured, ok := powerData["last_measured"].(string); ok {
+				if parsedTime, err := time.Parse(time.RFC3339, lastMeasured); err == nil {
+					power.LastMeasured = parsedTime
+				}
+			}
+			device.Power = power
+		}
+
+		// Extract status if available
+		if status, ok := attributes["status"].(map[string]interface{}); ok {
+			device.Status = status
+		}
+
+		devices = append(devices, device)
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -277,7 +328,7 @@ func (h *Handlers) GetShellyDeviceStatus(c *gin.Context) {
 	utils.SendSuccess(c, status)
 }
 
-// ControlShellyDevice controls a Shelly device
+// ControlShellyDevice controls a Shelly device using the unified PMA service
 func (h *Handlers) ControlShellyDevice(c *gin.Context) {
 	deviceID := c.Param("id")
 	if deviceID == "" {
@@ -291,39 +342,46 @@ func (h *Handlers) ControlShellyDevice(c *gin.Context) {
 		return
 	}
 
-	// Get device configuration
-	config, err := h.repos.Config.Get(c.Request.Context(), "shelly.device."+deviceID)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Create PMA control action for Shelly device control
+	action := types.PMAControlAction{
+		EntityID: deviceID,
+		Action:   req.Action,
+		Parameters: map[string]interface{}{
+			"component": req.Component,
+		},
+		Context: &types.PMAContext{
+			ID:          uuid.New().String(),
+			Source:      "api",
+			Timestamp:   time.Now(),
+			Description: "Shelly device control via API",
+		},
+	}
+
+	// Add any additional parameters from the request
+	if req.Params != nil {
+		for key, value := range req.Params {
+			action.Parameters[key] = value
+		}
+	}
+
+	// Execute through unified service
+	result, err := h.unifiedService.ExecuteAction(ctx, action)
 	if err != nil {
-		utils.SendError(c, http.StatusNotFound, "Device not found")
+		h.log.WithError(err).Error("Failed to control Shelly device")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to control Shelly device")
 		return
 	}
 
-	var deviceData map[string]interface{}
-	if err := json.Unmarshal([]byte(config.Value), &deviceData); err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "Invalid device configuration")
+	if !result.Success {
+		if result.Error != nil && result.Error.Code == "ENTITY_NOT_FOUND" {
+			utils.SendError(c, http.StatusNotFound, "Device not found")
+			return
+		}
+		utils.SendError(c, http.StatusBadRequest, result.Error.Message)
 		return
-	}
-
-	// In real implementation, send control command to actual device
-	h.log.Infof("Shelly device control: device=%s, component=%d, action=%s, params=%v",
-		deviceID, req.Component, req.Action, req.Params)
-
-	// Mock response
-	result := map[string]interface{}{
-		"success":   true,
-		"action":    req.Action,
-		"component": req.Component,
-		"timestamp": time.Now(),
-	}
-
-	// Add action-specific response data
-	switch req.Action {
-	case "turn_on":
-		result["state"] = "on"
-	case "turn_off":
-		result["state"] = "off"
-	case "toggle":
-		result["state"] = "toggled"
 	}
 
 	// Broadcast device state change via WebSocket
@@ -337,7 +395,13 @@ func (h *Handlers) ControlShellyDevice(c *gin.Context) {
 		go h.wsHub.BroadcastToAll("shelly_device_controlled", data)
 	}
 
-	utils.SendSuccess(c, result)
+	utils.SendSuccess(c, gin.H{
+		"message":   "Device control command sent",
+		"device_id": deviceID,
+		"action":    req.Action,
+		"component": req.Component,
+		"result":    result,
+	})
 }
 
 // GetShellyDeviceEnergy returns energy consumption data
@@ -389,27 +453,46 @@ func (h *Handlers) GetShellyDeviceEnergy(c *gin.Context) {
 // GetDiscoveredShellyDevices returns discovered Shelly devices
 func (h *Handlers) GetDiscoveredShellyDevices(c *gin.Context) {
 	// Mock discovered devices - in real implementation, perform network scan
-	discovered := []ShellyDiscoveredDevice{
-		{
-			IP:         "192.168.100.50",
-			MAC:        "AA:BB:CC:DD:EE:01",
-			Model:      "SHSW-1PM",
-			Name:       "shelly1pm-DDEE01",
-			DeviceType: "switch_pm",
-			Firmware:   "20230913-114340/v1.14.0-gcb84623",
-			Online:     true,
-			Discovered: time.Now().Add(-5 * time.Minute),
-		},
-		{
-			IP:         "192.168.100.51",
-			MAC:        "AA:BB:CC:DD:EE:02",
-			Model:      "SHSW-25",
-			Name:       "shelly25-DDEE02",
-			DeviceType: "roller",
-			Firmware:   "20230913-114340/v1.14.0-gcb84623",
-			Online:     true,
-			Discovered: time.Now().Add(-10 * time.Minute),
-		},
+	discovered := []ShellyDiscoveredDevice{}
+
+	// Use mock devices from configuration if enabled
+	if h.cfg.Devices.Shelly.MockDevices.Enabled {
+		for _, mockDevice := range h.cfg.Devices.Shelly.MockDevices.Devices {
+			discovered = append(discovered, ShellyDiscoveredDevice{
+				IP:         mockDevice.IP,
+				MAC:        mockDevice.MAC,
+				Model:      mockDevice.Model,
+				Name:       mockDevice.Name,
+				DeviceType: mockDevice.Type,
+				Firmware:   "20230913-114340/v1.14.0-gcb84623",
+				Online:     true,
+				Discovered: time.Now().Add(-5 * time.Minute),
+			})
+		}
+	} else {
+		// Default mock devices for demo (when config mock is disabled)
+		discovered = []ShellyDiscoveredDevice{
+			{
+				IP:         "192.168.100.50",
+				MAC:        "AA:BB:CC:DD:EE:01",
+				Model:      "SHSW-1PM",
+				Name:       "shelly1pm-DDEE01",
+				DeviceType: "switch_pm",
+				Firmware:   "20230913-114340/v1.14.0-gcb84623",
+				Online:     true,
+				Discovered: time.Now().Add(-5 * time.Minute),
+			},
+			{
+				IP:         "192.168.100.51",
+				MAC:        "AA:BB:CC:DD:EE:02",
+				Model:      "SHSW-25",
+				Name:       "shelly25-DDEE02",
+				DeviceType: "roller",
+				Firmware:   "20230913-114340/v1.14.0-gcb84623",
+				Online:     true,
+				Discovered: time.Now().Add(-10 * time.Minute),
+			},
+		}
 	}
 
 	utils.SendSuccess(c, gin.H{

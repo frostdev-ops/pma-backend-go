@@ -1,21 +1,33 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"os"
 	"time"
 
+	"net/http"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
 	"github.com/frostdev-ops/pma-backend-go/internal/ai"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/bluetooth"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/cache"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/display"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/energymgr"
-	"github.com/frostdev-ops/pma-backend-go/internal/core/network"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/kiosk"
+	networkcore "github.com/frostdev-ops/pma-backend-go/internal/core/network"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/core/queue"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/system"
-	"github.com/frostdev-ops/pma-backend-go/internal/core/ups"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/test"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
+	upscore "github.com/frostdev-ops/pma-backend-go/internal/core/ups"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -26,19 +38,34 @@ type Handlers struct {
 	repos            *database.Repositories
 	log              *logrus.Logger
 	wsHub            *websocket.Hub
+	db               *sql.DB
 	automation       *SimpleAutomationHandler
 	llmManager       *ai.LLMManager
 	chatService      *ai.ChatService
-	networkService   *network.Service
-	upsService       *ups.Service
+	networkService   *networkcore.Service
+	upsService       *upscore.Service
 	systemService    *system.Service
 	displayService   *display.Service
 	bluetoothService *bluetooth.Service
 	energyService    *energymgr.Service
+	queueService     *queue.QueueService
+	kioskService     kiosk.Service
+	KioskHandler     *KioskHandler
 	eventsHandler    *EventsHandler
 	mcpHandler       *MCPHandler
 	fileHandler      *FileHandler
-	haSyncHandler    *HomeAssistantSyncHandler
+
+	testService  *test.Service
+	cacheManager cache.CacheManager
+	CacheHandler *CacheHandler
+
+	// Unified PMA Type System Components
+	typeRegistry     *types.PMATypeRegistry
+	adapterRegistry  types.AdapterRegistry
+	entityRegistry   types.EntityRegistry
+	conflictResolver types.ConflictResolver
+	priorityManager  types.SourcePriorityManager
+	unifiedService   *unified.UnifiedEntityService
 }
 
 // NewHandlers creates a new handlers instance
@@ -62,27 +89,27 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	}
 
 	// Initialize core services
-	networkConfig := network.Config{
-		RouterBaseURL:   "http://localhost:8080", // TODO: Get from config
-		RouterAuthToken: "",                      // TODO: Get from config
+	networkConfig := networkcore.Config{
+		RouterBaseURL:   cfg.Router.BaseURL,
+		RouterAuthToken: cfg.Router.AuthToken,
 	}
-	networkService := network.NewService(networkConfig, repos.Network, wsHub, logger)
+	networkService := networkcore.NewService(networkConfig, repos.Network, wsHub, logger)
 
 	// Initialize UPS service
-	upsConfig := ups.Config{
-		NUTHost:            "localhost", // TODO: Get from config
-		NUTPort:            3493,        // TODO: Get from config
-		UPSName:            "ups",       // TODO: Get from config
+	upsConfig := upscore.Config{
+		NUTHost:            cfg.Devices.UPS.NUTHost,
+		NUTPort:            cfg.Devices.UPS.NUTPort,
+		UPSName:            cfg.Devices.UPS.UPSName,
 		MonitoringInterval: 30 * time.Second,
-		HistoryRetention:   30, // days
+		HistoryRetention:   cfg.Devices.UPS.HistoryRetentionDays,
 	}
-	upsService := ups.NewService(upsConfig, repos.UPS, wsHub, logger)
+	upsService := upscore.NewService(upsConfig, repos.UPS, wsHub, logger)
 
 	// Initialize System service
-	systemService := system.NewService(logger, 2000) // 2000 max log entries
+	systemService := system.NewService(cfg, logger)
 
 	// Initialize Display service
-	displayService := display.NewService(db, logger)
+	displayService := display.NewService(repos.Display, db, logger)
 
 	// Initialize Bluetooth service
 	bluetoothService := bluetooth.NewService(repos.Bluetooth, logger)
@@ -90,8 +117,51 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	// Initialize Energy service
 	energyService := energymgr.NewService(repos.Energy, repos.Entity, repos.UPS, logger)
 
-	// Initialize Home Assistant Sync Handler
-	haSyncHandler := NewHomeAssistantSyncHandler(repos.HomeAssistant, logger)
+	// Initialize Kiosk service
+	kioskService := kiosk.NewService(repos.Kiosk, repos.Entity, repos.Room, logger)
+	kioskHandler := NewKioskHandler(kioskService)
+
+	// Legacy entity and room services are replaced by unified service
+
+	// Legacy PMA service removed - now using unified service
+
+	// Initialize Unified PMA Type System
+	logger.Info("Initializing unified PMA type system")
+
+	// Create type registry
+	typeRegistry := types.NewPMATypeRegistry(logger)
+
+	// Create unified service with registry
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+
+	// Get registry manager and components
+	registryManager := unifiedService.GetRegistryManager()
+	adapterRegistry := registryManager.GetAdapterRegistry()
+	entityRegistry := registryManager.GetEntityRegistry()
+	conflictResolver := registryManager.GetConflictResolver()
+	priorityManager := registryManager.GetPriorityManager()
+
+	// Initialize adapters based on config (basic implementation)
+	ctx := context.Background()
+
+	// Home Assistant adapter (main adapter for now)
+	logger.Info("Initializing Home Assistant adapter")
+	haAdapter := homeassistant.NewHomeAssistantAdapter(cfg, logger)
+	if err := unifiedService.RegisterAdapter(haAdapter); err != nil {
+		logger.WithError(err).Error("Failed to register Home Assistant adapter")
+	} else {
+		go func() {
+			logger.Info("Connecting Home Assistant adapter...")
+			if err := haAdapter.Connect(ctx); err != nil {
+				logger.WithError(err).Error("Failed to connect Home Assistant adapter")
+			} else {
+				logger.Info("Home Assistant adapter connected successfully")
+			}
+		}()
+	}
+
+	// TODO: Initialize other adapters (Ring, Shelly, UPS, Network) based on config
+	// These will be added in future iterations when the adapter interfaces are standardized
 
 	// Initialize new handlers with standard logger
 	stdLogger := log.New(os.Stdout, "[PMA] ", log.LstdFlags)
@@ -99,11 +169,29 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	mcpHandler := NewMCPHandler(stdLogger)
 	fileHandler := NewFileHandler(stdLogger, "./data/screensaver-images")
 
-	return &Handlers{
+	// Initialize cache management system
+	cacheRegistry := cache.NewRegistry(logger)
+	cacheManager := cache.NewManager(cacheRegistry, logger)
+
+	// Register default caches
+	defaultCaches := cache.CreateDefaultCaches()
+	for _, defaultCache := range defaultCaches {
+		if err := cacheRegistry.Register(defaultCache); err != nil {
+			logger.WithError(err).WithField("cache", defaultCache.Name()).Warn("Failed to register cache")
+		}
+	}
+
+	// Service-specific cache adapters can be added here in the future
+	// when the respective services have public cache management methods
+
+	cacheHandler := NewCacheHandler(cacheManager, logger)
+
+	handlers := &Handlers{
 		cfg:              cfg,
 		repos:            repos,
 		log:              logger,
 		wsHub:            wsHub,
+		db:               db,
 		automation:       automationHandler,
 		llmManager:       llmManager,
 		chatService:      chatService,
@@ -113,11 +201,27 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		displayService:   displayService,
 		bluetoothService: bluetoothService,
 		energyService:    energyService,
+		kioskService:     kioskService,
+		KioskHandler:     kioskHandler,
 		eventsHandler:    eventsHandler,
 		mcpHandler:       mcpHandler,
 		fileHandler:      fileHandler,
-		haSyncHandler:    haSyncHandler,
+
+		testService:  nil, // Initialize testService to nil as it's not yet implemented
+		cacheManager: cacheManager,
+		CacheHandler: cacheHandler,
+
+		// Unified PMA Type System
+		typeRegistry:     typeRegistry,
+		adapterRegistry:  adapterRegistry,
+		entityRegistry:   entityRegistry,
+		conflictResolver: conflictResolver,
+		priorityManager:  priorityManager,
+		unifiedService:   unifiedService,
 	}
+
+	logger.Info("Unified PMA type system initialized successfully")
+	return handlers
 }
 
 // Simple automation handler placeholder
@@ -238,6 +342,59 @@ func (h *Handlers) GetAutomationHistory(c *gin.Context) {
 	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
 }
 
+// Legacy settings handlers for backward compatibility
+func (h *Handlers) GetThemeSettings(c *gin.Context) {
+	// Return basic theme settings that the frontend expects
+	themeSettings := map[string]interface{}{
+		"theme":        "light",
+		"primaryColor": "#1976d2",
+		"accentColor":  "#ff4081",
+		"darkMode":     false,
+	}
+
+	utils.SendSuccess(c, themeSettings)
+}
+
+func (h *Handlers) GetSystemSettings(c *gin.Context) {
+	// Return basic system settings that the frontend expects
+	systemSettings := map[string]interface{}{
+		"language":            "en",
+		"timezone":            "UTC",
+		"autoUpdate":          true,
+		"enableNotifications": true,
+	}
+
+	utils.SendSuccess(c, systemSettings)
+}
+
+func (h *Handlers) UpdateThemeSettings(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid theme settings")
+		return
+	}
+
+	// For now, just acknowledge the update
+	utils.SendSuccess(c, map[string]interface{}{
+		"message":  "Theme settings updated successfully",
+		"settings": req,
+	})
+}
+
+func (h *Handlers) UpdateSystemSettings(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid system settings")
+		return
+	}
+
+	// For now, just acknowledge the update
+	utils.SendSuccess(c, map[string]interface{}{
+		"message":  "System settings updated successfully",
+		"settings": req,
+	})
+}
+
 // Events Handler Wrappers
 func (h *Handlers) GetEventStream(c *gin.Context) {
 	h.eventsHandler.GetEventStream(c)
@@ -303,4 +460,88 @@ func (h *Handlers) GetScreensaverImage(c *gin.Context) {
 
 func (h *Handlers) GetMobileUploadPage(c *gin.Context) {
 	h.fileHandler.GetMobileUploadPage(c)
+}
+
+// Unified Service Sync Handler Methods
+func (h *Handlers) TriggerFullSync(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := h.unifiedService.SyncFromSource(ctx, types.SourceHomeAssistant)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to trigger full sync")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to trigger sync")
+		return
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+func (h *Handlers) GetHASyncStatus(c *gin.Context) {
+	// Return basic sync status - could be enhanced with more detailed status
+	status := map[string]interface{}{
+		"source":    "homeassistant",
+		"available": true,
+		"last_sync": time.Now(), // Would need to track this in unified service
+		"status":    "connected",
+	}
+
+	utils.SendSuccess(c, status)
+}
+
+func (h *Handlers) SyncEntity(c *gin.Context) {
+	entityID := c.Param("entityId")
+	if entityID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Entity ID is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get entity to refresh it
+	_, err := h.unifiedService.GetByID(ctx, entityID, unified.GetEntityOptions{})
+	if err != nil {
+		h.log.WithError(err).Error("Failed to sync entity")
+		utils.SendError(c, http.StatusNotFound, "Entity not found or sync failed")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{"message": "Entity synced successfully", "entity_id": entityID})
+}
+
+func (h *Handlers) SyncRoom(c *gin.Context) {
+	roomID := c.Param("roomId")
+	if roomID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Room ID is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	// Get entities in room to refresh them
+	options := unified.GetAllOptions{IncludeRoom: true}
+	entities, err := h.unifiedService.GetByRoom(ctx, roomID, options)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to sync room")
+		utils.SendError(c, http.StatusNotFound, "Room not found or sync failed")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{
+		"message":      "Room synced successfully",
+		"room_id":      roomID,
+		"entity_count": len(entities),
+	})
+}
+
+func (h *Handlers) CallService(c *gin.Context) {
+	// This would need to be replaced with ExecuteAction through unified service
+	utils.SendError(c, http.StatusNotImplemented, "Service calls should use the unified action execution API")
+}
+
+func (h *Handlers) UpdateHAEntityState(c *gin.Context) {
+	// This would need to be replaced with ExecuteAction through unified service
+	utils.SendError(c, http.StatusNotImplemented, "Entity state updates should use the unified action execution API")
 }

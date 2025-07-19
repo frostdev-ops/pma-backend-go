@@ -104,6 +104,7 @@ type KioskToken struct {
 	Name           string          `json:"name" db:"name"`
 	RoomID         string          `json:"room_id" db:"room_id"`
 	AllowedDevices json.RawMessage `json:"allowed_devices" db:"allowed_devices"`
+	Active         bool            `json:"active" db:"active"`
 	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
 	LastUsed       sql.NullTime    `json:"last_used" db:"last_used"`
 	ExpiresAt      sql.NullTime    `json:"expires_at" db:"expires_at"`
@@ -165,15 +166,22 @@ type Camera struct {
 
 // DisplaySettings represents display/screensaver configuration
 type DisplaySettings struct {
-	ID                  int             `json:"id" db:"id"`
-	Brightness          int             `json:"brightness" db:"brightness"`
-	SleepTimeout        int             `json:"sleep_timeout" db:"sleep_timeout"`
-	Orientation         string          `json:"orientation" db:"orientation"`
-	ScreensaverEnabled  bool            `json:"screensaver_enabled" db:"screensaver_enabled"`
-	ScreensaverTimeout  int             `json:"screensaver_timeout" db:"screensaver_timeout"`
-	ScreensaverType     string          `json:"screensaver_type" db:"screensaver_type"`
-	ScreensaverSettings json.RawMessage `json:"screensaver_settings" db:"screensaver_settings"`
-	UpdatedAt           time.Time       `json:"updated_at" db:"updated_at"`
+	ID                           int       `json:"id" db:"id"`
+	Brightness                   int       `json:"brightness" db:"brightness"`
+	Timeout                      int       `json:"timeout" db:"timeout"` // seconds, 0 = never
+	Orientation                  string    `json:"orientation" db:"orientation"`
+	DarkMode                     string    `json:"darkMode" db:"darkMode"`
+	Screensaver                  bool      `json:"screensaver" db:"screensaver"`
+	ScreensaverType              string    `json:"screensaverType" db:"screensaverType"`
+	ScreensaverShowClock         bool      `json:"screensaverShowClock" db:"screensaverShowClock"`
+	ScreensaverRotationSpeed     int       `json:"screensaverRotationSpeed" db:"screensaverRotationSpeed"`
+	ScreensaverPictureFrameImage string    `json:"screensaverPictureFrameImage" db:"screensaverPictureFrameImage"`
+	ScreensaverUploadEnabled     bool      `json:"screensaverUploadEnabled" db:"screensaverUploadEnabled"`
+	DimBeforeSleep               bool      `json:"dimBeforeSleep" db:"dimBeforeSleep"`
+	DimLevel                     int       `json:"dimLevel" db:"dimLevel"`
+	DimTimeout                   int       `json:"dimTimeout" db:"dimTimeout"`
+	CreatedAt                    time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt                    time.Time `json:"updatedAt" db:"updated_at"`
 }
 
 // BluetoothDevice represents a Bluetooth device

@@ -6,9 +6,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // RingAuthRequest represents Ring authentication start request
@@ -238,7 +241,7 @@ func (h *Handlers) Complete2FA(c *gin.Context) {
 	})
 }
 
-// GetRingCameras returns all Ring cameras
+// GetRingCameras returns all Ring cameras using the unified PMA service
 func (h *Handlers) GetRingCameras(c *gin.Context) {
 	// Check authentication
 	if !h.isRingAuthenticated(c.Request.Context()) {
@@ -246,36 +249,68 @@ func (h *Handlers) GetRingCameras(c *gin.Context) {
 		return
 	}
 
-	// Mock camera data - in real implementation, fetch from Ring API
-	cameras := []RingCameraResponse{
-		{
-			ID:               "camera_1",
-			Name:             "Front Door",
-			DeviceType:       "doorbell",
-			BatteryLevel:     &[]int{85}[0],
-			Online:           true,
-			LastUpdate:       time.Now().Add(-5 * time.Minute),
-			HasLight:         true,
-			LightOn:          false,
-			HasSiren:         false,
-			MotionDetection:  true,
-			RecordingEnabled: true,
-			Location:         "Front Entrance",
-		},
-		{
-			ID:               "camera_2",
-			Name:             "Backyard",
-			DeviceType:       "stickup_cam",
-			Online:           true,
-			LastUpdate:       time.Now().Add(-2 * time.Minute),
-			HasLight:         true,
-			LightOn:          false,
-			HasSiren:         true,
-			SirenOn:          false,
-			MotionDetection:  true,
-			RecordingEnabled: true,
-			Location:         "Back Garden",
-		},
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get Ring camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain:        "camera", // Filter for camera entities
+		AvailableOnly: false,    // Include offline cameras too
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetBySource(ctx, types.SourceRing, options)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ring cameras from unified service")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve Ring cameras")
+		return
+	}
+
+	// Convert PMA entities to Ring camera format for backward compatibility
+	cameras := make([]RingCameraResponse, 0, len(entitiesWithRooms))
+	for _, entityWithRoom := range entitiesWithRooms {
+		entity := entityWithRoom.Entity
+		attributes := entity.GetAttributes()
+
+		camera := RingCameraResponse{
+			ID:               entity.GetID(),
+			Name:             entity.GetFriendlyName(),
+			Online:           entity.IsAvailable(),
+			LastUpdate:       entity.GetLastUpdated(),
+			MotionDetection:  true, // Default for Ring cameras
+			RecordingEnabled: true, // Default for Ring cameras
+		}
+
+		// Extract device-specific attributes if available
+		if deviceType, ok := attributes["device_type"].(string); ok {
+			camera.DeviceType = deviceType
+		}
+		if batteryLevel, ok := attributes["battery_level"].(float64); ok {
+			battery := int(batteryLevel)
+			camera.BatteryLevel = &battery
+		}
+		if hasLight, ok := attributes["has_light"].(bool); ok {
+			camera.HasLight = hasLight
+		}
+		if lightOn, ok := attributes["light_on"].(bool); ok {
+			camera.LightOn = lightOn
+		}
+		if hasSiren, ok := attributes["has_siren"].(bool); ok {
+			camera.HasSiren = hasSiren
+		}
+		if sirenOn, ok := attributes["siren_on"].(bool); ok {
+			camera.SirenOn = sirenOn
+		}
+		if location, ok := attributes["location"].(string); ok {
+			camera.Location = location
+		}
+		if thumbnail, ok := attributes["thumbnail"].(string); ok {
+			camera.Thumbnail = thumbnail
+		}
+		if health, ok := attributes["health"].(map[string]interface{}); ok {
+			camera.Health = health
+		}
+
+		cameras = append(cameras, camera)
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -339,13 +374,13 @@ func (h *Handlers) GetRingCameraSnapshot(c *gin.Context) {
 	// In real implementation, fetch snapshot from Ring API
 	// For now, return a mock response
 	utils.SendSuccess(c, gin.H{
-		"snapshot_url": "https://ring-snapshots.s3.amazonaws.com/mock/" + cameraID,
+		"snapshot_url": h.cfg.ExternalServices.MockData.RingSnapshotsBase + "/" + cameraID,
 		"expires_at":   time.Now().Add(1 * time.Hour),
 		"camera_id":    cameraID,
 	})
 }
 
-// ControlRingLight controls camera light
+// ControlRingLight controls camera light using the unified PMA service
 func (h *Handlers) ControlRingLight(c *gin.Context) {
 	cameraID := c.Param("cameraId")
 	if cameraID == "" {
@@ -365,8 +400,45 @@ func (h *Handlers) ControlRingLight(c *gin.Context) {
 		return
 	}
 
-	// In real implementation, send light control command to Ring API
-	h.log.Infof("Ring light control: camera=%s, on=%v, duration=%d", cameraID, req.On, req.Duration)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Create PMA control action for light control
+	action := types.PMAControlAction{
+		EntityID: cameraID,
+		Action:   "set_light",
+		Parameters: map[string]interface{}{
+			"on": req.On,
+		},
+		Context: &types.PMAContext{
+			ID:          uuid.New().String(),
+			Source:      "api",
+			Timestamp:   time.Now(),
+			Description: "Ring light control via API",
+		},
+	}
+
+	// Add duration parameter if specified
+	if req.Duration > 0 {
+		action.Parameters["duration"] = req.Duration
+	}
+
+	// Execute through unified service
+	result, err := h.unifiedService.ExecuteAction(ctx, action)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to control Ring light")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to control camera light")
+		return
+	}
+
+	if !result.Success {
+		if result.Error != nil && result.Error.Code == "ENTITY_NOT_FOUND" {
+			utils.SendError(c, http.StatusNotFound, "Camera not found")
+			return
+		}
+		utils.SendError(c, http.StatusBadRequest, result.Error.Message)
+		return
+	}
 
 	// Broadcast light change via WebSocket
 	if h.wsHub != nil {
@@ -382,10 +454,11 @@ func (h *Handlers) ControlRingLight(c *gin.Context) {
 		"message":   "Light control command sent",
 		"camera_id": cameraID,
 		"light_on":  req.On,
+		"result":    result,
 	})
 }
 
-// ControlRingSiren controls camera siren
+// ControlRingSiren controls camera siren using the unified PMA service
 func (h *Handlers) ControlRingSiren(c *gin.Context) {
 	cameraID := c.Param("cameraId")
 	if cameraID == "" {
@@ -405,8 +478,45 @@ func (h *Handlers) ControlRingSiren(c *gin.Context) {
 		return
 	}
 
-	// In real implementation, send siren control command to Ring API
-	h.log.Infof("Ring siren control: camera=%s, on=%v, duration=%d", cameraID, req.On, req.Duration)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Create PMA control action for siren control
+	action := types.PMAControlAction{
+		EntityID: cameraID,
+		Action:   "set_siren",
+		Parameters: map[string]interface{}{
+			"on": req.On,
+		},
+		Context: &types.PMAContext{
+			ID:          uuid.New().String(),
+			Source:      "api",
+			Timestamp:   time.Now(),
+			Description: "Ring siren control via API",
+		},
+	}
+
+	// Add duration parameter if specified
+	if req.Duration > 0 {
+		action.Parameters["duration"] = req.Duration
+	}
+
+	// Execute through unified service
+	result, err := h.unifiedService.ExecuteAction(ctx, action)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to control Ring siren")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to control camera siren")
+		return
+	}
+
+	if !result.Success {
+		if result.Error != nil && result.Error.Code == "ENTITY_NOT_FOUND" {
+			utils.SendError(c, http.StatusNotFound, "Camera not found")
+			return
+		}
+		utils.SendError(c, http.StatusBadRequest, result.Error.Message)
+		return
+	}
 
 	// Broadcast siren change via WebSocket
 	if h.wsHub != nil {
@@ -422,6 +532,7 @@ func (h *Handlers) ControlRingSiren(c *gin.Context) {
 		"message":   "Siren control command sent",
 		"camera_id": cameraID,
 		"siren_on":  req.On,
+		"result":    result,
 	})
 }
 

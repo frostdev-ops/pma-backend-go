@@ -23,6 +23,7 @@ type Repositories struct {
 	Energy       repositories.EnergyRepository
 	Conversation repositories.ConversationRepository
 	MCP          repositories.MCPRepository
+	Area         repositories.AreaRepository
 }
 
 // NewRepositories creates all repository instances
@@ -37,10 +38,11 @@ func NewRepositories(db *sql.DB) *Repositories {
 		Network:      sqlite.NewNetworkRepository(db),
 		UPS:          sqlite.NewUPSRepository(db),
 		Camera:       sqlite.NewCameraRepository(db),
-		Display:      sqlite.NewDisplayRepository(db),
+		Display:      sqlite.NewDisplaySettingsRepository(db),
 		Bluetooth:    sqlite.NewBluetoothRepository(db),
 		Energy:       sqlite.NewEnergyRepository(db),
 		Conversation: sqlite.NewConversationRepository(db),
 		MCP:          sqlite.NewMCPRepository(db),
+		Area:         sqlite.NewAreaRepository(db),
 	}
 }

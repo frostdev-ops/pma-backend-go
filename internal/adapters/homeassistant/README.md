@@ -1,228 +1,315 @@
-# Home Assistant Client Implementation
+# HomeAssistant Adapter
 
-This package provides a robust Home Assistant client that supports both REST API and WebSocket connectivity for real-time communication with Home Assistant instances.
+This package provides a complete HomeAssistant adapter implementation for the PMA (Personal Management Assistant) backend system. The adapter implements the `PMAAdapter` interface and handles all conversions between HomeAssistant entities and PMA unified types.
+
+## Overview
+
+The HomeAssistant adapter consists of several key components:
+
+- **adapter.go**: Main adapter implementation with PMAAdapter interface
+- **client_wrapper.go**: HTTP and WebSocket client for HomeAssistant API
+- **converter.go**: Entity type conversion logic between HA and PMA formats
+- **mapper.go**: State and attribute mapping with action routing
+- **example_integration.go**: Usage examples and integration patterns
 
 ## Features
 
-### REST API Client
-- Configuration retrieval (`GetConfig`)
-- Entity state management (`GetStates`, `GetState`, `SetState`)
-- Service calls (`CallService`)
-- Area/Room management (`GetAreas`, `GetArea`)
-- Device management (`GetDevices`)
-- Automatic retry logic with exponential backoff
-- Request timeout handling
-- Rate limiting compliance
-- Comprehensive error handling
+### Core Functionality
+- ✅ Complete PMAAdapter interface implementation
+- ✅ Bidirectional entity conversion (HA ↔ PMA)
+- ✅ Support for 10+ entity types (lights, switches, sensors, etc.)
+- ✅ Real-time updates via WebSocket
+- ✅ Action execution with comprehensive error handling
+- ✅ Health monitoring and metrics tracking
+- ✅ Room/Area synchronization
+- ✅ Quality scoring for entity reliability
 
-### WebSocket Client (Stub Implementation)
-- Connection management
-- Event subscriptions
-- State change subscriptions
-- Automatic reconnection (when fully implemented)
-- Ping/pong for connection health
+### Supported Entity Types
+- **Light**: Full support including brightness, color, and color temperature
+- **Switch**: Basic on/off/toggle functionality
+- **Sensor**: Numeric values with unit conversion and device class detection
+- **Binary Sensor**: Motion, connectivity, and other binary sensors
+- **Climate**: Temperature and humidity control
+- **Cover**: Position control with open/close/stop operations
+- **Camera**: Snapshot and recording capabilities
+- **Lock**: Lock/unlock operations
+- **Fan**: Speed control and on/off operations
+- **Media Player**: Playback control and volume management
 
-### Main Client
-- Unified interface combining REST and WebSocket functionality
-- Configuration management from database and config files
-- Token retrieval from database with config file fallback
-- Health checking
-- Connection status monitoring
+### Capabilities Detection
+- ✅ Automatic capability detection from HA attributes
+- ✅ Brightness and dimming support
+- ✅ Color control (RGB, color temperature)
+- ✅ Temperature and humidity monitoring
+- ✅ Position control for covers
+- ✅ Battery level monitoring
+- ✅ Motion detection
+- ✅ Connectivity status
 
-## Architecture
+## Configuration
 
-```
-┌─────────────────┐
-│   Main Client   │
-├─────────────────┤
-│  REST Client    │
-│ WebSocket Client│
-└─────────────────┘
-        │
-        ├── Models (HAConfig, EntityState, Area, etc.)
-        ├── Error Types (HAError, custom errors)
-        └── Configuration (Database + Config File)
-```
+Add HomeAssistant configuration to your `config.yaml`:
 
-## Usage
-
-### Basic Setup
-
-```go
-import (
-    "context"
-    "github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
-    "github.com/frostdev-ops/pma-backend-go/internal/config"
-    "github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
-)
-
-// Create client
-client, err := homeassistant.NewClient(cfg, configRepo, logger)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Initialize
-ctx := context.Background()
-if err := client.Initialize(ctx); err != nil {
-    log.Fatal(err)
-}
-
-// Use the client
-config, err := client.GetConfig(ctx)
-states, err := client.GetStates(ctx)
-```
-
-### Configuration
-
-The client supports multiple configuration sources:
-
-1. **Database (Priority 1)**: Token stored in `system_config` table with key `home_assistant_token`
-2. **Config File (Priority 2)**: Token in `config.yaml` under `home_assistant.token`
-3. **Environment Variable (Priority 3)**: `HOME_ASSISTANT_TOKEN` environment variable
-
-Base URL is configured in `config.yaml`:
 ```yaml
 home_assistant:
-  url: "http://192.168.100.2:8123"
-  token: "optional-fallback-token"
+  url: "http://homeassistant.local:8123"
+  token: "your_long_lived_access_token"
+  sync:
+    enabled: true
+    full_sync_interval: "5m"
+    supported_domains:
+      - "light"
+      - "switch"
+      - "sensor"
+      - "binary_sensor"
+      - "climate"
+      - "cover"
+      - "camera"
+      - "lock"
+      - "fan"
+      - "media_player"
+    conflict_resolution: "homeassistant_priority"
+    batch_size: 100
+    retry_attempts: 3
+    retry_delay: "1s"
+    event_buffer_size: 1000
+    event_processing_delay: "100ms"
 ```
 
-### REST API Examples
+## Usage Examples
+
+### Basic Integration
 
 ```go
-// Get all entity states
-states, err := client.GetStates(ctx)
+package main
 
-// Get specific entity state
-state, err := client.GetState(ctx, "light.living_room")
+import (
+    "github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+    "github.com/frostdev-ops/pma-backend-go/internal/config"
+    "github.com/sirupsen/logrus"
+)
 
-// Call a service
-err = client.CallService(ctx, "light", "turn_on", map[string]interface{}{
-    "entity_id": "light.living_room",
-    "brightness": 255,
-})
-
-// Get all areas
-areas, err := client.GetAreas(ctx)
+func main() {
+    logger := logrus.New()
+    cfg := &config.Config{ /* your config */ }
+    
+    // Create adapter
+    adapter := homeassistant.NewHomeAssistantAdapter(cfg, logger)
+    
+    // Register with adapter registry
+    registry.RegisterAdapter(adapter)
+}
 ```
 
-### WebSocket Examples (Stub Implementation)
+### Entity Synchronization
 
 ```go
-// Subscribe to all events
-subID, err := client.SubscribeToEvents("", func(event homeassistant.Event) {
-    log.Printf("Received event: %s", event.EventType)
-})
+ctx := context.Background()
 
-// Subscribe to state changes for specific entity
-subID, err := client.SubscribeToStateChanges("light.living_room", 
-    func(entityID string, oldState, newState *homeassistant.EntityState) {
-        log.Printf("Entity %s changed from %s to %s", 
-            entityID, oldState.State, newState.State)
-    })
+// Connect to HomeAssistant
+err := adapter.Connect(ctx)
+if err != nil {
+    log.Fatal("Failed to connect:", err)
+}
+defer adapter.Disconnect(ctx)
 
-// Unsubscribe
-err = client.Unsubscribe(subID)
+// Sync all entities
+entities, err := adapter.SyncEntities(ctx)
+if err != nil {
+    log.Fatal("Failed to sync entities:", err)
+}
+
+log.Printf("Synced %d entities", len(entities))
+
+// Sync rooms/areas
+rooms, err := adapter.SyncRooms(ctx)
+if err != nil {
+    log.Fatal("Failed to sync rooms:", err)
+}
+
+log.Printf("Synced %d rooms", len(rooms))
 ```
+
+### Action Execution
+
+```go
+// Turn on a light with specific settings
+action := types.PMAControlAction{
+    EntityID: "ha_light.living_room",
+    Action:   "turn_on",
+    Parameters: map[string]interface{}{
+        "brightness": 0.8,  // 80% brightness
+        "color": map[string]interface{}{
+            "r": 255.0,
+            "g": 200.0,
+            "b": 100.0,
+        },
+    },
+}
+
+result, err := adapter.ExecuteAction(ctx, action)
+if err != nil {
+    log.Fatal("Action failed:", err)
+}
+
+if result.Success {
+    log.Println("Light turned on successfully")
+} else {
+    log.Printf("Action failed: %s", result.Error.Message)
+}
+```
+
+### Health and Metrics Monitoring
+
+```go
+// Get adapter health
+health := adapter.GetHealth()
+if !health.IsHealthy {
+    log.Printf("Adapter unhealthy: %v", health.Issues)
+}
+
+// Get performance metrics
+metrics := adapter.GetMetrics()
+log.Printf("Managed entities: %d", metrics.EntitiesManaged)
+log.Printf("Success rate: %.2f%%", 
+    float64(metrics.SuccessfulActions)/float64(metrics.ActionsExecuted)*100)
+```
+
+## Entity ID Format
+
+The adapter uses a consistent entity ID format:
+
+- **PMA Format**: `ha_{domain}.{entity_name}` (e.g., `ha_light.living_room`)
+- **HA Format**: `{domain}.{entity_name}` (e.g., `light.living_room`)
+
+The adapter automatically handles conversion between these formats.
 
 ## Error Handling
 
-The client provides comprehensive error handling with custom error types:
+The adapter provides comprehensive error handling:
 
-```go
-if err != nil {
-    if homeassistant.IsAuthError(err) {
-        // Handle authentication errors
-        log.Error("Authentication failed - check token")
-    } else if homeassistant.IsConnectionError(err) {
-        // Handle connection errors
-        log.Error("Connection failed - check URL and network")
-    } else {
-        // Handle other errors
-        log.Errorf("Other error: %v", err)
-    }
-}
-```
+- **Connection Errors**: Detailed connection failure information
+- **Action Errors**: Categorized error codes with retry indicators
+- **Conversion Errors**: Validation errors for invalid entity data
+- **API Errors**: HTTP status codes and error messages from HA
 
-## Current Implementation Status
+Error types include:
+- `INVALID_ACTION`: Missing required action parameters
+- `MAPPING_ERROR`: Unable to map PMA action to HA service
+- `EXECUTION_ERROR`: HA API call failed
+- `CONNECTION_ERROR`: Unable to connect to HA instance
 
-### ✅ Completed
-- **REST Client**: Full implementation with retry logic, error handling, and all major API endpoints
-- **Models**: Complete data structures for HA API responses
-- **Error Types**: Custom error types with helper functions
-- **Main Client**: Configuration management, token handling, unified interface
-- **Tests**: Unit tests with mock dependencies
-- **Documentation**: This README
+## Quality Scoring
 
-### 🚧 WebSocket Client (Stub Implementation)
-The WebSocket client currently provides a stub implementation that:
-- ✅ Implements the complete interface
-- ✅ Provides proper method signatures
-- ✅ Logs all operations for debugging
-- ❌ Does not establish real WebSocket connections
-- ❌ Does not handle real-time events
-- ❌ Does not implement automatic reconnection
+The adapter calculates quality scores (0.0-1.0) for entities based on:
 
-### 🔄 Next Steps for Full WebSocket Implementation
-When ready to implement full WebSocket functionality:
+- **Availability**: Reduces score for unavailable entities
+- **State Quality**: Penalizes unknown states
+- **Metadata Completeness**: Rewards friendly names and area assignments
+- **Device Integration**: Higher scores for properly configured devices
 
-1. Add `github.com/gorilla/websocket` dependency usage
-2. Implement WebSocket connection establishment
-3. Add authentication flow per HA WebSocket API
-4. Implement message ID tracking and response correlation
-5. Add event dispatching to registered handlers
-6. Implement automatic reconnection with exponential backoff
-7. Add ping/pong for connection health monitoring
+## WebSocket Support
 
-## Integration Points
+The adapter supports real-time updates via HomeAssistant's WebSocket API:
 
-The client is designed to integrate with:
-
-1. **Entity Service**: For synchronizing HA entities with local database
-2. **Room Service**: For mapping HA areas to local rooms
-3. **WebSocket Hub**: For forwarding HA events to connected clients
-4. **Configuration Service**: For managing HA connection settings
-
-## Configuration Management
-
-### Database Token Storage
-```sql
-INSERT INTO system_config (key, value, encrypted, description, updated_at) 
-VALUES ('home_assistant_token', 'your-long-lived-access-token', 0, 'Home Assistant Long-Lived Access Token', datetime('now'));
-```
-
-### Config File Example
-```yaml
-home_assistant:
-  url: "http://192.168.100.2:8123"
-  token: "fallback-token-if-not-in-database"
-```
+- Automatic reconnection with exponential backoff
+- Event filtering and batching
+- State change propagation to PMA system
+- Error recovery and logging
 
 ## Testing
 
-Run tests with:
+Run the comprehensive test suite:
+
 ```bash
-go test ./internal/adapters/homeassistant/ -v
+go test ./internal/adapters/homeassistant -v
 ```
 
 Tests cover:
-- Client creation and initialization
-- Configuration management
-- Token retrieval from database vs config
-- Error type functionality
-- Connection status reporting
+- Interface implementation compliance
+- Entity conversion accuracy
+- Action mapping correctness
+- Error handling scenarios
+- Health and metrics tracking
 
-## Security Considerations
+## Thread Safety
 
-1. **Token Storage**: Consider encrypting tokens in the database for production
-2. **HTTPS**: Use HTTPS URLs for Home Assistant when possible
-3. **Token Rotation**: Implement token refresh mechanisms for enhanced security
-4. **Access Control**: Ensure proper access control for HA client configuration
+The adapter is fully thread-safe:
+- All public methods use appropriate locking
+- Concurrent entity conversions are supported
+- Metrics updates are atomic
+- WebSocket operations are synchronized
 
 ## Performance Considerations
 
-1. **Connection Pooling**: REST client uses HTTP connection pooling
-2. **Retry Logic**: Exponential backoff prevents overwhelming HA instance
-3. **Rate Limiting**: Built-in rate limiting compliance
-4. **Timeouts**: Configurable request timeouts prevent hanging requests 
+- **Batch Processing**: Entities are processed in configurable batches
+- **Connection Pooling**: HTTP client reuses connections
+- **Caching**: Converted entities can be cached by the registry
+- **Async Operations**: Non-blocking action execution
+- **Memory Management**: Efficient attribute copying and filtering
+
+## Integration with PMA System
+
+The adapter integrates seamlessly with:
+
+- **AdapterRegistry**: For registration and discovery
+- **EntityRegistry**: For unified entity management
+- **UnifiedEntityService**: For cross-adapter operations
+- **WebSocket Hub**: For real-time event distribution
+- **Metrics System**: For monitoring and alerting
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Connection Failed**
+   - Verify HomeAssistant URL and token
+   - Check network connectivity
+   - Ensure HA is running and accessible
+
+2. **Entity Not Found**
+   - Verify entity exists in HomeAssistant
+   - Check entity ID format
+   - Ensure entity is not disabled
+
+3. **Action Failed**
+   - Verify entity supports the requested action
+   - Check action parameters
+   - Review HomeAssistant logs
+
+4. **Sync Issues**
+   - Check HomeAssistant API permissions
+   - Verify supported domains configuration
+   - Monitor memory usage during large syncs
+
+### Debug Logging
+
+Enable debug logging for detailed information:
+
+```go
+logger.SetLevel(logrus.DebugLevel)
+```
+
+This will log:
+- Entity conversion details
+- API request/response data
+- WebSocket message flow
+- Action mapping decisions
+
+## Contributing
+
+When contributing to the HomeAssistant adapter:
+
+1. Follow the existing code structure
+2. Add tests for new functionality
+3. Update documentation for changes
+4. Ensure thread safety for concurrent operations
+5. Handle errors gracefully with appropriate error codes
+
+## Dependencies
+
+- **github.com/gorilla/websocket**: WebSocket client
+- **github.com/sirupsen/logrus**: Structured logging
+- **github.com/stretchr/testify**: Testing framework
+
+All dependencies are included in the main project's `go.mod` file. 

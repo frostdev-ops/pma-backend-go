@@ -1,55 +1,40 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
-// GetScenes returns all available Home Assistant scenes
+// GetScenes returns all available scenes using the unified PMA service
 func (h *Handlers) GetScenes(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
 
-	// Get Home Assistant client from context or create new one
-	haClient, err := homeassistant.NewClient(h.cfg, h.repos.Config, h.log)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to create Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to connect to Home Assistant")
-		return
+	// Get scenes through unified service
+	// Scenes are PMA entities with type "scene"
+	options := unified.GetAllOptions{
+		Domain: "scene", // Filter for scene entities only
 	}
 
-	// Initialize client
-	if err := haClient.Initialize(ctx); err != nil {
-		h.log.WithError(err).Error("Failed to initialize Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to initialize Home Assistant connection")
-		return
-	}
-
-	// Get all entity states and filter for scenes
-	states, err := haClient.GetStates(ctx)
+	scenesWithRooms, err := h.unifiedService.GetAll(ctx, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to get states from Home Assistant")
+		h.log.WithError(err).Error("Failed to get scenes from unified service")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve scenes")
 		return
 	}
 
-	// Filter for scene entities
-	var scenes []interface{}
-	for _, state := range states {
-		if strings.HasPrefix(state.EntityID, "scene.") {
-			scenes = append(scenes, map[string]interface{}{
-				"entity_id":    state.EntityID,
-				"state":        state.State,
-				"attributes":   state.Attributes,
-				"last_changed": state.LastChanged,
-				"last_updated": state.LastUpdated,
-			})
-		}
+	// Extract just the entities (scenes)
+	scenes := make([]types.PMAEntity, len(scenesWithRooms))
+	for i, swr := range scenesWithRooms {
+		scenes[i] = swr.Entity
 	}
 
 	utils.SendSuccess(c, gin.H{
@@ -58,7 +43,7 @@ func (h *Handlers) GetScenes(c *gin.Context) {
 	})
 }
 
-// GetScene returns a specific Home Assistant scene by ID
+// GetScene returns a specific scene by ID using the unified PMA service
 func (h *Handlers) GetScene(c *gin.Context) {
 	sceneID := c.Param("id")
 	if sceneID == "" {
@@ -66,35 +51,23 @@ func (h *Handlers) GetScene(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
 
-	// Get Home Assistant client
-	haClient, err := homeassistant.NewClient(h.cfg, h.repos.Config, h.log)
+	// Get specific scene through unified service
+	options := unified.GetEntityOptions{}
+
+	sceneWithRoom, err := h.unifiedService.GetByID(ctx, sceneID, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to create Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to connect to Home Assistant")
-		return
-	}
-
-	// Initialize client
-	if err := haClient.Initialize(ctx); err != nil {
-		h.log.WithError(err).Error("Failed to initialize Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to initialize Home Assistant connection")
-		return
-	}
-
-	// Get specific scene state
-	scene, err := haClient.GetState(ctx, sceneID)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to get scene from Home Assistant")
+		h.log.WithError(err).Error("Failed to get scene from unified service")
 		utils.SendError(c, http.StatusNotFound, "Scene not found")
 		return
 	}
 
-	utils.SendSuccess(c, scene)
+	utils.SendSuccess(c, sceneWithRoom.Entity)
 }
 
-// ActivateScene activates a Home Assistant scene
+// ActivateScene activates a scene using the unified PMA service
 func (h *Handlers) ActivateScene(c *gin.Context) {
 	sceneID := c.Param("id")
 	if sceneID == "" {
@@ -102,31 +75,32 @@ func (h *Handlers) ActivateScene(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
 
-	// Get Home Assistant client
-	haClient, err := homeassistant.NewClient(h.cfg, h.repos.Config, h.log)
+	// Create PMA control action for scene activation
+	action := types.PMAControlAction{
+		EntityID: sceneID,
+		Action:   "turn_on",
+		Context: &types.PMAContext{
+			ID:          uuid.New().String(),
+			Source:      "api",
+			Timestamp:   time.Now(),
+			Description: "Activate scene via API",
+		},
+	}
+
+	// Execute through unified service
+	result, err := h.unifiedService.ExecuteAction(ctx, action)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to create Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to connect to Home Assistant")
-		return
-	}
-
-	// Initialize client
-	if err := haClient.Initialize(ctx); err != nil {
-		h.log.WithError(err).Error("Failed to initialize Home Assistant client")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to initialize Home Assistant connection")
-		return
-	}
-
-	// Activate scene using scene.turn_on service call
-	serviceData := map[string]interface{}{
-		"entity_id": sceneID,
-	}
-
-	if err := haClient.CallService(ctx, "scene", "turn_on", serviceData); err != nil {
 		h.log.WithError(err).Error("Failed to activate scene")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to activate scene")
+		return
+	}
+
+	if !result.Success {
+		h.log.Errorf("Scene activation failed: %s", result.Error.Message)
+		utils.SendError(c, http.StatusBadRequest, result.Error.Message)
 		return
 	}
 
@@ -142,5 +116,6 @@ func (h *Handlers) ActivateScene(c *gin.Context) {
 	utils.SendSuccess(c, gin.H{
 		"message":  "Scene activated successfully",
 		"scene_id": sceneID,
+		"result":   result,
 	})
 }

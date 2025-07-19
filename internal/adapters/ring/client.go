@@ -10,13 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 )
 
 const (
-	ringAPIBaseURL = "https://api.ring.com"
-	ringOAuthURL   = "https://oauth.ring.com/oauth/token"
 	ringClientID   = "ring_official_android"
 	ringUserAgent  = "PMA-Ring-Integration/1.0"
 	ringAPIVersion = "11"
@@ -114,11 +113,11 @@ type RingEvent struct {
 }
 
 // NewRingClient creates a new Ring API client
-func NewRingClient(logger *logrus.Logger) *RingClient {
+func NewRingClient(logger *logrus.Logger, cfg *config.Config) *RingClient {
 	oauth2Config := &oauth2.Config{
 		ClientID: ringClientID,
 		Endpoint: oauth2.Endpoint{
-			TokenURL: ringOAuthURL,
+			TokenURL: cfg.ExternalServices.Ring.OAuthURL,
 		},
 		Scopes: []string{},
 	}
@@ -127,7 +126,7 @@ func NewRingClient(logger *logrus.Logger) *RingClient {
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
 		oauth2Config: oauth2Config,
 		logger:       logger,
-		baseURL:      ringAPIBaseURL,
+		baseURL:      cfg.ExternalServices.Ring.APIBaseURL,
 	}
 }
 
@@ -147,7 +146,7 @@ func (c *RingClient) Authenticate(ctx context.Context, creds RingCredentials) er
 		"scope":      {"client"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", ringOAuthURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.oauth2Config.Endpoint.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create auth request: %w", err)
 	}
@@ -189,7 +188,7 @@ func (c *RingClient) refreshToken(ctx context.Context, refreshToken string) erro
 		"client_id":     {ringClientID},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", ringOAuthURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.oauth2Config.Endpoint.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create refresh request: %w", err)
 	}

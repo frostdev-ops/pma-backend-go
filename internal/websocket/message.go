@@ -3,26 +3,37 @@ package websocket
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 )
 
-// Message types for WebSocket communication
+// Message types for WebSocket communication using unified PMA types
 const (
-	// Existing types
-	MessageTypeEntityStateChanged = "entity_state_changed"
-	MessageTypeRoomUpdated        = "room_updated"
+	// Core PMA message types
+	MessageTypePMAEntityStateChanged  = "pma_entity_state_changed"
+	MessageTypePMAEntityAdded         = "pma_entity_added"
+	MessageTypePMAEntityRemoved       = "pma_entity_removed"
+	MessageTypePMAEntityUpdated       = "pma_entity_updated"
+	MessageTypePMARoomUpdated         = "pma_room_updated"
+	MessageTypePMARoomAdded           = "pma_room_added"
+	MessageTypePMARoomRemoved         = "pma_room_removed"
+	MessageTypePMAAreaUpdated         = "pma_area_updated"
+	MessageTypePMASceneActivated      = "pma_scene_activated"
+	MessageTypePMAAutomationTriggered = "pma_automation_triggered"
+
+	// System and synchronization messages
 	MessageTypeSystemStatus       = "system_status"
-
-	// New Home Assistant event types
-	MessageTypeHAStateChanged  = "ha_state_changed"
-	MessageTypeHAEntityAdded   = "ha_entity_added"
-	MessageTypeHAEntityRemoved = "ha_entity_removed"
-	MessageTypeHAAreaUpdated   = "ha_area_updated"
-	MessageTypeHAServiceCalled = "ha_service_called"
-	MessageTypeHASyncStatus    = "ha_sync_status"
-
-	// Client subscription management
-	MessageTypeSubscriptionUpdate = "subscription_update"
+	MessageTypeSyncStatus         = "sync_status"
+	MessageTypeAdapterStatus      = "adapter_status"
 	MessageTypeConnectionStatus   = "connection_status"
+	MessageTypeSubscriptionUpdate = "subscription_update"
+
+	// Legacy message types (deprecated but maintained for compatibility)
+	MessageTypeEntityStateChanged = "entity_state_changed" // Deprecated: use pma_entity_state_changed
+	MessageTypeRoomUpdated        = "room_updated"         // Deprecated: use pma_room_updated
+
+	// Source-specific events for debugging/monitoring (optional)
+	MessageTypeSourceEvent = "source_event"
 )
 
 // Message represents a WebSocket message
@@ -39,123 +50,288 @@ func (m Message) ToJSON() []byte {
 	return data
 }
 
-// HAStateChangedMessage represents a Home Assistant state change event
-type HAStateChangedMessage struct {
+// PMAEntityStateChangedMessage represents a PMA entity state change event
+type PMAEntityStateChangedMessage struct {
 	Type       string                 `json:"type"`
 	EntityID   string                 `json:"entity_id"`
-	OldState   string                 `json:"old_state,omitempty"`
-	NewState   string                 `json:"new_state"`
+	EntityType types.PMAEntityType    `json:"entity_type"`
+	Source     types.PMASourceType    `json:"source"`
+	OldState   types.PMAEntityState   `json:"old_state,omitempty"`
+	NewState   types.PMAEntityState   `json:"new_state"`
 	Attributes map[string]interface{} `json:"attributes"`
 	Timestamp  time.Time              `json:"timestamp"`
 	RoomID     *string                `json:"room_id,omitempty"`
+	AreaID     *string                `json:"area_id,omitempty"`
 }
 
-// ToMessage converts HAStateChangedMessage to generic Message
-func (h HAStateChangedMessage) ToMessage() Message {
+// ToMessage converts PMAEntityStateChangedMessage to generic Message
+func (p PMAEntityStateChangedMessage) ToMessage() Message {
 	return Message{
-		Type: h.Type,
+		Type: p.Type,
 		Data: map[string]interface{}{
-			"entity_id":  h.EntityID,
-			"old_state":  h.OldState,
-			"new_state":  h.NewState,
-			"attributes": h.Attributes,
-			"room_id":    h.RoomID,
+			"entity_id":   p.EntityID,
+			"entity_type": p.EntityType,
+			"source":      p.Source,
+			"old_state":   p.OldState,
+			"new_state":   p.NewState,
+			"attributes":  p.Attributes,
+			"room_id":     p.RoomID,
+			"area_id":     p.AreaID,
 		},
-		Timestamp: h.Timestamp,
+		Timestamp: p.Timestamp,
 	}
 }
 
-// HASyncStatusMessage represents Home Assistant sync status updates
-type HASyncStatusMessage struct {
-	Type        string    `json:"type"`
-	Status      string    `json:"status"` // "connected", "disconnected", "syncing", "error"
-	Message     string    `json:"message,omitempty"`
-	Timestamp   time.Time `json:"timestamp"`
-	EntityCount int       `json:"entity_count,omitempty"`
+// PMAEntityAddedMessage represents a new PMA entity
+type PMAEntityAddedMessage struct {
+	Type      string              `json:"type"`
+	Entity    types.PMAEntity     `json:"entity"`
+	Source    types.PMASourceType `json:"source"`
+	Timestamp time.Time           `json:"timestamp"`
+	RoomID    *string             `json:"room_id,omitempty"`
+	AreaID    *string             `json:"area_id,omitempty"`
 }
 
-// ToMessage converts HASyncStatusMessage to generic Message
-func (h HASyncStatusMessage) ToMessage() Message {
+// ToMessage converts PMAEntityAddedMessage to generic Message
+func (p PMAEntityAddedMessage) ToMessage() Message {
 	return Message{
-		Type: h.Type,
+		Type: p.Type,
 		Data: map[string]interface{}{
-			"status":       h.Status,
-			"message":      h.Message,
-			"entity_count": h.EntityCount,
+			"entity":  p.Entity,
+			"source":  p.Source,
+			"room_id": p.RoomID,
+			"area_id": p.AreaID,
 		},
-		Timestamp: h.Timestamp,
+		Timestamp: p.Timestamp,
 	}
 }
 
-// HAEntityAddedMessage represents a new Home Assistant entity
-type HAEntityAddedMessage struct {
-	Type       string                 `json:"type"`
-	EntityID   string                 `json:"entity_id"`
-	EntityData map[string]interface{} `json:"entity_data"`
-	Timestamp  time.Time              `json:"timestamp"`
-	RoomID     *string                `json:"room_id,omitempty"`
+// PMAEntityRemovedMessage represents a removed PMA entity
+type PMAEntityRemovedMessage struct {
+	Type      string              `json:"type"`
+	EntityID  string              `json:"entity_id"`
+	Source    types.PMASourceType `json:"source"`
+	Timestamp time.Time           `json:"timestamp"`
+	RoomID    *string             `json:"room_id,omitempty"`
 }
 
-// ToMessage converts HAEntityAddedMessage to generic Message
-func (h HAEntityAddedMessage) ToMessage() Message {
+// ToMessage converts PMAEntityRemovedMessage to generic Message
+func (p PMAEntityRemovedMessage) ToMessage() Message {
 	return Message{
-		Type: h.Type,
+		Type: p.Type,
 		Data: map[string]interface{}{
-			"entity_id":   h.EntityID,
-			"entity_data": h.EntityData,
-			"room_id":     h.RoomID,
+			"entity_id": p.EntityID,
+			"source":    p.Source,
+			"room_id":   p.RoomID,
 		},
-		Timestamp: h.Timestamp,
+		Timestamp: p.Timestamp,
 	}
 }
 
-// HAEntityRemovedMessage represents a removed Home Assistant entity
-type HAEntityRemovedMessage struct {
-	Type      string    `json:"type"`
-	EntityID  string    `json:"entity_id"`
-	Timestamp time.Time `json:"timestamp"`
-	RoomID    *string   `json:"room_id,omitempty"`
+// PMARoomUpdatedMessage represents a PMA room update
+type PMARoomUpdatedMessage struct {
+	Type      string              `json:"type"`
+	Room      *types.PMARoom      `json:"room"`
+	Action    string              `json:"action"` // "created", "updated", "deleted"
+	Source    types.PMASourceType `json:"source"`
+	Timestamp time.Time           `json:"timestamp"`
 }
 
-// ToMessage converts HAEntityRemovedMessage to generic Message
-func (h HAEntityRemovedMessage) ToMessage() Message {
+// ToMessage converts PMARoomUpdatedMessage to generic Message
+func (p PMARoomUpdatedMessage) ToMessage() Message {
 	return Message{
-		Type: h.Type,
+		Type: p.Type,
 		Data: map[string]interface{}{
-			"entity_id": h.EntityID,
-			"room_id":   h.RoomID,
+			"room":   p.Room,
+			"action": p.Action,
+			"source": p.Source,
 		},
-		Timestamp: h.Timestamp,
+		Timestamp: p.Timestamp,
 	}
 }
 
-// HAServiceCalledMessage represents a Home Assistant service call
-type HAServiceCalledMessage struct {
-	Type        string                 `json:"type"`
-	Service     string                 `json:"service"`
-	ServiceData map[string]interface{} `json:"service_data"`
-	EntityID    *string                `json:"entity_id,omitempty"`
-	Timestamp   time.Time              `json:"timestamp"`
-	RoomID      *string                `json:"room_id,omitempty"`
+// SyncStatusMessage represents synchronization status updates
+type SyncStatusMessage struct {
+	Type         string              `json:"type"`
+	Source       types.PMASourceType `json:"source"`
+	Status       string              `json:"status"` // "connected", "disconnected", "syncing", "error", "completed"
+	Message      string              `json:"message,omitempty"`
+	Timestamp    time.Time           `json:"timestamp"`
+	EntityCount  int                 `json:"entity_count,omitempty"`
+	RoomCount    int                 `json:"room_count,omitempty"`
+	ErrorCount   int                 `json:"error_count,omitempty"`
+	SyncDuration *time.Duration      `json:"sync_duration,omitempty"`
 }
 
-// ToMessage converts HAServiceCalledMessage to generic Message
-func (h HAServiceCalledMessage) ToMessage() Message {
+// ToMessage converts SyncStatusMessage to generic Message
+func (s SyncStatusMessage) ToMessage() Message {
 	return Message{
-		Type: h.Type,
+		Type: s.Type,
 		Data: map[string]interface{}{
-			"service":      h.Service,
-			"service_data": h.ServiceData,
-			"entity_id":    h.EntityID,
-			"room_id":      h.RoomID,
+			"source":        s.Source,
+			"status":        s.Status,
+			"message":       s.Message,
+			"entity_count":  s.EntityCount,
+			"room_count":    s.RoomCount,
+			"error_count":   s.ErrorCount,
+			"sync_duration": s.SyncDuration,
 		},
-		Timestamp: h.Timestamp,
+		Timestamp: s.Timestamp,
 	}
 }
 
-// Helper functions for existing message types
+// AdapterStatusMessage represents adapter health and status updates
+type AdapterStatusMessage struct {
+	Type        string                `json:"type"`
+	AdapterID   string                `json:"adapter_id"`
+	AdapterName string                `json:"adapter_name"`
+	Source      types.PMASourceType   `json:"source"`
+	Status      string                `json:"status"` // "connected", "disconnected", "error", "healthy", "unhealthy"
+	Health      *types.AdapterHealth  `json:"health,omitempty"`
+	Metrics     *types.AdapterMetrics `json:"metrics,omitempty"`
+	Timestamp   time.Time             `json:"timestamp"`
+}
 
-// EntityStateChangedMessage creates a message for entity state changes
+// ToMessage converts AdapterStatusMessage to generic Message
+func (a AdapterStatusMessage) ToMessage() Message {
+	return Message{
+		Type: a.Type,
+		Data: map[string]interface{}{
+			"adapter_id":   a.AdapterID,
+			"adapter_name": a.AdapterName,
+			"source":       a.Source,
+			"status":       a.Status,
+			"health":       a.Health,
+			"metrics":      a.Metrics,
+		},
+		Timestamp: a.Timestamp,
+	}
+}
+
+// SourceEventMessage represents low-level source events for debugging
+type SourceEventMessage struct {
+	Type        string              `json:"type"`
+	Source      types.PMASourceType `json:"source"`
+	EventType   string              `json:"event_type"`
+	EventData   interface{}         `json:"event_data"`
+	Timestamp   time.Time           `json:"timestamp"`
+	Processed   bool                `json:"processed"`
+	ProcessedBy string              `json:"processed_by,omitempty"`
+}
+
+// ToMessage converts SourceEventMessage to generic Message
+func (s SourceEventMessage) ToMessage() Message {
+	return Message{
+		Type: s.Type,
+		Data: map[string]interface{}{
+			"source":       s.Source,
+			"event_type":   s.EventType,
+			"event_data":   s.EventData,
+			"processed":    s.Processed,
+			"processed_by": s.ProcessedBy,
+		},
+		Timestamp: s.Timestamp,
+	}
+}
+
+// Helper functions for creating PMA WebSocket messages
+
+// NewPMAEntityStateChangedMessage creates a new PMA entity state changed message
+func NewPMAEntityStateChangedMessage(entity types.PMAEntity, oldState, newState types.PMAEntityState) PMAEntityStateChangedMessage {
+	return PMAEntityStateChangedMessage{
+		Type:       MessageTypePMAEntityStateChanged,
+		EntityID:   entity.GetID(),
+		EntityType: entity.GetType(),
+		Source:     entity.GetSource(),
+		OldState:   oldState,
+		NewState:   newState,
+		Attributes: entity.GetAttributes(),
+		Timestamp:  time.Now().UTC(),
+		RoomID:     entity.GetRoomID(),
+		AreaID:     entity.GetAreaID(),
+	}
+}
+
+// NewPMAEntityAddedMessage creates a new PMA entity added message
+func NewPMAEntityAddedMessage(entity types.PMAEntity) PMAEntityAddedMessage {
+	return PMAEntityAddedMessage{
+		Type:      MessageTypePMAEntityAdded,
+		Entity:    entity,
+		Source:    entity.GetSource(),
+		Timestamp: time.Now().UTC(),
+		RoomID:    entity.GetRoomID(),
+		AreaID:    entity.GetAreaID(),
+	}
+}
+
+// NewPMAEntityRemovedMessage creates a new PMA entity removed message
+func NewPMAEntityRemovedMessage(entityID string, source types.PMASourceType, roomID *string) PMAEntityRemovedMessage {
+	return PMAEntityRemovedMessage{
+		Type:      MessageTypePMAEntityRemoved,
+		EntityID:  entityID,
+		Source:    source,
+		Timestamp: time.Now().UTC(),
+		RoomID:    roomID,
+	}
+}
+
+// NewPMARoomUpdatedMessage creates a new PMA room updated message
+func NewPMARoomUpdatedMessage(room *types.PMARoom, action string) PMARoomUpdatedMessage {
+	return PMARoomUpdatedMessage{
+		Type:      MessageTypePMARoomUpdated,
+		Room:      room,
+		Action:    action,
+		Source:    room.GetSource(),
+		Timestamp: time.Now().UTC(),
+	}
+}
+
+// NewSyncStatusMessage creates a new sync status message
+func NewSyncStatusMessage(source types.PMASourceType, status, message string, entityCount, roomCount, errorCount int, duration *time.Duration) SyncStatusMessage {
+	return SyncStatusMessage{
+		Type:         MessageTypeSyncStatus,
+		Source:       source,
+		Status:       status,
+		Message:      message,
+		Timestamp:    time.Now().UTC(),
+		EntityCount:  entityCount,
+		RoomCount:    roomCount,
+		ErrorCount:   errorCount,
+		SyncDuration: duration,
+	}
+}
+
+// NewAdapterStatusMessage creates a new adapter status message
+func NewAdapterStatusMessage(adapter types.PMAAdapter, status string) AdapterStatusMessage {
+	return AdapterStatusMessage{
+		Type:        MessageTypeAdapterStatus,
+		AdapterID:   adapter.GetID(),
+		AdapterName: adapter.GetName(),
+		Source:      adapter.GetSourceType(),
+		Status:      status,
+		Health:      adapter.GetHealth(),
+		Metrics:     adapter.GetMetrics(),
+		Timestamp:   time.Now().UTC(),
+	}
+}
+
+// NewSourceEventMessage creates a new source event message for debugging
+func NewSourceEventMessage(source types.PMASourceType, eventType string, eventData interface{}, processed bool, processedBy string) SourceEventMessage {
+	return SourceEventMessage{
+		Type:        MessageTypeSourceEvent,
+		Source:      source,
+		EventType:   eventType,
+		EventData:   eventData,
+		Timestamp:   time.Now().UTC(),
+		Processed:   processed,
+		ProcessedBy: processedBy,
+	}
+}
+
+// Legacy helper functions (maintained for compatibility)
+
+// EntityStateChangedMessage creates a legacy message for entity state changes
+// Deprecated: Use NewPMAEntityStateChangedMessage instead
 func EntityStateChangedMessage(entityID, oldState, newState string, attributes map[string]interface{}) Message {
 	return Message{
 		Type: MessageTypeEntityStateChanged,
@@ -168,7 +344,8 @@ func EntityStateChangedMessage(entityID, oldState, newState string, attributes m
 	}
 }
 
-// RoomUpdatedMessage creates a message for room updates
+// RoomUpdatedMessage creates a legacy message for room updates
+// Deprecated: Use NewPMARoomUpdatedMessage instead
 func RoomUpdatedMessage(roomID int, roomName string, action string) Message {
 	return Message{
 		Type: MessageTypeRoomUpdated,
@@ -188,62 +365,5 @@ func SystemStatusMessage(status string, details map[string]interface{}) Message 
 			"status":  status,
 			"details": details,
 		},
-	}
-}
-
-// NewHAStateChangedMessage creates a new HA state changed message
-func NewHAStateChangedMessage(entityID, oldState, newState string, attributes map[string]interface{}, roomID *string) HAStateChangedMessage {
-	return HAStateChangedMessage{
-		Type:       MessageTypeHAStateChanged,
-		EntityID:   entityID,
-		OldState:   oldState,
-		NewState:   newState,
-		Attributes: attributes,
-		Timestamp:  time.Now().UTC(),
-		RoomID:     roomID,
-	}
-}
-
-// NewHASyncStatusMessage creates a new HA sync status message
-func NewHASyncStatusMessage(status, message string, entityCount int) HASyncStatusMessage {
-	return HASyncStatusMessage{
-		Type:        MessageTypeHASyncStatus,
-		Status:      status,
-		Message:     message,
-		Timestamp:   time.Now().UTC(),
-		EntityCount: entityCount,
-	}
-}
-
-// NewHAEntityAddedMessage creates a new HA entity added message
-func NewHAEntityAddedMessage(entityID string, entityData map[string]interface{}, roomID *string) HAEntityAddedMessage {
-	return HAEntityAddedMessage{
-		Type:       MessageTypeHAEntityAdded,
-		EntityID:   entityID,
-		EntityData: entityData,
-		Timestamp:  time.Now().UTC(),
-		RoomID:     roomID,
-	}
-}
-
-// NewHAEntityRemovedMessage creates a new HA entity removed message
-func NewHAEntityRemovedMessage(entityID string, roomID *string) HAEntityRemovedMessage {
-	return HAEntityRemovedMessage{
-		Type:      MessageTypeHAEntityRemoved,
-		EntityID:  entityID,
-		Timestamp: time.Now().UTC(),
-		RoomID:    roomID,
-	}
-}
-
-// NewHAServiceCalledMessage creates a new HA service called message
-func NewHAServiceCalledMessage(service string, serviceData map[string]interface{}, entityID *string, roomID *string) HAServiceCalledMessage {
-	return HAServiceCalledMessage{
-		Type:        MessageTypeHAServiceCalled,
-		Service:     service,
-		ServiceData: serviceData,
-		EntityID:    entityID,
-		Timestamp:   time.Now().UTC(),
-		RoomID:      roomID,
 	}
 }

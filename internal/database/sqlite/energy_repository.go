@@ -592,14 +592,20 @@ func (r *EnergyRepository) GetEnergyStats(ctx context.Context, startDate, endDat
 		})
 	}
 
-	// TODO: Calculate savings (placeholder for now)
-	stats.Savings = energy.EnergySavings{
-		TotalSavings:        0,
-		AutomationSavings:   0,
-		OptimizationSavings: 0,
-		SchedulingSavings:   0,
-		PeriodDays:          int(endDate.Sub(startDate).Hours() / 24),
+	// Calculate energy savings based on historical data and automation efficiency
+	savings, err := r.calculateEnergySavings(ctx, startDate, endDate, stats.History)
+	if err != nil {
+		// Log error but don't fail the entire operation
+		// Set default savings values
+		savings = energy.EnergySavings{
+			TotalSavings:        0,
+			AutomationSavings:   0,
+			OptimizationSavings: 0,
+			SchedulingSavings:   0,
+			PeriodDays:          int(endDate.Sub(startDate).Hours() / 24),
+		}
 	}
+	stats.Savings = savings
 
 	return stats, nil
 }
@@ -692,4 +698,133 @@ func (r *EnergyRepository) GetDeviceEnergyMetrics(ctx context.Context) (*energy.
 	metrics.UPSDetected = false
 
 	return metrics, nil
+}
+
+// calculateEnergySavings calculates energy savings based on historical data and automation patterns
+func (r *EnergyRepository) calculateEnergySavings(ctx context.Context, startDate, endDate time.Time, history []energy.EnergyHistoryEntry) (energy.EnergySavings, error) {
+	periodDays := int(endDate.Sub(startDate).Hours() / 24)
+	if periodDays <= 0 {
+		periodDays = 1
+	}
+
+	// Calculate baseline energy consumption (what usage would be without automation)
+	totalUsage := 0.0
+	for _, entry := range history {
+		totalUsage += entry.EnergyUsage
+	}
+
+	// Query automation activity to estimate savings
+	automationSavings, err := r.calculateAutomationSavings(ctx, startDate, endDate)
+	if err != nil {
+		automationSavings = 0
+	}
+
+	// Query optimization patterns (scheduled operations, load balancing)
+	optimizationSavings, err := r.calculateOptimizationSavings(ctx, startDate, endDate)
+	if err != nil {
+		optimizationSavings = 0
+	}
+
+	// Calculate scheduling savings (off-peak usage, timer-based controls)
+	schedulingSavings, err := r.calculateSchedulingSavings(ctx, startDate, endDate)
+	if err != nil {
+		schedulingSavings = 0
+	}
+
+	totalSavings := automationSavings + optimizationSavings + schedulingSavings
+
+	return energy.EnergySavings{
+		TotalSavings:        totalSavings,
+		AutomationSavings:   automationSavings,
+		OptimizationSavings: optimizationSavings,
+		SchedulingSavings:   schedulingSavings,
+		PeriodDays:          periodDays,
+	}, nil
+}
+
+// calculateAutomationSavings estimates savings from automation rules
+func (r *EnergyRepository) calculateAutomationSavings(ctx context.Context, startDate, endDate time.Time) (float64, error) {
+	// Query for automation executions that resulted in energy savings
+	query := `
+		SELECT COUNT(*) as executions
+		FROM automation_executions ae
+		JOIN automations a ON ae.automation_id = a.id
+		WHERE ae.executed_at >= ? AND ae.executed_at <= ?
+		AND ae.status = 'completed'
+		AND (a.name LIKE '%energy%' OR a.name LIKE '%power%' OR a.name LIKE '%turn off%')
+	`
+
+	var executions int
+	err := r.db.QueryRowContext(ctx, query, startDate.Format(time.RFC3339), endDate.Format(time.RFC3339)).Scan(&executions)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate automation savings: %w", err)
+	}
+
+	// Estimate average savings per automation execution (configurable value)
+	avgSavingsPerExecution := 0.1 // kWh per execution
+	return float64(executions) * avgSavingsPerExecution, nil
+}
+
+// calculateOptimizationSavings estimates savings from optimization strategies
+func (r *EnergyRepository) calculateOptimizationSavings(ctx context.Context, startDate, endDate time.Time) (float64, error) {
+	// Look for patterns in energy usage that indicate optimization
+	query := `
+		SELECT AVG(energy_usage) as avg_usage
+		FROM energy_history
+		WHERE timestamp >= ? AND timestamp <= ?
+		AND strftime('%H', timestamp) BETWEEN '02' AND '06'  -- Low usage hours
+	`
+
+	var lowHourUsage float64
+	err := r.db.QueryRowContext(ctx, query, startDate.Format(time.RFC3339), endDate.Format(time.RFC3339)).Scan(&lowHourUsage)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate optimization savings: %w", err)
+	}
+
+	// Compare with peak hour usage to estimate optimization effectiveness
+	peakQuery := `
+		SELECT AVG(energy_usage) as avg_usage
+		FROM energy_history
+		WHERE timestamp >= ? AND timestamp <= ?
+		AND strftime('%H', timestamp) BETWEEN '18' AND '22'  -- Peak usage hours
+	`
+
+	var peakHourUsage float64
+	err = r.db.QueryRowContext(ctx, peakQuery, startDate.Format(time.RFC3339), endDate.Format(time.RFC3339)).Scan(&peakHourUsage)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate optimization savings: %w", err)
+	}
+
+	// Calculate savings based on load shifting effectiveness
+	if peakHourUsage > lowHourUsage {
+		shiftEfficiency := (peakHourUsage - lowHourUsage) / peakHourUsage
+		if shiftEfficiency > 0.1 { // If there's significant load shifting
+			return shiftEfficiency * lowHourUsage * 0.15, nil // 15% of shifted load as savings
+		}
+	}
+
+	return 0, nil
+}
+
+// calculateSchedulingSavings estimates savings from scheduled operations
+func (r *EnergyRepository) calculateSchedulingSavings(ctx context.Context, startDate, endDate time.Time) (float64, error) {
+	// Query for scheduled automation executions
+	query := `
+		SELECT COUNT(*) as scheduled_executions
+		FROM automation_executions ae
+		JOIN automations a ON ae.automation_id = a.id
+		WHERE ae.executed_at >= ? AND ae.executed_at <= ?
+		AND ae.status = 'completed'
+		AND (a.trigger_config LIKE '%time%' OR a.trigger_config LIKE '%schedule%')
+	`
+
+	var scheduledExecutions int
+	err := r.db.QueryRowContext(ctx, query, startDate.Format(time.RFC3339), endDate.Format(time.RFC3339)).Scan(&scheduledExecutions)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate scheduling savings: %w", err)
+	}
+
+	// Estimate savings from scheduled operations (typically timer-based device control)
+	avgSavingsPerSchedule := 0.05 // kWh per scheduled operation
+	return float64(scheduledExecutions) * avgSavingsPerSchedule, nil
 }

@@ -1,0 +1,77 @@
+server:
+  port: 3001
+  host: "0.0.0.0"
+  mode: "production"
+  cors:
+    enabled: true
+    allowed_origins: ["*"]
+  rate_limit:
+    enabled: true
+    requests_per_minute: 1000
+  jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI="
+
+auth:
+  enabled: false
+  jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI="
+  token_expiry: 3600
+
+database:
+  path: "./data/pma.db"
+  migrations_path: "/tmp/empty-migrations"
+  max_connections: 10
+  migration:
+    enabled: false
+    auto_migrate: false
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+cache:
+  enabled: true
+  ttl: "5m"
+  max_size: 1000
+
+websocket:
+  enabled: true
+  ping_interval: "30s"
+  pong_wait: "60s"
+
+home_assistant:
+  enabled: false
+
+ai:
+  providers:
+    - type: "ollama"
+      enabled: true
+      priority: 1
+      url: "http://localhost:11434"
+      default_model: "llama3.2:3b"
+
+external_services:
+  ip_check_services:
+    primary: "https://ifconfig.me"
+    fallback: "https://ipecho.net/plain"
+
+devices:
+  ring:
+    enabled: false
+  shelly:
+    enabled: false
+  ups:
+    enabled: false
+
+system:
+  health_check_interval: "30s"
+  metrics_enabled: true
+  debug: false
+
+storage:
+  base_path: "./data"
+  upload_path: "./data/uploads"
+  max_file_size: "10MB"
+  
+security:
+  enable_authentication: false
+  session_timeout: "24h" 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 )
 
@@ -33,6 +34,13 @@ type EntityRepository interface {
 	GetByRoom(ctx context.Context, roomID int) ([]*models.Entity, error)
 	Update(ctx context.Context, entity *models.Entity) error
 	Delete(ctx context.Context, entityID string) error
+
+	// PMA-specific methods
+	CreateOrUpdatePMAEntity(entity types.PMAEntity) error
+	GetPMAEntity(entityID string) (types.PMAEntity, error)
+	GetPMAEntitiesBySource(source types.PMASourceType) ([]types.PMAEntity, error)
+	DeletePMAEntity(entityID string) error
+	UpdatePMAEntityMetadata(entityID string, metadata *types.PMAMetadata) error
 }
 
 // RoomRepository defines room data access methods
@@ -60,16 +68,60 @@ type AuthRepository interface {
 
 // KioskRepository defines kiosk device data access methods
 type KioskRepository interface {
+	// Token management
 	CreateToken(ctx context.Context, token *models.KioskToken) error
 	GetToken(ctx context.Context, token string) (*models.KioskToken, error)
 	UpdateTokenLastUsed(ctx context.Context, token string) error
 	DeleteToken(ctx context.Context, token string) error
 	GetAllTokens(ctx context.Context) ([]*models.KioskToken, error)
+	GetTokensByRoom(ctx context.Context, roomID string) ([]*models.KioskToken, error)
+	UpdateTokenStatus(ctx context.Context, tokenID string, active bool) error
+
+	// Pairing session management
 	CreatePairingSession(ctx context.Context, session *models.KioskPairingSession) error
 	GetPairingSession(ctx context.Context, pin string) (*models.KioskPairingSession, error)
 	UpdatePairingSession(ctx context.Context, session *models.KioskPairingSession) error
 	DeletePairingSession(ctx context.Context, id string) error
 	CleanupExpiredSessions(ctx context.Context) error
+
+	// Configuration management
+	CreateConfig(ctx context.Context, config *models.KioskConfig) error
+	GetConfig(ctx context.Context, roomID string) (*models.KioskConfig, error)
+	UpdateConfig(ctx context.Context, config *models.KioskConfig) error
+	DeleteConfig(ctx context.Context, roomID string) error
+
+	// Device group management
+	CreateDeviceGroup(ctx context.Context, group *models.KioskDeviceGroup) error
+	GetDeviceGroup(ctx context.Context, groupID string) (*models.KioskDeviceGroup, error)
+	GetAllDeviceGroups(ctx context.Context) ([]*models.KioskDeviceGroup, error)
+	UpdateDeviceGroup(ctx context.Context, group *models.KioskDeviceGroup) error
+	DeleteDeviceGroup(ctx context.Context, groupID string) error
+	AddTokenToGroup(ctx context.Context, tokenID, groupID string) error
+	RemoveTokenFromGroup(ctx context.Context, tokenID, groupID string) error
+	GetTokenGroups(ctx context.Context, tokenID string) ([]*models.KioskDeviceGroup, error)
+	GetGroupTokens(ctx context.Context, groupID string) ([]*models.KioskToken, error)
+
+	// Logging
+	CreateLog(ctx context.Context, log *models.KioskLog) error
+	GetLogs(ctx context.Context, tokenID string, query *models.KioskLogQuery) ([]*models.KioskLog, error)
+	DeleteOldLogs(ctx context.Context, olderThanDays int) error
+
+	// Device status management
+	CreateOrUpdateDeviceStatus(ctx context.Context, status *models.KioskDeviceStatus) error
+	GetDeviceStatus(ctx context.Context, tokenID string) (*models.KioskDeviceStatus, error)
+	GetAllDeviceStatuses(ctx context.Context) ([]*models.KioskDeviceStatus, error)
+	UpdateHeartbeat(ctx context.Context, tokenID string) error
+
+	// Command management
+	CreateCommand(ctx context.Context, command *models.KioskCommand) error
+	GetCommand(ctx context.Context, commandID string) (*models.KioskCommand, error)
+	GetPendingCommands(ctx context.Context, tokenID string) ([]*models.KioskCommand, error)
+	UpdateCommandStatus(ctx context.Context, commandID, status string) error
+	CompleteCommand(ctx context.Context, commandID string, resultData []byte, errorMsg string) error
+	CleanupExpiredCommands(ctx context.Context) error
+
+	// Statistics
+	GetKioskStats(ctx context.Context) (*models.KioskStatsResponse, error)
 }
 
 // NetworkRepository defines network device data access methods
@@ -95,6 +147,7 @@ type UPSRepository interface {
 
 // CameraRepository defines camera device data access methods
 type CameraRepository interface {
+	// Core CRUD operations
 	Create(ctx context.Context, camera *models.Camera) error
 	GetByID(ctx context.Context, id int) (*models.Camera, error)
 	GetByEntityID(ctx context.Context, entityID string) (*models.Camera, error)
@@ -102,6 +155,17 @@ type CameraRepository interface {
 	GetEnabled(ctx context.Context) ([]*models.Camera, error)
 	Update(ctx context.Context, camera *models.Camera) error
 	Delete(ctx context.Context, id int) error
+
+	// Advanced queries
+	GetByType(ctx context.Context, cameraType string) ([]*models.Camera, error)
+	SearchCameras(ctx context.Context, query string) ([]*models.Camera, error)
+	CountCameras(ctx context.Context) (int, error)
+	CountEnabledCameras(ctx context.Context) (int, error)
+
+	// Status and URL management
+	UpdateStatus(ctx context.Context, id int, enabled bool) error
+	UpdateStreamURL(ctx context.Context, id int, streamURL string) error
+	UpdateSnapshotURL(ctx context.Context, id int, snapshotURL string) error
 }
 
 // DisplayRepository defines display settings data access methods
@@ -119,4 +183,65 @@ type BluetoothRepository interface {
 	GetConnectedDevices(ctx context.Context) ([]*models.BluetoothDevice, error)
 	UpdateDevice(ctx context.Context, device *models.BluetoothDevice) error
 	DeleteDevice(ctx context.Context, address string) error
+}
+
+// AreaRepository defines area management data access methods
+type AreaRepository interface {
+	// Area CRUD operations
+	CreateArea(ctx context.Context, area *models.Area) error
+	GetAreaByID(ctx context.Context, id int) (*models.Area, error)
+	GetAreaByAreaID(ctx context.Context, areaID string) (*models.Area, error)
+	GetAllAreas(ctx context.Context, includeInactive bool) ([]*models.Area, error)
+	GetAreasByType(ctx context.Context, areaType string) ([]*models.Area, error)
+	GetAreasByParent(ctx context.Context, parentID int) ([]*models.Area, error)
+	GetAreaHierarchy(ctx context.Context) (*models.AreaHierarchy, error)
+	UpdateArea(ctx context.Context, area *models.Area) error
+	DeleteArea(ctx context.Context, id int) error
+
+	// Area mapping operations
+	CreateAreaMapping(ctx context.Context, mapping *models.AreaMapping) error
+	GetAreaMapping(ctx context.Context, id int) (*models.AreaMapping, error)
+	GetAreaMappingByExternal(ctx context.Context, externalAreaID, externalSystem string) (*models.AreaMapping, error)
+	GetAllAreaMappings(ctx context.Context) ([]*models.AreaMappingWithDetails, error)
+	GetAreaMappingsBySystem(ctx context.Context, externalSystem string) ([]*models.AreaMapping, error)
+	GetAreaMappingsByArea(ctx context.Context, areaID int) ([]*models.AreaMapping, error)
+	UpdateAreaMapping(ctx context.Context, mapping *models.AreaMapping) error
+	DeleteAreaMapping(ctx context.Context, id int) error
+
+	// Area settings operations
+	GetAreaSetting(ctx context.Context, settingKey string, areaID *int) (*models.AreaSetting, error)
+	GetAreaSettings(ctx context.Context, areaID *int) ([]*models.AreaSetting, error)
+	SetAreaSetting(ctx context.Context, setting *models.AreaSetting) error
+	DeleteAreaSetting(ctx context.Context, settingKey string, areaID *int) error
+	GetGlobalSettings(ctx context.Context) (*models.AreaSettings, error)
+	SetGlobalSettings(ctx context.Context, settings *models.AreaSettings) error
+
+	// Area analytics operations
+	CreateAreaAnalytic(ctx context.Context, analytic *models.AreaAnalytic) error
+	GetAreaAnalytics(ctx context.Context, areaID int, startDate, endDate *time.Time) ([]*models.AreaAnalytic, error)
+	GetAreaAnalyticsByMetric(ctx context.Context, metricName string, startDate, endDate *time.Time) ([]*models.AreaAnalytic, error)
+	GetAreaAnalyticsSummary(ctx context.Context, areaIDs []int) ([]*models.AreaAnalyticsSummary, error)
+	DeleteOldAnalytics(ctx context.Context, olderThanDays int) error
+
+	// Area sync log operations
+	CreateSyncLog(ctx context.Context, syncLog *models.AreaSyncLog) error
+	GetSyncLog(ctx context.Context, id int) (*models.AreaSyncLog, error)
+	GetSyncLogsBySystem(ctx context.Context, externalSystem string, limit int) ([]*models.AreaSyncLog, error)
+	GetLastSyncTime(ctx context.Context, externalSystem string) (*time.Time, error)
+	UpdateSyncLog(ctx context.Context, syncLog *models.AreaSyncLog) error
+	DeleteOldSyncLogs(ctx context.Context, olderThanDays int) error
+
+	// Room-area assignment operations
+	CreateRoomAreaAssignment(ctx context.Context, assignment *models.RoomAreaAssignment) error
+	GetRoomAreaAssignments(ctx context.Context, roomID int) ([]*models.RoomAreaAssignment, error)
+	GetAreaRoomAssignments(ctx context.Context, areaID int) ([]*models.RoomAreaAssignment, error)
+	UpdateRoomAreaAssignment(ctx context.Context, assignment *models.RoomAreaAssignment) error
+	DeleteRoomAreaAssignment(ctx context.Context, id int) error
+	DeleteRoomAreaAssignmentsByRoom(ctx context.Context, roomID int) error
+	DeleteRoomAreaAssignmentsByArea(ctx context.Context, areaID int) error
+
+	// Status and statistics
+	GetAreaStatus(ctx context.Context) (*models.AreaStatus, error)
+	GetEntityCountsByArea(ctx context.Context) (map[int]int, error)
+	GetRoomCountsByArea(ctx context.Context) (map[int]int, error)
 }

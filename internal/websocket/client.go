@@ -94,8 +94,9 @@ func HandleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientID := uuid.New().String()
 	client := &Client{
-		ID:              uuid.New().String(),
+		ID:              clientID,
 		conn:            conn,
 		send:            make(chan []byte, 256),
 		hub:             hub,
@@ -107,6 +108,14 @@ func HandleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		haSubscriptions: make(map[string]bool),
 		roomFilters:     make(map[string]bool),
 		entityFilters:   make(map[string]bool),
+		info: &ClientInfo{
+			ID:          clientID,
+			IPAddress:   getClientIP(r),
+			UserAgent:   r.Header.Get("User-Agent"),
+			ConnectedAt: time.Now(),
+			LastSeen:    time.Now(),
+			Metadata:    make(map[string]interface{}),
+		},
 	}
 
 	// Register the client with the hub

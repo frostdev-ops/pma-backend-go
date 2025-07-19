@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
@@ -199,84 +198,4 @@ func (h *Handlers) GetHASubscriptions(hub *websocket.Hub) gin.HandlerFunc {
 	}
 }
 
-// GetHAEventStats returns Home Assistant event forwarding statistics
-func (h *Handlers) GetHAEventStats(forwarder *websocket.HAEventForwarder) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if forwarder == nil {
-			utils.SendError(c, http.StatusServiceUnavailable, "HA Event Forwarder not available")
-			return
-		}
-
-		stats := forwarder.GetForwardingStats()
-		utils.SendSuccess(c, stats)
-	}
-}
-
-// TestHAEventForwarding tests the HA event forwarding by sending a test event
-func (h *Handlers) TestHAEventForwarding(forwarder *websocket.HAEventForwarder) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if forwarder == nil {
-			utils.SendError(c, http.StatusServiceUnavailable, "HA Event Forwarder not available")
-			return
-		}
-
-		var request struct {
-			EventType string                 `json:"event_type" binding:"required"`
-			EntityID  string                 `json:"entity_id,omitempty"`
-			TestData  map[string]interface{} `json:"test_data,omitempty"`
-		}
-
-		if err := c.ShouldBindJSON(&request); err != nil {
-			utils.SendError(c, http.StatusBadRequest, "Invalid request body")
-			return
-		}
-
-		// Send a test event based on the type
-		var err error
-		switch request.EventType {
-		case websocket.MessageTypeHAStateChanged:
-			attributes := request.TestData
-			if attributes == nil {
-				attributes = map[string]interface{}{
-					"friendly_name":  "Test Entity",
-					"test_timestamp": time.Now().UTC(),
-				}
-			}
-			err = forwarder.ForwardStateChanged(request.EntityID, "off", "on", attributes)
-
-		case websocket.MessageTypeHASyncStatus:
-			err = forwarder.ForwardSyncStatus("testing", "This is a test sync status message", 42)
-
-		case websocket.MessageTypeHAEntityAdded:
-			entityData := request.TestData
-			if entityData == nil {
-				entityData = map[string]interface{}{
-					"entity_id":      request.EntityID,
-					"friendly_name":  "Test Entity",
-					"state":          "on",
-					"test_timestamp": time.Now().UTC(),
-				}
-			}
-			err = forwarder.ForwardEntityAdded(request.EntityID, entityData)
-
-		case websocket.MessageTypeHAEntityRemoved:
-			err = forwarder.ForwardEntityRemoved(request.EntityID)
-
-		default:
-			utils.SendError(c, http.StatusBadRequest, "Unsupported event type for testing")
-			return
-		}
-
-		if err != nil {
-			utils.SendError(c, http.StatusInternalServerError, "Failed to forward test event: "+err.Error())
-			return
-		}
-
-		utils.SendSuccess(c, gin.H{
-			"message":    "Test event sent successfully",
-			"event_type": request.EventType,
-			"entity_id":  request.EntityID,
-			"timestamp":  time.Now().UTC(),
-		})
-	}
-}
+// Legacy HA event forwarding methods removed - functionality moved to unified service

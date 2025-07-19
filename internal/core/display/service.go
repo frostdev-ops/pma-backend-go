@@ -13,11 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/sirupsen/logrus"
 )
 
 // Service manages display settings and hardware control
 type Service struct {
+	repo   repositories.DisplayRepository
 	db     *sql.DB
 	logger *logrus.Logger
 
@@ -40,8 +43,9 @@ type Service struct {
 }
 
 // NewService creates a new display settings service
-func NewService(db *sql.DB, logger *logrus.Logger) *Service {
+func NewService(repo repositories.DisplayRepository, db *sql.DB, logger *logrus.Logger) *Service {
 	return &Service{
+		repo:                 repo,
 		db:                   db,
 		logger:               logger,
 		capabilitiesCacheTTL: 5 * time.Minute,
@@ -132,60 +136,18 @@ func (s *Service) getDefaultSettings() *DisplaySettings {
 	}
 }
 
-// loadSettings loads current settings from database
+// loadSettings loads current settings from database using repository
 func (s *Service) loadSettings(ctx context.Context) error {
-	query := `
-		SELECT id, brightness, timeout, orientation, darkMode, screensaver, 
-		       screensaverType, screensaverShowClock, screensaverRotationSpeed,
-		       screensaverPictureFrameImage, screensaverUploadEnabled, 
-		       dimBeforeSleep, dimLevel, dimTimeout, created_at, updated_at
-		FROM display_settings 
-		ORDER BY id DESC 
-		LIMIT 1
-	`
-
-	row := s.db.QueryRowContext(ctx, query)
-
-	var settings DisplaySettings
-	var createdAt, updatedAt string
-
-	err := row.Scan(
-		&settings.ID,
-		&settings.Brightness,
-		&settings.Timeout,
-		&settings.Orientation,
-		&settings.DarkMode,
-		&settings.Screensaver,
-		&settings.ScreensaverType,
-		&settings.ScreensaverShowClock,
-		&settings.ScreensaverRotationSpeed,
-		&settings.ScreensaverPictureFrameImage,
-		&settings.ScreensaverUploadEnabled,
-		&settings.DimBeforeSleep,
-		&settings.DimLevel,
-		&settings.DimTimeout,
-		&createdAt,
-		&updatedAt,
-	)
-
+	dbSettings, err := s.repo.GetSettings(ctx)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			// No settings exist, use defaults
-			return nil
-		}
-		return err
+		return fmt.Errorf("failed to load settings from repository: %w", err)
 	}
 
-	// Parse timestamps
-	if ct, err := time.Parse("2006-01-02 15:04:05", createdAt); err == nil {
-		settings.CreatedAt = &ct
-	}
-	if ut, err := time.Parse("2006-01-02 15:04:05", updatedAt); err == nil {
-		settings.UpdatedAt = &ut
-	}
+	// Convert from models.DisplaySettings to display.DisplaySettings
+	settings := s.convertFromModelSettings(dbSettings)
 
 	s.settingsMutex.Lock()
-	s.currentSettings = &settings
+	s.currentSettings = settings
 	s.settingsMutex.Unlock()
 
 	return nil
@@ -274,76 +236,21 @@ func (s *Service) UpdateSettings(ctx context.Context, request *DisplaySettingsRe
 	return &settings, nil
 }
 
-// saveSettings saves settings to database
+// saveSettings saves settings to database using repository
 func (s *Service) saveSettings(ctx context.Context, settings *DisplaySettings) error {
-	query := `
-		INSERT OR REPLACE INTO display_settings (
-			id, brightness, timeout, orientation, darkMode, screensaver, 
-			screensaverType, screensaverShowClock, screensaverRotationSpeed,
-			screensaverPictureFrameImage, screensaverUploadEnabled, 
-			dimBeforeSleep, dimLevel, dimTimeout, updated_at
-		) VALUES (
-			1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
-		)
-	`
-
-	screensaverType := ""
-	if settings.ScreensaverType != nil {
-		screensaverType = string(*settings.ScreensaverType)
+	// Convert to models.DisplaySettings
+	dbSettings := s.convertToModelSettings(settings)
+	if dbSettings == nil {
+		return fmt.Errorf("failed to convert settings for database storage")
 	}
 
-	screensaverShowClock := false
-	if settings.ScreensaverShowClock != nil {
-		screensaverShowClock = *settings.ScreensaverShowClock
+	// Save using repository
+	err := s.repo.UpdateSettings(ctx, dbSettings)
+	if err != nil {
+		return fmt.Errorf("failed to save settings via repository: %w", err)
 	}
 
-	screensaverRotationSpeed := 5
-	if settings.ScreensaverRotationSpeed != nil {
-		screensaverRotationSpeed = *settings.ScreensaverRotationSpeed
-	}
-
-	screensaverPictureFrameImage := ""
-	if settings.ScreensaverPictureFrameImage != nil {
-		screensaverPictureFrameImage = *settings.ScreensaverPictureFrameImage
-	}
-
-	screensaverUploadEnabled := true
-	if settings.ScreensaverUploadEnabled != nil {
-		screensaverUploadEnabled = *settings.ScreensaverUploadEnabled
-	}
-
-	dimBeforeSleep := true
-	if settings.DimBeforeSleep != nil {
-		dimBeforeSleep = *settings.DimBeforeSleep
-	}
-
-	dimLevel := 30
-	if settings.DimLevel != nil {
-		dimLevel = *settings.DimLevel
-	}
-
-	dimTimeout := 180
-	if settings.DimTimeout != nil {
-		dimTimeout = *settings.DimTimeout
-	}
-
-	_, err := s.db.ExecContext(ctx, query,
-		settings.Brightness,
-		settings.Timeout,
-		string(settings.Orientation),
-		string(settings.DarkMode),
-		settings.Screensaver,
-		screensaverType,
-		screensaverShowClock,
-		screensaverRotationSpeed,
-		screensaverPictureFrameImage,
-		screensaverUploadEnabled,
-		dimBeforeSleep,
-		dimLevel,
-		dimTimeout,
-	)
-
-	return err
+	return nil
 }
 
 // GetCapabilities returns display hardware capabilities
@@ -869,4 +776,126 @@ func (s *Service) GetHardwareInfo(ctx context.Context) (*HardwareInfo, error) {
 	}
 
 	return info, nil
+}
+
+// convertFromModelSettings converts models.DisplaySettings to display.DisplaySettings
+func (s *Service) convertFromModelSettings(dbSettings *models.DisplaySettings) *DisplaySettings {
+	if dbSettings == nil {
+		return s.getDefaultSettings()
+	}
+
+	settings := &DisplaySettings{
+		ID:          &dbSettings.ID,
+		Brightness:  dbSettings.Brightness,
+		Timeout:     dbSettings.Timeout,
+		Orientation: DisplayOrientation(dbSettings.Orientation),
+		DarkMode:    DarkMode(dbSettings.DarkMode),
+		Screensaver: dbSettings.Screensaver,
+		CreatedAt:   &dbSettings.CreatedAt,
+		UpdatedAt:   &dbSettings.UpdatedAt,
+	}
+
+	// Handle optional fields with pointers
+	if dbSettings.ScreensaverType != "" {
+		screensaverType := ScreensaverType(dbSettings.ScreensaverType)
+		settings.ScreensaverType = &screensaverType
+	}
+
+	settings.ScreensaverShowClock = &dbSettings.ScreensaverShowClock
+	settings.ScreensaverRotationSpeed = &dbSettings.ScreensaverRotationSpeed
+
+	if dbSettings.ScreensaverPictureFrameImage != "" {
+		settings.ScreensaverPictureFrameImage = &dbSettings.ScreensaverPictureFrameImage
+	}
+
+	settings.ScreensaverUploadEnabled = &dbSettings.ScreensaverUploadEnabled
+	settings.DimBeforeSleep = &dbSettings.DimBeforeSleep
+	settings.DimLevel = &dbSettings.DimLevel
+	settings.DimTimeout = &dbSettings.DimTimeout
+
+	return settings
+}
+
+// convertToModelSettings converts display.DisplaySettings to models.DisplaySettings
+func (s *Service) convertToModelSettings(settings *DisplaySettings) *models.DisplaySettings {
+	if settings == nil {
+		return nil
+	}
+
+	dbSettings := &models.DisplaySettings{
+		Brightness:  settings.Brightness,
+		Timeout:     settings.Timeout,
+		Orientation: string(settings.Orientation),
+		DarkMode:    string(settings.DarkMode),
+		Screensaver: settings.Screensaver,
+	}
+
+	// Set ID if available
+	if settings.ID != nil {
+		dbSettings.ID = *settings.ID
+	} else {
+		dbSettings.ID = 1 // Default ID for singleton settings
+	}
+
+	// Handle optional fields
+	if settings.ScreensaverType != nil {
+		dbSettings.ScreensaverType = string(*settings.ScreensaverType)
+	} else {
+		dbSettings.ScreensaverType = "clock" // default
+	}
+
+	if settings.ScreensaverShowClock != nil {
+		dbSettings.ScreensaverShowClock = *settings.ScreensaverShowClock
+	} else {
+		dbSettings.ScreensaverShowClock = true // default
+	}
+
+	if settings.ScreensaverRotationSpeed != nil {
+		dbSettings.ScreensaverRotationSpeed = *settings.ScreensaverRotationSpeed
+	} else {
+		dbSettings.ScreensaverRotationSpeed = 5 // default
+	}
+
+	if settings.ScreensaverPictureFrameImage != nil {
+		dbSettings.ScreensaverPictureFrameImage = *settings.ScreensaverPictureFrameImage
+	}
+
+	if settings.ScreensaverUploadEnabled != nil {
+		dbSettings.ScreensaverUploadEnabled = *settings.ScreensaverUploadEnabled
+	} else {
+		dbSettings.ScreensaverUploadEnabled = true // default
+	}
+
+	if settings.DimBeforeSleep != nil {
+		dbSettings.DimBeforeSleep = *settings.DimBeforeSleep
+	} else {
+		dbSettings.DimBeforeSleep = true // default
+	}
+
+	if settings.DimLevel != nil {
+		dbSettings.DimLevel = *settings.DimLevel
+	} else {
+		dbSettings.DimLevel = 30 // default
+	}
+
+	if settings.DimTimeout != nil {
+		dbSettings.DimTimeout = *settings.DimTimeout
+	} else {
+		dbSettings.DimTimeout = 60 // default
+	}
+
+	// Set timestamps
+	if settings.CreatedAt != nil {
+		dbSettings.CreatedAt = *settings.CreatedAt
+	} else {
+		dbSettings.CreatedAt = time.Now()
+	}
+
+	if settings.UpdatedAt != nil {
+		dbSettings.UpdatedAt = *settings.UpdatedAt
+	} else {
+		dbSettings.UpdatedAt = time.Now()
+	}
+
+	return dbSettings
 }

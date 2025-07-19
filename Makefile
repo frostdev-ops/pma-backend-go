@@ -18,7 +18,7 @@ clean:
 
 # Run database migrations
 migrate:
-	migrate -path migrations -database "sqlite3://data/pma.db" up
+	go run ./cmd/migrate/main.go migrations "sqlite3://data/pma.db" up
 
 # Development with hot reload
 dev:

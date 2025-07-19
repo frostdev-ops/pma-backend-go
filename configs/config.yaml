@@ -11,7 +11,8 @@ database:
   max_connections: 25
 
 auth:
-  jwt_secret: "your-secret-key-here" # Override with environment variable
+  enabled: false  # Set to false by default to make auth optional
+  jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI=" # Override with environment variable
   token_expiry: 3600 # seconds
 
 home_assistant:
@@ -66,8 +67,193 @@ ai:
       max_tokens: 4096
       priority: 3
     - type: "gemini"
-      enabled: false
-      api_key: "" # Override with GEMINI_API_KEY environment variable
+      enabled: true
+      api_key: "AIzaSyArZr6EQ2atRvilgk7T7aSEhZkYmQhdPo4" # Override with GEMINI_API_KEY environment variable
       default_model: "gemini-pro"
       max_tokens: 4096
-      priority: 4 
+      priority: 4
+
+# Router/Network Configuration
+router:
+  enabled: true
+  base_url: "http://192.168.100.1:8080"
+  auth_token: "" # Override with PMA_ROUTER_AUTH_TOKEN environment variable
+  timeout: "30s"
+  retry_attempts: 3
+  monitoring_enabled: true
+  auto_discovery: true
+  traffic_logging: true
+
+# Device Integration Configuration  
+devices:
+  health_check_interval: "30s"
+  ring:
+    enabled: false
+    email: "" # Override with RING_EMAIL environment variable
+    password: "" # Override with RING_PASSWORD environment variable  
+    poll_interval: "5m"
+    event_interval: "30s"
+    event_limit: 20
+    auto_reconnect: true
+  shelly:
+    enabled: false
+    discovery_interval: "5m"
+    username: "admin"
+    password: "" # Override with SHELLY_PASSWORD environment variable
+    discovery_timeout: "30s"
+    mock_devices: # For testing/demo purposes
+      enabled: false
+      devices:
+        - ip: "192.168.100.50"
+          mac: "AA:BB:CC:DD:EE:01"
+          model: "SHSW-1PM"
+          name: "shelly1pm-DDEE01"
+          type: "switch_pm"
+        - ip: "192.168.100.51"
+          mac: "AA:BB:CC:DD:EE:02"
+          model: "SHSW-25"
+          name: "shelly25-DDEE02"
+          type: "roller"
+  ups:
+    enabled: false
+    nut_host: "localhost"
+    nut_port: 3493
+    ups_name: "ups"
+    poll_interval: "30s"
+    monitoring_interval: "30s"
+    history_retention_days: 30
+
+# System Services Configuration
+system:
+  environment: "development" # development, production, testing
+  device_id_file: "./data/device_id"
+  max_log_entries: 1000
+  performance_monitoring: true
+  services:
+    home_assistant:
+      enabled: true
+      host: "192.168.100.2"
+      port: 8123
+      display_name: "Home Assistant"
+      type: "network_service"
+    database:
+      enabled: true
+      path: "./data/pma.db"
+      display_name: "SQLite Database"
+      type: "file_service"
+    websocket:
+      enabled: true
+      display_name: "WebSocket Service"
+      type: "internal_service"
+    backend:
+      enabled: true
+      service_name: "pma-backend"
+      display_name: "PMA Backend"
+      type: "systemd_service"
+    nginx:
+      enabled: true
+      service_name: "nginx"
+      display_name: "Nginx Web Server"
+      type: "systemd_service"
+    router:
+      enabled: true
+      service_name: "pma-router"
+      display_name: "PMA Router"
+      type: "systemd_service"
+
+# External Services Configuration
+external_services:
+  # External API endpoints for system utilities
+  ip_check_services:
+    primary: "http://httpbin.org/ip"
+    fallback: "http://ipv4.icanhazip.com"
+    timeout: "10s"
+  
+  # Ring API endpoints
+  ring:
+    api_base_url: "https://api.ring.com"
+    oauth_url: "https://oauth.ring.com/oauth/token"
+    
+  # Mock/testing endpoints  
+  mock_data:
+    enabled: false # Set to true for testing/demo
+    ring_snapshots_base: "https://ring-snapshots.s3.amazonaws.com/mock"
+    ring_streams_base: "https://ring-streams.example.com"
+
+# File Storage and Paths
+storage:
+  base_path: "./data"
+  temp_path: "./data/temp"
+  backup_path: "./data/backups"
+  cache_path: "./data/cache"
+  logs_path: "./logs"
+  device_id_file: "./data/device_id"
+
+# Security Configuration
+security:
+  enable_cors: true
+  allowed_origins: ["*"] # Override with PMA_ALLOWED_ORIGINS environment variable
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst_size: 10
+  
+# Test and development configuration
+test:
+  # Test endpoints configuration
+  endpoints_enabled: true  # Automatically disabled in production mode
+  mock_data_persistence: false  # Whether mock data persists between restarts
+  
+  # Mock entity generation defaults
+  default_entity_count: 20
+  supported_entity_types: ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "lock"]
+  
+  # Performance testing configuration
+  performance_tests_enabled: true
+  max_performance_test_duration: "60s"
+  
+  # Connection testing configuration
+  connection_timeout: "30s"
+  health_check_interval: "5m"
+  
+  # Development helpers
+  auto_generate_test_data: false
+  reset_data_on_startup: false
+
+# Unified Adapter Configuration
+homeassistant:
+  enabled: true
+  url: "http://homeassistant.local:8123"
+  token: "${HA_TOKEN}"  # From environment
+
+ring:
+  enabled: false  # Enable when credentials are provided
+  email: "${RING_EMAIL}"
+  password: "${RING_PASSWORD}"
+
+shelly:
+  enabled: true
+
+ups:
+  enabled: false
+  host: "localhost"
+  port: 3493
+
+network:
+  enabled: true
+
+# Environment Variable Overrides Documentation
+# The following environment variables can override configuration values:
+# - JWT_SECRET: Override auth.jwt_secret
+# - HOME_ASSISTANT_TOKEN: Override home_assistant.token  
+# - HA_TOKEN: Override homeassistant.token
+# - PMA_ROUTER_AUTH_TOKEN: Override router.auth_token
+# - RING_EMAIL: Override ring.email / devices.ring.email
+# - RING_PASSWORD: Override ring.password / devices.ring.password
+# - SHELLY_PASSWORD: Override devices.shelly.password
+# - OPENAI_API_KEY: Override ai.providers[openai].api_key
+# - CLAUDE_API_KEY: Override ai.providers[claude].api_key
+# - GEMINI_API_KEY: Override ai.providers[gemini].api_key
+# - PORT: Override server.port
+# - DATABASE_PATH: Override database.path
+# - LOG_LEVEL: Override logging.level 

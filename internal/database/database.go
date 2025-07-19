@@ -6,12 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite3"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite"
 )
 
 // Initialize creates and configures the database connection
@@ -23,7 +23,7 @@ func Initialize(cfg config.DatabaseConfig) (*sql.DB, error) {
 	}
 
 	// Open database connection
-	db, err := sql.Open("sqlite3", cfg.Path)
+	db, err := sql.Open("sqlite", cfg.Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -58,7 +58,7 @@ func Migrate(db *sql.DB, migrationsPath string) error {
 
 	m, err := migrate.NewWithDatabaseInstance(
 		fmt.Sprintf("file://%s", migrationsPath),
-		"sqlite3",
+		"sqlite",
 		driver,
 	)
 	if err != nil {
