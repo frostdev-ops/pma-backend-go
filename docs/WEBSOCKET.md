@@ -1,456 +1,181 @@
 # PMA Backend Go - WebSocket Guide
 
-This document provides comprehensive documentation for the PMA Backend Go WebSocket implementation, covering real-time communication, message types, and subscription management.
+This document provides a comprehensive guide to using the PMA Backend Go WebSocket for real-time communication, including connection, authentication, subscription management, and message formats.
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Connection](#connection)
+- [Introduction](#introduction)
+- [Connection Lifecycle](#connection-lifecycle)
 - [Authentication](#authentication)
 - [Message Format](#message-format)
 - [Message Types](#message-types)
+  - [Client to Server](#client-to-server)
+  - [Server to Client](#server-to-client)
 - [Subscription Management](#subscription-management)
-- [Event Types](#event-types)
 - [Client Examples](#client-examples)
+  - [JavaScript (Browser/Node.js)](#javascript-browsernodejs)
+  - [Python](#python)
 - [Error Handling](#error-handling)
-- [Performance & Scaling](#performance--scaling)
+- [Performance & Best Practices](#performance--best-practices)
 - [Troubleshooting](#troubleshooting)
 
-## Overview
+## Introduction
 
-The PMA Backend Go WebSocket system provides real-time, bidirectional communication for smart home automation. It enables clients to:
+The WebSocket service provides a persistent, low-latency connection for real-time updates on entity states, system events, and automation triggers. It is the primary mechanism for frontends to stay in sync with the backend.
 
-- Receive real-time entity state changes
-- Subscribe to specific events and entities
-- Get system status updates
-- Receive automation triggers
-- Monitor adapter health
+## Connection Lifecycle
 
-### Key Features
-
-- **Real-time Updates**: Instant notification of state changes
-- **Selective Subscriptions**: Subscribe to specific entities, rooms, or event types
-- **Message Batching**: Efficient handling of high-frequency updates
-- **Connection Management**: Automatic reconnection and heartbeat
-- **Scalable Architecture**: Support for thousands of concurrent connections
-
-## Connection
-
-### WebSocket Endpoint
-
-```
-ws://localhost:3001/ws
-```
-
-For HTTPS environments:
-```
-wss://your-domain.com/ws
-```
-
-### Connection Parameters
-
-WebSocket connections support the following query parameters:
-
-- `client_id` (optional): Custom client identifier
-- `user_agent` (optional): Client user agent string
-
-Example:
-```
-ws://localhost:3001/ws?client_id=mobile_app&user_agent=PMA-Mobile/1.0
-```
-
-### Connection Lifecycle
-
-1. **Handshake**: Client initiates WebSocket connection
-2. **Welcome**: Server sends welcome message with client ID
-3. **Subscription**: Client subscribes to desired event types
-4. **Active Communication**: Real-time message exchange
-5. **Heartbeat**: Periodic ping/pong for connection health
-6. **Cleanup**: Graceful connection termination
+1. **Connect**: Establish a WebSocket connection to `ws://your-pma-backend/ws`.
+2. **Authenticate (Optional)**: Send an `authenticate` message with a valid JWT token.
+3. **Subscribe**: Send subscription messages for desired event types.
+4. **Receive Messages**: Handle real-time messages from the server.
+5. **Keep-alive**: The server sends periodic ping frames; clients should respond with pong frames.
+6. **Disconnect/Reconnect**: The client should implement auto-reconnect logic.
 
 ## Authentication
 
-WebSocket connections can be authenticated using query parameters or during the handshake:
+Authentication is optional but recommended for personalized features.
 
-### Query Parameter Authentication
-```
-ws://localhost:3001/ws?token=your_jwt_token
-```
-
-### Message-based Authentication
-Send authentication message after connection:
-
+**Authentication Message:**
 ```json
 {
   "type": "authenticate",
   "data": {
-    "token": "your_jwt_token"
+    "token": "your-jwt-token"
   }
 }
 ```
 
-### Unauthenticated Access
+**Server Response (Success):**
+```json
+{
+  "type": "authentication_success",
+  "data": {
+    "user_id": "user123",
+    "message": "Authentication successful"
+  }
+}
+```
 
-Basic WebSocket access is available without authentication, but certain events may require authentication:
-- System administration events
-- Sensitive entity data
-- User-specific notifications
+**Server Response (Failure):**
+```json
+{
+  "type": "authentication_failure",
+  "data": {
+    "error": "Invalid token"
+  }
+}
+```
 
 ## Message Format
 
-All WebSocket messages use a consistent JSON format:
-
-### Outbound Messages (Server → Client)
+All messages are in JSON format and follow a consistent structure:
 
 ```json
 {
   "type": "message_type",
-  "data": {
-    "key": "value"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-### Inbound Messages (Client → Server)
-
-```json
-{
-  "type": "action_type",
-  "data": {
-    "parameter": "value"
-  }
+  "timestamp": "2024-01-01T12:00:00Z",
+  "data": { /* Message payload */ },
+  "request_id": "optional-request-id"
 }
 ```
 
 ## Message Types
 
-### Core PMA Message Types
+### Client to Server
 
-#### Entity State Changes
-```json
-{
-  "type": "pma_entity_state_changed",
-  "data": {
+#### `authenticate`
+- **Description**: Authenticate the WebSocket client.
+- **Payload**: `{ "token": "your-jwt-token" }`
+
+#### `subscribe`
+- **Description**: Subscribe to one or more topics.
+- **Payload**: `{ "topics": ["ha_events", "system_status"] }`
+- **Alternative**: Use specific subscription messages (e.g., `subscribe_entity_updates`).
+
+#### `unsubscribe`
+- **Description**: Unsubscribe from topics.
+- **Payload**: `{ "topics": ["ha_events"] }`
+
+#### `subscribe_entity_updates`
+- **Description**: Subscribe to updates for specific entities.
+- **Payload**: `{ "entity_ids": ["light.living_room"], "include_attributes": true }`
+
+#### `subscribe_ha_events`
+- **Description**: Subscribe to Home Assistant events.
+- **Payload**: `{ "event_types": ["state_changed"], "domains": ["light", "sensor"] }`
+
+#### `subscribe_system_events`
+- **Description**: Subscribe to system-level events.
+- **Payload**: `{ "events": ["adapter_status", "performance_alert"] }`
+
+### Server to Client
+
+#### `pma_entity_state_changed`
+- **Description**: Sent when an entity's state changes.
+- **Payload**: 
+  ```json
+  {
     "entity_id": "light.living_room",
-    "entity_type": "light",
-    "source": "homeassistant",
     "old_state": "off",
     "new_state": "on",
-    "attributes": {
-      "brightness": 255,
-      "color_temp": 3000
-    },
-    "room_id": "living_room",
-    "area_id": "main_floor"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Entity Added
-```json
-{
-  "type": "pma_entity_added",
-  "data": {
-    "entity": {
-      "id": "switch.new_device",
-      "name": "New Device",
-      "type": "switch",
-      "source": "homeassistant",
-      "state": "off"
-    },
-    "room_id": "bedroom",
-    "area_id": "upstairs"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Entity Removed
-```json
-{
-  "type": "pma_entity_removed",
-  "data": {
-    "entity_id": "sensor.old_device",
-    "source": "homeassistant",
-    "room_id": "garage"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Room Updates
-```json
-{
-  "type": "pma_room_updated",
-  "data": {
-    "room": {
-      "id": "living_room",
-      "name": "Living Room",
-      "area": "main_floor",
-      "entity_count": 8
-    },
-    "action": "updated",
+    "attributes": { "brightness": 255 },
     "source": "homeassistant"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Automation Triggered
-```json
-{
-  "type": "pma_automation_triggered",
-  "data": {
-    "rule_id": "morning_routine",
-    "rule_name": "Morning Routine",
-    "trigger": {
-      "type": "time",
-      "value": "07:00:00"
-    },
-    "actions_executed": 3,
-    "success": true
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-### System Messages
-
-#### Sync Status Updates
-```json
-{
-  "type": "sync_status",
-  "data": {
-    "source": "homeassistant",
-    "status": "syncing",
-    "message": "Synchronizing entities",
-    "entity_count": 150,
-    "room_count": 12,
-    "progress": 75
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Adapter Status
-```json
-{
-  "type": "adapter_status",
-  "data": {
-    "adapter_id": "ha_adapter_001",
-    "adapter_name": "Home Assistant",
-    "source": "homeassistant",
-    "status": "connected",
-    "health": {
-      "cpu_usage": 5.2,
-      "memory_usage": 45.8,
-      "last_sync": "2024-01-01T11:55:00Z"
-    }
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### System Status
-```json
-{
-  "type": "system_status",
-  "data": {
-    "status": "healthy",
-    "details": {
-      "connected_clients": 15,
-      "active_automations": 8,
-      "system_load": 0.45
-    }
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-### Control Messages
-
-#### Welcome Message
-```json
-{
-  "type": "welcome",
-  "data": {
-    "client_id": "client_001",
-    "server_time": "2024-01-01T12:00:00Z",
-    "message": "Connected to PMA WebSocket server",
-    "features": ["subscriptions", "heartbeat", "batching"]
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-#### Heartbeat
-```json
-{
-  "type": "ping",
-  "data": {
-    "timestamp": "2024-01-01T12:00:00Z"
   }
-}
-```
+  ```
 
-Response:
-```json
-{
-  "type": "pong",
-  "data": {
-    "timestamp": "2024-01-01T12:00:00Z"
-  }
-}
-```
+#### `pma_entity_added` / `pma_entity_removed`
+- **Description**: Sent when an entity is added or removed.
+
+#### `pma_sync_status`
+- **Description**: Reports the status of synchronization with external systems.
+
+#### `pma_adapter_status`
+- **Description**: Reports the health and status of integration adapters.
+
+#### `system_status`
+- **Description**: Provides an overview of the system's health.
+
+#### `automation_triggered`
+- **Description**: Sent when an automation rule is triggered.
+
+#### `notification`
+- **Description**: General-purpose notification from the backend.
 
 ## Subscription Management
 
-Clients can subscribe to specific types of events to reduce message volume and improve performance.
+Clients can subscribe to various topics to receive specific updates.
 
-### Subscribe to Home Assistant Events
+**Available Topics:**
+- `ha_events`: Home Assistant events
+- `system_status`: System health updates
+- `automation_events`: Automation rule triggers
+- `entity_updates`: Specific entity state changes
 
+**Subscription Example:**
 ```json
 {
-  "type": "subscribe_ha_events",
+  "type": "subscribe",
   "data": {
-    "event_types": ["state_changed", "automation_triggered", "service_call"]
-  }
-}
-```
-
-### Subscribe to Specific Entities
-
-```json
-{
-  "type": "subscribe_ha_entities",
-  "data": {
-    "entity_ids": ["light.living_room", "sensor.temperature", "switch.fan"]
-  }
-}
-```
-
-### Subscribe to Room Updates
-
-```json
-{
-  "type": "subscribe_ha_rooms",
-  "data": {
-    "room_ids": ["living_room", "bedroom", "kitchen"]
-  }
-}
-```
-
-### Subscribe to PMA Rooms (Legacy)
-
-```json
-{
-  "type": "subscribe_room",
-  "data": {
-    "room_id": 1
-  }
-}
-```
-
-### Unsubscribe Examples
-
-```json
-{
-  "type": "unsubscribe_ha_events",
-  "data": {
-    "event_types": ["service_call"]
-  }
-}
-```
-
-```json
-{
-  "type": "unsubscribe_ha_entities",
-  "data": {
-    "entity_ids": ["sensor.temperature"]
-  }
-}
-```
-
-### Subscription Confirmation
-
-Server confirms subscriptions:
-
-```json
-{
-  "type": "subscription_update",
-  "data": {
-    "action": "subscribed",
-    "type": "ha_events",
-    "items": ["state_changed", "automation_triggered"],
-    "total_subscriptions": 2
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-## Event Types
-
-### Core Event Categories
-
-1. **Entity Events**
-   - `pma_entity_state_changed`
-   - `pma_entity_added`
-   - `pma_entity_removed`
-   - `pma_entity_updated`
-
-2. **Room/Area Events**
-   - `pma_room_updated`
-   - `pma_room_added`
-   - `pma_room_removed`
-   - `pma_area_updated`
-
-3. **Automation Events**
-   - `pma_automation_triggered`
-   - `pma_scene_activated`
-
-4. **System Events**
-   - `system_status`
-   - `sync_status`
-   - `adapter_status`
-   - `connection_status`
-
-5. **Debugging Events**
-   - `source_event` (for development)
-
-### Event Filtering
-
-Clients can filter events by:
-- **Entity Type**: Only light entities
-- **Source**: Only Home Assistant events
-- **Room**: Only specific rooms
-- **Domain**: Only specific domains (lights, switches, etc.)
-
-Example filtered subscription:
-```json
-{
-  "type": "subscribe_ha_events",
-  "data": {
-    "event_types": ["state_changed"],
-    "filters": {
-      "domains": ["light", "switch"],
-      "rooms": ["living_room", "bedroom"]
-    }
+    "topics": [
+      "ha_events:state_changed",
+      "entity_updates:light.living_room",
+      "system_status"
+    ]
   }
 }
 ```
 
 ## Client Examples
 
-### JavaScript/Browser
+### JavaScript (Browser/Node.js)
 
 ```javascript
-class PMAWebSocket {
-  constructor(url) {
+class PMAWebSocketClient {
+  constructor(url, token) {
     this.url = url;
+    this.token = token;
     this.ws = null;
-    this.reconnectInterval = 5000;
     this.subscriptions = new Set();
   }
 
@@ -458,384 +183,132 @@ class PMAWebSocket {
     this.ws = new WebSocket(this.url);
     
     this.ws.onopen = () => {
-      console.log('Connected to PMA WebSocket');
-      this.restoreSubscriptions();
+      console.log('Connected to PMA Backend');
+      if (this.token) this.authenticate();
+      this.resubscribe();
     };
-    
+
     this.ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      this.handleMessage(message);
+      this.handleMessage(JSON.parse(event.data));
     };
-    
+
     this.ws.onclose = () => {
-      console.log('WebSocket connection closed, reconnecting...');
-      setTimeout(() => this.connect(), this.reconnectInterval);
+      console.log('Disconnected, reconnecting in 5s...');
+      setTimeout(() => this.connect(), 5000);
     };
-    
+
     this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.error('WebSocket Error:', error);
     };
   }
 
-  send(message) {
+  send(type, data) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+      this.ws.send(JSON.stringify({ type, data }));
     }
   }
 
-  subscribeToEntities(entityIds) {
-    const message = {
-      type: 'subscribe_ha_entities',
-      data: { entity_ids: entityIds }
-    };
-    this.send(message);
-    entityIds.forEach(id => this.subscriptions.add(id));
+  authenticate() {
+    this.send('authenticate', { token: this.token });
   }
 
-  handleMessage(message) {
-    switch (message.type) {
-      case 'pma_entity_state_changed':
-        this.onEntityStateChanged(message.data);
-        break;
-      case 'welcome':
-        console.log('Received welcome:', message.data);
-        break;
-      case 'ping':
-        this.send({ type: 'pong', data: { timestamp: new Date().toISOString() } });
-        break;
-      default:
-        console.log('Received message:', message);
-    }
+  subscribeToEntity(entityId) {
+    const topic = `entity_updates:${entityId}`;
+    this.subscriptions.add(topic);
+    this.send('subscribe', { topics: [topic] });
   }
 
-  onEntityStateChanged(data) {
-    console.log(`Entity ${data.entity_id} changed from ${data.old_state} to ${data.new_state}`);
-    // Update UI
-  }
-
-  restoreSubscriptions() {
+  resubscribe() {
     if (this.subscriptions.size > 0) {
-      this.subscribeToEntities(Array.from(this.subscriptions));
+      this.send('subscribe', { topics: Array.from(this.subscriptions) });
     }
-  }
-}
-
-// Usage
-const pmaWS = new PMAWebSocket('ws://localhost:3001/ws');
-pmaWS.connect();
-
-// Subscribe to specific entities
-pmaWS.subscribeToEntities(['light.living_room', 'sensor.temperature']);
-```
-
-### Node.js
-
-```javascript
-const WebSocket = require('ws');
-
-class PMAWebSocketClient {
-  constructor(url, options = {}) {
-    this.url = url;
-    this.options = options;
-    this.ws = null;
-    this.subscriptions = new Map();
-    this.eventHandlers = new Map();
-  }
-
-  connect() {
-    return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url);
-      
-      this.ws.on('open', () => {
-        console.log('Connected to PMA WebSocket server');
-        this.setupHeartbeat();
-        resolve();
-      });
-      
-      this.ws.on('message', (data) => {
-        try {
-          const message = JSON.parse(data.toString());
-          this.handleMessage(message);
-        } catch (error) {
-          console.error('Failed to parse message:', error);
-        }
-      });
-      
-      this.ws.on('close', () => {
-        console.log('WebSocket connection closed');
-        this.reconnect();
-      });
-      
-      this.ws.on('error', reject);
-    });
-  }
-
-  send(message) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    }
-  }
-
-  on(eventType, handler) {
-    if (!this.eventHandlers.has(eventType)) {
-      this.eventHandlers.set(eventType, []);
-    }
-    this.eventHandlers.get(eventType).push(handler);
-  }
-
-  emit(eventType, data) {
-    const handlers = this.eventHandlers.get(eventType);
-    if (handlers) {
-      handlers.forEach(handler => handler(data));
-    }
-  }
-
-  subscribeToEvents(eventTypes) {
-    const message = {
-      type: 'subscribe_ha_events',
-      data: { event_types: eventTypes }
-    };
-    this.send(message);
   }
 
   handleMessage(message) {
     switch (message.type) {
-      case 'welcome':
-        console.log('Welcome message:', message.data);
-        break;
       case 'pma_entity_state_changed':
-        this.emit('entityStateChanged', message.data);
+        console.log(`Entity ${message.data.entity_id} changed state.`);
         break;
-      case 'pma_automation_triggered':
-        this.emit('automationTriggered', message.data);
-        break;
-      case 'ping':
-        this.send({ type: 'pong', data: { timestamp: new Date().toISOString() } });
-        break;
+      // Handle other types
     }
   }
-
-  setupHeartbeat() {
-    setInterval(() => {
-      this.send({ type: 'ping', data: { timestamp: new Date().toISOString() } });
-    }, 30000);
-  }
-
-  reconnect() {
-    setTimeout(() => {
-      console.log('Attempting to reconnect...');
-      this.connect();
-    }, 5000);
-  }
 }
-
-// Usage
-const client = new PMAWebSocketClient('ws://localhost:3001/ws');
-
-client.on('entityStateChanged', (data) => {
-  console.log('Entity state changed:', data);
-});
-
-client.on('automationTriggered', (data) => {
-  console.log('Automation triggered:', data);
-});
-
-client.connect().then(() => {
-  client.subscribeToEvents(['state_changed', 'automation_triggered']);
-});
 ```
 
 ### Python
 
 ```python
 import asyncio
-import json
 import websockets
-from typing import Dict, List, Callable
+import json
 
 class PMAWebSocketClient:
-    def __init__(self, url: str):
+    def __init__(self, url, token=None):
         self.url = url
-        self.websocket = None
-        self.event_handlers = {}
+        self.token = token
+        self.ws = None
         self.subscriptions = set()
-        
+
     async def connect(self):
-        self.websocket = await websockets.connect(self.url)
-        asyncio.create_task(self.listen())
-        print("Connected to PMA WebSocket server")
+        while True:
+            try:
+                async with websockets.connect(self.url) as ws:
+                    self.ws = ws
+                    print("Connected to PMA Backend")
+                    
+                    if self.token:
+                        await self.authenticate()
+                    
+                    await self.resubscribe()
+
+                    async for message in self.ws:
+                        await self.handle_message(json.loads(message))
+            except websockets.exceptions.ConnectionClosed:
+                print("Connection closed, reconnecting in 5s...")
+                await asyncio.sleep(5)
+
+    async def send(self, msg_type, data):
+        if self.ws:
+            await self.ws.send(json.dumps({'type': msg_type, 'data': data}))
+
+    async def authenticate(self):
+        await self.send('authenticate', {'token': self.token})
+
+    async def subscribe_to_entity(self, entity_id):
+        topic = f"entity_updates:{entity_id}"
+        self.subscriptions.add(topic)
+        await self.send('subscribe', {'topics': [topic]})
         
-    async def listen(self):
-        try:
-            async for message in self.websocket:
-                data = json.loads(message)
-                await self.handle_message(data)
-        except websockets.exceptions.ConnectionClosed:
-            print("WebSocket connection closed")
-            await self.reconnect()
-            
-    async def send(self, message: Dict):
-        if self.websocket:
-            await self.websocket.send(json.dumps(message))
-            
-    async def handle_message(self, message: Dict):
+    async def resubscribe(self):
+        if self.subscriptions:
+            await self.send('subscribe', {'topics': list(self.subscriptions)})
+
+    async def handle_message(self, message):
         msg_type = message.get('type')
-        data = message.get('data', {})
-        
-        if msg_type == 'welcome':
-            print(f"Welcome: {data}")
-        elif msg_type == 'pma_entity_state_changed':
-            await self.emit('entity_state_changed', data)
-        elif msg_type == 'ping':
-            await self.send({'type': 'pong', 'data': {'timestamp': '2024-01-01T12:00:00Z'}})
-            
-    async def emit(self, event: str, data: Dict):
-        if event in self.event_handlers:
-            for handler in self.event_handlers[event]:
-                await handler(data)
-                
-    def on(self, event: str, handler: Callable):
-        if event not in self.event_handlers:
-            self.event_handlers[event] = []
-        self.event_handlers[event].append(handler)
-        
-    async def subscribe_to_entities(self, entity_ids: List[str]):
-        message = {
-            'type': 'subscribe_ha_entities',
-            'data': {'entity_ids': entity_ids}
-        }
-        await self.send(message)
-        self.subscriptions.update(entity_ids)
-        
-    async def reconnect(self):
-        await asyncio.sleep(5)
-        await self.connect()
-
-# Usage
-async def main():
-    client = PMAWebSocketClient('ws://localhost:3001/ws')
-    
-    async def on_entity_changed(data):
-        print(f"Entity {data['entity_id']} changed: {data['old_state']} -> {data['new_state']}")
-    
-    client.on('entity_state_changed', on_entity_changed)
-    
-    await client.connect()
-    await client.subscribe_to_entities(['light.living_room', 'sensor.temperature'])
-    
-    # Keep the connection alive
-    await asyncio.Future()  # Run forever
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        if msg_type == 'pma_entity_state_changed':
+            print(f"Entity {message['data']['entity_id']} changed state.")
 ```
 
 ## Error Handling
 
-### Connection Errors
+| Error Type | Description |
+|------------|-------------|
+| `authentication_failure` | Invalid JWT token |
+| `subscription_failure` | Invalid topic or insufficient permissions |
+| `invalid_message` | Malformed JSON or invalid message structure |
 
-- **Connection Refused**: Server not running or port blocked
-- **Authentication Failed**: Invalid or expired JWT token
-- **Rate Limited**: Too many connection attempts
+## Performance & Best Practices
 
-### Message Errors
-
-```json
-{
-  "type": "error",
-  "data": {
-    "code": "INVALID_MESSAGE_FORMAT",
-    "message": "Invalid JSON format",
-    "details": "Unexpected token at position 15"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-### Subscription Errors
-
-```json
-{
-  "type": "subscription_error",
-  "data": {
-    "action": "subscribe",
-    "error": "Invalid entity ID format",
-    "entity_id": "invalid.entity",
-    "code": "INVALID_ENTITY_ID"
-  },
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
-
-## Performance & Scaling
-
-### Connection Limits
-
-- **Maximum Connections**: 1000 (configurable)
-- **Message Buffer Size**: 256 messages per client
-- **Compression**: Automatic for large messages
-
-### Optimization Strategies
-
-1. **Selective Subscriptions**: Only subscribe to needed events
-2. **Message Batching**: Group related updates
-3. **Connection Pooling**: Reuse connections when possible
-4. **Heartbeat Tuning**: Adjust ping/pong intervals
-
-### Monitoring
-
-Monitor WebSocket performance:
-
-```bash
-# Get WebSocket metrics
-curl http://localhost:3001/api/v1/websocket/metrics
-
-# Get connected clients
-curl http://localhost:3001/api/v1/websocket/clients
-```
+- **Batch Subscriptions**: Subscribe to multiple topics in a single message.
+- **Selective Subscriptions**: Only subscribe to events you need.
+- **Auto-Reconnect**: Implement robust auto-reconnect logic.
+- **Message Buffering**: Buffer messages on the client side if UI updates are frequent.
+- **Compression**: The server supports WebSocket compression; ensure your client does too.
 
 ## Troubleshooting
 
-### Common Issues
-
-#### Connection Drops
-- **Cause**: Network instability, server restart
-- **Solution**: Implement automatic reconnection
-
-#### Message Loss
-- **Cause**: Buffer overflow, connection issues
-- **Solution**: Implement message acknowledgment
-
-#### High Memory Usage
-- **Cause**: Too many subscriptions, message buildup
-- **Solution**: Optimize subscriptions, increase buffer limits
-
-### Debug Mode
-
-Enable debug logging in configuration:
-
-```yaml
-websocket:
-  debug: true
-  log_messages: true
-  log_subscriptions: true
-```
-
-### Testing WebSocket Connection
-
-Use `wscat` tool for testing:
-
-```bash
-# Install wscat
-npm install -g wscat
-
-# Connect and test
-wscat -c ws://localhost:3001/ws
-
-# Send test message
-{"type": "ping", "data": {}}
-```
-
----
-
-For more information, see the [PMA Backend Go Documentation](../README.md) and [API Reference](API_REFERENCE.md).
+- **Connection Issues**: Check network connectivity and server status (`/health`).
+- **Authentication Problems**: Verify JWT token validity and expiration.
+- **Missing Messages**: Check subscription topics and server logs for errors.
+- **Performance**: Monitor WebSocket metrics via the API (`/api/v1/websocket/stats`).
+- **Debugging**: Use browser developer tools or a WebSocket client like `websocat` for inspection.

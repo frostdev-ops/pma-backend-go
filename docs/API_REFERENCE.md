@@ -1,48 +1,67 @@
 # PMA Backend Go - API Reference
 
-This document provides comprehensive documentation for the PMA Backend Go REST API.
+This document provides comprehensive documentation for the PMA Backend Go REST API, including authentication, endpoints, request/response formats, and error handling.
 
 ## Table of Contents
 
 - [Authentication](#authentication)
+  - [JWT Authentication](#jwt-authentication)
+  - [PIN Authentication](#pin-authentication)
 - [Base URL & Versioning](#base-url--versioning)
 - [Response Format](#response-format)
 - [Error Handling](#error-handling)
 - [Rate Limiting](#rate-limiting)
 - [Core Endpoints](#core-endpoints)
+  - [System](#system)
+  - [Authentication](#authentication-endpoints)
 - [Entity Management](#entity-management)
 - [Room & Area Management](#room--area-management)
 - [Automation](#automation)
 - [AI Services](#ai-services)
 - [Analytics](#analytics)
 - [Monitoring](#monitoring)
-- [System Management](#system-management)
+- [Configuration](#configuration)
+- [File Management](#file-management)
 - [WebSocket](#websocket)
+- [SDK Examples](#sdk-examples)
+  - [JavaScript Client](#javascript-client)
+  - [Python Client](#python-client)
 
 ## Authentication
 
-The PMA Backend uses JWT (JSON Web Token) authentication for API access.
+The PMA Backend uses a multi-layered authentication system with JWT for session management and PIN for sensitive operations.
 
-### Authentication Endpoints
+### JWT Authentication
 
-#### POST `/api/v1/auth/login`
-Authenticate with username/password and receive a JWT token.
+All API endpoints (except `/health` and auth endpoints) require a valid JWT token.
+
+#### Authentication Flow
+
+1. **Login**: Authenticate with username/password to receive a JWT.
+2. **Authorize**: Include `Authorization: Bearer YOUR_JWT_TOKEN` in API requests.
+3. **Refresh**: Use the refresh token to get a new JWT when the current one expires.
+
+#### Endpoints
+
+##### `POST /api/v1/auth/login`
+Authenticate and receive JWT and refresh tokens.
 
 **Request:**
 ```json
 {
   "username": "admin",
-  "password": "password"
+  "password": "yourpassword"
 }
 ```
 
-**Response:**
+**Response (Success):**
 ```json
 {
   "success": true,
   "data": {
     "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "expires_at": "2024-01-01T12:00:00Z",
+    "expires_at": "2024-01-01T12:30:00Z",
+    "refresh_token": "your-refresh-token",
     "user": {
       "id": "user123",
       "username": "admin",
@@ -52,8 +71,46 @@ Authenticate with username/password and receive a JWT token.
 }
 ```
 
-#### POST `/api/v1/auth/verify-pin`
-Verify PIN for additional security (if enabled).
+##### `POST /api/v1/auth/refresh`
+Refresh an expired JWT token.
+
+**Request:**
+```json
+{
+  "refresh_token": "your-refresh-token"
+}
+```
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "data": {
+    "token": "new-jwt-token...",
+    "expires_at": "2024-01-01T13:00:00Z"
+  }
+}
+```
+
+##### `POST /api/v1/auth/logout`
+Log out and invalidate the session.
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Logged out successfully"
+}
+```
+
+### PIN Authentication
+
+PIN authentication is an additional layer of security for sensitive operations.
+
+#### Endpoints
+
+##### `POST /api/v1/auth/set-pin`
+Set or change the user's PIN (requires JWT).
 
 **Request:**
 ```json
@@ -62,385 +119,195 @@ Verify PIN for additional security (if enabled).
 }
 ```
 
-#### POST `/api/v1/auth/validate`
-Validate an existing JWT token.
+##### `POST /api/v1/auth/verify-pin`
+Verify the PIN for a sensitive operation.
 
-**Headers:**
+**Request:**
+```json
+{
+  "pin": "1234"
+}
 ```
-Authorization: Bearer <jwt_token>
-```
 
-#### GET `/api/v1/auth/session`
-Get current session information.
-
-### Using Authentication
-
-Include the JWT token in the Authorization header for all authenticated requests:
-
-```bash
-curl -H "Authorization: Bearer <your_jwt_token>" \
-  http://localhost:3001/api/v1/entities
+**Response (Success):**
+```json
+{
+  "success": true,
+  "data": {
+    "verified": true,
+    "expires_at": "2024-01-01T12:05:00Z"
+  }
+}
 ```
 
 ## Base URL & Versioning
 
 - **Base URL**: `http://localhost:3001`
-- **API Version**: `v1`
-- **Full API Base**: `http://localhost:3001/api/v1`
+- **API Base**: `/api/v1`
+- **Health Check**: `/health`
+- **WebSocket**: `/ws`
 
-All API endpoints are versioned and prefixed with `/api/v1/`.
+Example: `http://localhost:3001/api/v1/entities`
 
 ## Response Format
 
-All API responses follow a consistent format:
+All API responses follow a consistent JSON format.
 
 ### Success Response
+
 ```json
 {
   "success": true,
-  "data": { /* response data */ },
-  "meta": { /* optional metadata */ },
-  "timestamp": "2024-01-01T12:00:00Z"
+  "data": { /* Response data */ },
+  "message": "Optional success message",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "request_id": "uuid-for-request"
 }
 ```
 
 ### Error Response
+
 ```json
 {
   "success": false,
-  "error": "Error message",
-  "code": 400,
-  "details": "Detailed error information",
-  "timestamp": "2024-01-01T12:00:00Z"
+  "error": "Detailed error description",
+  "code": 404,
+  "timestamp": "2024-01-01T12:00:00Z",
+  "path": "/api/v1/invalid-endpoint",
+  "method": "GET",
+  "request_id": "uuid-for-request",
+  "details": { /* Additional error details */ }
 }
 ```
 
 ## Error Handling
 
-### HTTP Status Codes
-
-| Code | Description |
-|------|-------------|
-| 200 | Success |
-| 201 | Created |
-| 400 | Bad Request |
-| 401 | Unauthorized |
-| 403 | Forbidden |
-| 404 | Not Found |
-| 409 | Conflict |
-| 429 | Too Many Requests |
-| 500 | Internal Server Error |
-
-### Error Response Details
-
-```json
-{
-  "success": false,
-  "error": "Validation failed",
-  "code": 400,
-  "details": {
-    "field": "entity_id",
-    "message": "Entity ID is required"
-  },
-  "path": "/api/v1/entities",
-  "method": "POST",
-  "timestamp": "2024-01-01T12:00:00Z"
-}
-```
+| Status Code | Description |
+|-------------|-------------|
+| 400 | **Bad Request**: Invalid input or missing parameters |
+| 401 | **Unauthorized**: Missing or invalid authentication token |
+| 403 | **Forbidden**: Insufficient permissions for the operation |
+| 404 | **Not Found**: The requested resource does not exist |
+| 429 | **Too Many Requests**: Rate limit exceeded |
+| 500 | **Internal Server Error**: An unexpected server error occurred |
 
 ## Rate Limiting
 
-The API implements rate limiting to prevent abuse:
-
-- **Default Limit**: 100 requests per minute
-- **Burst Limit**: 200 requests
-- **Headers**: Rate limit info included in response headers
-
-**Rate Limit Headers:**
-```
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 85
-X-RateLimit-Reset: 1640995200
-```
+The API includes rate limiting to prevent abuse. The default is 100 requests per minute. Custom limits can be configured.
 
 ## Core Endpoints
 
-### Health Check
+### System
 
-#### GET `/health`
-Get system health status.
+#### `GET /health`
+Check the health and status of the system.
 
 **Response:**
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2024-01-01T12:00:00Z",
-  "service": "pma-backend-go",
+  "status": "UP",
   "version": "1.0.0",
-  "adapters": {
-    "homeassistant": {
-      "connected": true,
-      "type": "homeassistant",
-      "version": "2024.1.0"
-    }
+  "timestamp": "2024-01-01T12:00:00Z",
+  "services": {
+    "database": "connected",
+    "home_assistant": "connected"
   }
 }
 ```
+
+#### `GET /api/v1/system/info`
+Get detailed system information (requires auth).
+
+### Authentication Endpoints
+
+See [Authentication](#authentication) section for details.
 
 ## Entity Management
 
-Entity management endpoints for smart home devices and services.
+Manage unified smart home entities.
 
-### GET `/api/v1/entities`
-Retrieve all entities with optional filtering.
+#### `GET /api/v1/entities`
+List all entities with filtering and pagination.
 
 **Query Parameters:**
-- `include_room` (boolean): Include room information
-- `include_area` (boolean): Include area information
-- `domain` (string): Filter by entity domain
-- `available_only` (boolean): Only available entities
-- `capabilities` (array): Filter by capabilities
+- `type`: Filter by entity type (e.g., `light`, `sensor`)
+- `source`: Filter by source (e.g., `homeassistant`)
+- `room_id`: Filter by room ID
+- `limit`: Number of entities to return (default: 100)
+- `offset`: Offset for pagination
 
-**Example:**
-```bash
-GET /api/v1/entities?include_room=true&domain=light&available_only=true
-```
+#### `GET /api/v1/entities/:id`
+Get a single entity by its ID.
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "entity": {
-        "id": "light.living_room",
-        "name": "Living Room Light",
-        "type": "light",
-        "source": "homeassistant",
-        "state": "on",
-        "attributes": {
-          "brightness": 255,
-          "color_temp": 3000
-        },
-        "last_updated": "2024-01-01T12:00:00Z"
-      },
-      "room": {
-        "id": "living_room",
-        "name": "Living Room",
-        "area": "main_floor"
-      }
-    }
-  ],
-  "meta": {
-    "count": 1,
-    "by_source": {
-      "homeassistant": 1
-    }
-  }
-}
-```
+#### `POST /api/v1/entities`
+Create a new virtual entity.
 
-### GET `/api/v1/entities/{id}`
-Get a specific entity by ID.
+#### `PUT /api/v1/entities/:id`
+Update an entity's properties.
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "entity": {
-      "id": "light.living_room",
-      "name": "Living Room Light",
-      "type": "light",
-      "source": "homeassistant",
-      "state": "on",
-      "attributes": {
-        "brightness": 255
-      }
-    }
-  }
-}
-```
-
-### GET `/api/v1/entities/type/{type}`
-Get entities by type.
-
-**Path Parameters:**
-- `type`: Entity type (e.g., "light", "switch", "sensor")
-
-### POST `/api/v1/entities/{id}/action`
-Execute an action on an entity.
+#### `POST /api/v1/entities/:id/actions`
+Execute an action on an entity (e.g., `turn_on`, `set_brightness`).
 
 **Request:**
 ```json
 {
   "action": "turn_on",
   "parameters": {
-    "brightness": 128,
-    "color_temp": 2700
+    "brightness": 200,
+    "color_temp": 3000
   }
 }
 ```
 
 ## Room & Area Management
 
-### GET `/api/v1/rooms`
-Get all rooms with optional hierarchy.
+Manage rooms and areas in your smart home.
 
-**Query Parameters:**
-- `include_entities` (boolean): Include entity list
-- `include_area` (boolean): Include area information
+#### `GET /api/v1/rooms`
+List all rooms and their entities.
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "living_room",
-      "name": "Living Room",
-      "area": "main_floor",
-      "entity_count": 5,
-      "entities": [
-        "light.living_room",
-        "switch.fan"
-      ]
-    }
-  ]
-}
-```
+#### `POST /api/v1/rooms`
+Create a new room.
 
-### GET `/api/v1/areas`
-Get all areas with optional hierarchy.
-
-**Query Parameters:**
-- `include_rooms` (boolean): Include room list
-- `hierarchy` (boolean): Build hierarchical structure
-
-### POST `/api/v1/areas`
-Create a new area.
-
-**Request:**
-```json
-{
-  "name": "Main Floor",
-  "description": "Primary living area",
-  "parent_id": null,
-  "metadata": {
-    "floor": 1
-  }
-}
-```
+#### `GET /api/v1/rooms/:id`
+Get details for a specific room.
 
 ## Automation
 
-Automation rule management endpoints.
+Manage automation rules and triggers.
 
-### GET `/api/v1/automation/rules`
-Get all automation rules.
+#### `GET /api/v1/automation/rules`
+List all automation rules.
 
-**Query Parameters:**
-- `enabled` (boolean): Filter by enabled status
-- `category` (string): Filter by category
-- `tag` (string): Filter by tag
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "rules": [
-      {
-        "id": "rule_001",
-        "name": "Morning Lights",
-        "description": "Turn on lights in the morning",
-        "enabled": true,
-        "category": "lighting",
-        "triggers": [
-          {
-            "platform": "time",
-            "at": "07:00:00"
-          }
-        ],
-        "conditions": [
-          {
-            "condition": "state",
-            "entity_id": "sun.sun",
-            "state": "below_horizon"
-          }
-        ],
-        "actions": [
-          {
-            "service": "light.turn_on",
-            "target": {
-              "area_id": "living_area"
-            }
-          }
-        ],
-        "created_at": "2024-01-01T00:00:00Z",
-        "last_triggered": "2024-01-01T07:00:00Z"
-      }
-    ],
-    "count": 1
-  }
-}
-```
-
-### POST `/api/v1/automation/rules`
+#### `POST /api/v1/automation/rules`
 Create a new automation rule.
 
 **Request:**
 ```json
 {
   "name": "Evening Lights",
-  "description": "Turn off lights at night",
-  "enabled": true,
-  "category": "lighting",
-  "triggers": [
-    {
-      "platform": "time",
-      "at": "23:00:00"
-    }
-  ],
-  "actions": [
-    {
-      "service": "light.turn_off",
-      "target": {
-        "area_id": "all"
-      }
-    }
-  ]
+  "triggers": [{"type": "time", "at": "sunset"}],
+  "conditions": [{"type": "state", "entity_id": "sun.sun", "state": "below_horizon"}],
+  "actions": [{"type": "turn_on", "entity_id": "light.living_room"}]
 }
 ```
 
-### PUT `/api/v1/automation/rules/{id}`
-Update an automation rule.
-
-### DELETE `/api/v1/automation/rules/{id}`
-Delete an automation rule.
-
-### POST `/api/v1/automation/rules/{id}/trigger`
-Manually trigger an automation rule.
-
-### GET `/api/v1/automation/templates`
-Get automation rule templates.
+#### `GET /api/v1/automation/rules/:id`
+Get a specific automation rule.
 
 ## AI Services
 
-AI and LLM integration endpoints.
+Interact with the integrated AI assistant.
 
-### POST `/api/v1/ai/chat`
-Chat with AI assistant.
+#### `POST /api/v1/ai/chat`
+Send a message to the AI assistant for command execution or questions.
 
 **Request:**
 ```json
 {
   "message": "Turn on the living room lights",
-  "conversation_id": "conv_123",
-  "provider": "openai",
   "context": {
-    "user_id": "user123",
-    "location": "home"
+    "current_room": "living_room"
   }
 }
 ```
@@ -450,319 +317,135 @@ Chat with AI assistant.
 {
   "success": true,
   "data": {
-    "response": "I'll turn on the living room lights for you.",
-    "actions": [
-      {
-        "type": "entity_action",
-        "entity_id": "light.living_room",
-        "action": "turn_on"
-      }
-    ],
-    "conversation_id": "conv_123",
-    "provider": "openai"
+    "response": "I've turned on the living room lights for you.",
+    "actions_executed": 1,
+    "entities_changed": ["light.living_room"]
   }
 }
 ```
-
-### POST `/api/v1/ai/complete`
-Text completion endpoint.
-
-**Request:**
-```json
-{
-  "prompt": "Create an automation rule that",
-  "max_tokens": 100,
-  "provider": "openai"
-}
-```
-
-### GET `/api/v1/ai/providers`
-Get available AI providers.
-
-### GET `/api/v1/conversations`
-Get conversation history.
-
-### POST `/api/v1/conversations`
-Create a new conversation.
 
 ## Analytics
 
-Analytics and reporting endpoints.
+Access analytics and historical data.
 
-### GET `/api/v1/analytics/data`
-Get historical analytics data.
+#### `GET /api/v1/analytics/summary`
+Get an analytics summary for a given period.
 
-**Query Parameters:**
-- `entity_id` (string): Specific entity
-- `start_date` (ISO date): Start date
-- `end_date` (ISO date): End date
-- `aggregation` (string): hour, day, week, month
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "entity_id": "sensor.temperature",
-    "start_date": "2024-01-01T00:00:00Z",
-    "end_date": "2024-01-02T00:00:00Z",
-    "aggregation": "hour",
-    "data_points": [
-      {
-        "timestamp": "2024-01-01T00:00:00Z",
-        "value": 21.5,
-        "attributes": {
-          "unit": "°C"
-        }
-      }
-    ]
-  }
-}
-```
-
-### GET `/api/v1/analytics/reports`
-Get available reports.
-
-### POST `/api/v1/analytics/reports/generate`
-Generate a new report.
-
-**Request:**
-```json
-{
-  "type": "energy_usage",
-  "period": "week",
-  "entities": ["sensor.power_meter"],
-  "format": "pdf"
-}
-```
-
-### GET `/api/v1/analytics/insights/{entityType}`
-Get insights for entity type.
+#### `GET /api/v1/analytics/history/:entity_id`
+Get historical data for a specific entity.
 
 ## Monitoring
 
-System monitoring and alerting endpoints.
+Access system monitoring and performance metrics.
 
-### GET `/api/v1/monitoring/metrics`
-Get system metrics.
+#### `GET /api/v1/monitoring/status`
+Get the current status of all monitored services.
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "system": {
-      "cpu_usage": 15.2,
-      "memory_usage": 45.8,
-      "disk_usage": 67.3,
-      "uptime": "5d 12h 30m"
-    },
-    "application": {
-      "connected_clients": 12,
-      "active_automations": 8,
-      "entities_count": 150,
-      "response_time": 8.5
-    }
-  }
-}
-```
+#### `GET /api/v1/performance/metrics`
+Get detailed performance metrics in Prometheus format.
 
-### GET `/api/v1/monitoring/alerts`
-Get active alerts.
+## Configuration
 
-### POST `/api/v1/monitoring/alerts/rules`
-Create alert rule.
+Manage system configuration.
 
-**Request:**
-```json
-{
-  "name": "High CPU Usage",
-  "condition": "cpu_usage > 80",
-  "severity": "warning",
-  "actions": [
-    {
-      "type": "notification",
-      "message": "CPU usage is high: {{value}}%"
-    }
-  ]
-}
-```
+#### `GET /api/v1/config`
+Get the current system configuration (admin only).
 
-## System Management
+#### `PUT /api/v1/config`
+Update the system configuration (admin only).
 
-System administration endpoints.
+## File Management
 
-### GET `/api/v1/system/info`
-Get system information.
+Manage files, including uploads for mobile clients.
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "hostname": "pma-server",
-    "platform": "linux",
-    "architecture": "amd64",
-    "go_version": "go1.23.0",
-    "version": "1.0.0",
-    "build_time": "2024-01-01T00:00:00Z",
-    "cpu_cores": 4,
-    "memory_total": "8GB"
-  }
-}
-```
-
-### GET `/api/v1/system/status`
-Get detailed system status.
-
-### POST `/api/v1/system/restart`
-Restart the application.
-
-### GET `/api/v1/cache/stats`
-Get cache statistics.
-
-### POST `/api/v1/cache/clear`
-Clear system caches.
-
-### GET `/api/v1/performance/status`
-Get performance metrics.
+#### `POST /api/v1/files/upload`
+Upload a file.
 
 ## WebSocket
 
-### Connection
-
-Connect to WebSocket endpoint:
-```
-ws://localhost:3001/ws
-```
-
-### Subscription Messages
-
-Subscribe to real-time updates:
-
-```json
-{
-  "type": "subscribe_ha_events",
-  "data": {
-    "event_types": ["state_changed", "automation_triggered"]
-  }
-}
-```
-
-### Real-time Events
-
-Receive real-time updates:
-
-```json
-{
-  "type": "pma_entity_state_changed",
-  "data": {
-    "entity_id": "light.living_room",
-    "old_state": "off",
-    "new_state": "on",
-    "timestamp": "2024-01-01T12:00:00Z"
-  }
-}
-```
-
-For detailed WebSocket documentation, see [WebSocket Guide](WEBSOCKET.md).
+For real-time communication details, see [WebSocket Guide](docs/WEBSOCKET.md).
 
 ## SDK Examples
 
-### JavaScript/Node.js
+### JavaScript Client
 
 ```javascript
-const axios = require('axios');
+class PMA_API {
+    constructor(baseUrl, token) {
+        this.baseUrl = baseUrl;
+        this.token = token;
+    }
 
-class PMAClient {
-  constructor(baseURL, token) {
-    this.baseURL = baseURL;
-    this.token = token;
-    this.client = axios.create({
-      baseURL,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
-  }
+    async request(endpoint, method = 'GET', body = null) {
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.token}`,
+        };
 
-  async getEntities(options = {}) {
-    const response = await this.client.get('/api/v1/entities', {
-      params: options
-    });
-    return response.data;
-  }
+        const config = {
+            method,
+            headers,
+        };
 
-  async executeAction(entityId, action, parameters = {}) {
-    const response = await this.client.post(`/api/v1/entities/${entityId}/action`, {
-      action,
-      parameters
-    });
-    return response.data;
-  }
+        if (body) {
+            config.body = JSON.stringify(body);
+        }
+
+        const response = await fetch(`${this.baseUrl}/api/v1${endpoint}`, config);
+        return response.json();
+    }
+
+    async getEntities() {
+        return this.request('/entities');
+    }
+
+    async getEntity(id) {
+        return this.request(`/entities/${id}`);
+    }
+
+    async executeAction(id, action, params = {}) {
+        return this.request(`/entities/${id}/actions`, 'POST', {
+            action,
+            parameters: params,
+        });
+    }
 }
-
-// Usage
-const client = new PMAClient('http://localhost:3001', 'your-jwt-token');
-const entities = await client.getEntities({ domain: 'light' });
 ```
 
-### Python
+### Python Client
 
 ```python
 import requests
-from typing import Dict, List, Optional
+import json
 
-class PMAClient:
-    def __init__(self, base_url: str, token: str):
+class PMA_API:
+    def __init__(self, base_url, token):
         self.base_url = base_url
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        })
-    
-    def get_entities(self, **params) -> Dict:
-        response = self.session.get(f'{self.base_url}/api/v1/entities', params=params)
-        response.raise_for_status()
-        return response.json()
-    
-    def execute_action(self, entity_id: str, action: str, parameters: Dict = None) -> Dict:
-        data = {'action': action, 'parameters': parameters or {}}
-        response = self.session.post(f'{self.base_url}/api/v1/entities/{entity_id}/action', json=data)
-        response.raise_for_status()
+        self.headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}'
+        }
+
+    def request(self, endpoint, method='GET', data=None):
+        url = f"{self.base_url}/api/v1{endpoint}"
+        
+        if method == 'GET':
+            response = requests.get(url, headers=self.headers)
+        elif method == 'POST':
+            response = requests.post(url, headers=self.headers, data=json.dumps(data))
+        
         return response.json()
 
-# Usage
-client = PMAClient('http://localhost:3001', 'your-jwt-token')
-entities = client.get_entities(domain='light')
+    def get_entities(self):
+        return self.request('/entities')
+
+    def get_entity(self, entity_id):
+        return self.request(f'/entities/{entity_id}')
+
+    def execute_action(self, entity_id, action, params={}):
+        payload = {
+            'action': action,
+            'parameters': params
+        }
+        return self.request(f'/entities/{entity_id}/actions', 'POST', data=payload)
 ```
-
-## Error Codes Reference
-
-### Common Error Codes
-
-| Code | Message | Description |
-|------|---------|-------------|
-| `ENTITY_NOT_FOUND` | Entity not found | Requested entity doesn't exist |
-| `INVALID_ACTION` | Invalid action | Action not supported for entity |
-| `AUTH_REQUIRED` | Authentication required | JWT token missing or invalid |
-| `INSUFFICIENT_PERMISSIONS` | Insufficient permissions | User lacks required permissions |
-| `RATE_LIMIT_EXCEEDED` | Rate limit exceeded | Too many requests |
-| `VALIDATION_FAILED` | Validation failed | Request validation error |
-| `SERVICE_UNAVAILABLE` | Service unavailable | External service unavailable |
-
-## Changelog
-
-### v1.0.0
-- Initial API release
-- Core entity management
-- Automation engine
-- AI integration
-- WebSocket support
-- Analytics and monitoring
-
----
-
-For more information, see the [PMA Backend Go Documentation](../README.md).
