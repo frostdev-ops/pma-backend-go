@@ -10,10 +10,33 @@ database:
   backup_path: "./data/backups"
   max_connections: 25
 
+# Performance optimization configuration
+performance:
+  database:
+    max_connections: 25
+    max_idle_conns: 10
+    conn_max_lifetime: "1h"
+    query_timeout: "30s"
+    enable_query_cache: true
+    cache_ttl: "30m"
+  memory:
+    gc_target: 70
+    heap_limit: 1073741824  # 1GB
+    enable_pooling: true
+  api:
+    enable_compression: true
+    max_request_size: 10485760  # 10MB
+    rate_limit_requests: 1000
+    rate_limit_window: "1m"
+  websocket:
+    max_connections: 1000
+    message_buffer_size: 256
+    compression_enabled: true
+
 auth:
-  enabled: false  # Set to false by default to make auth optional
+  enabled: true  # Enable authentication by default
   jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI=" # Override with environment variable
-  token_expiry: 3600 # seconds
+  token_expiry: 1800 # 30 minutes in seconds (to match frontend expectations)
 
 home_assistant:
   url: "http://192.168.100.2:8123"
@@ -98,30 +121,44 @@ devices:
   shelly:
     enabled: false
     discovery_interval: "5m"
+    poll_interval: "30s"
     username: "admin"
     password: "" # Override with SHELLY_PASSWORD environment variable
     discovery_timeout: "30s"
+    auto_reconnect: true
+    devices: [] # List of specific Shelly devices to manage
     mock_devices: # For testing/demo purposes
       enabled: false
       devices:
         - ip: "192.168.100.50"
-          mac: "AA:BB:CC:DD:EE:01"
-          model: "SHSW-1PM"
           name: "shelly1pm-DDEE01"
+          model: "SHSW-1PM"
           type: "switch_pm"
+          enabled: true
         - ip: "192.168.100.51"
-          mac: "AA:BB:CC:DD:EE:02"
-          model: "SHSW-25"
           name: "shelly25-DDEE02"
+          model: "SHSW-25"
           type: "roller"
+          enabled: true
   ups:
     enabled: false
     nut_host: "localhost"
     nut_port: 3493
     ups_name: "ups"
+    username: ""
+    password: ""
+    nut_servers: []
     poll_interval: "30s"
     monitoring_interval: "30s"
     history_retention_days: 30
+  network:
+    enabled: true
+    scan_interval: "5m"
+    scan_subnets: ["192.168.1.0/24", "192.168.100.0/24"]
+    enable_wake_on_lan: true
+    discovery_ports: [22, 80, 443, 445, 8080]
+    ping_timeout: "5s"
+    auto_reconnect: true
 
 # System Services Configuration
 system:
@@ -220,27 +257,7 @@ test:
   auto_generate_test_data: false
   reset_data_on_startup: false
 
-# Unified Adapter Configuration
-homeassistant:
-  enabled: true
-  url: "http://homeassistant.local:8123"
-  token: "${HA_TOKEN}"  # From environment
-
-ring:
-  enabled: false  # Enable when credentials are provided
-  email: "${RING_EMAIL}"
-  password: "${RING_PASSWORD}"
-
-shelly:
-  enabled: true
-
-ups:
-  enabled: false
-  host: "localhost"
-  port: 3493
-
-network:
-  enabled: true
+# Configuration complete - all device adapters are now configured under the devices: section above
 
 # Environment Variable Overrides Documentation
 # The following environment variables can override configuration values:

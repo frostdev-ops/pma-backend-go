@@ -16,6 +16,7 @@ require (
 	github.com/h2non/filetype v1.1.3
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/klauspost/compress v1.17.0
+	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/prometheus/client_golang v1.15.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v3 v3.23.3
@@ -28,7 +29,6 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	modernc.org/libc v1.65.10 // indirect

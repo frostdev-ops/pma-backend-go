@@ -2,13 +2,17 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/disintegration/imaging"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
@@ -103,24 +107,104 @@ func (tg *ThumbnailGenerator) generateImageThumbnailWithOptions(reader io.Reader
 	return tg.encodeThumbnail(thumbnail, options)
 }
 
-// generateVideoThumbnail generates a thumbnail from a video (placeholder implementation)
+// generateVideoThumbnail generates a thumbnail from a video using FFmpeg
 func (tg *ThumbnailGenerator) generateVideoThumbnail(reader io.Reader, mimeType string) ([]byte, error) {
-	// This is a placeholder implementation
-	// In a real system, you would use FFmpeg to extract a frame from the video
-	tg.logger.Warnf("Video thumbnail generation not fully implemented for %s", mimeType)
-
-	// For now, return a default video placeholder thumbnail
-	return tg.generateVideoPlaceholder(300, 300)
+	return tg.generateVideoThumbnailWithOptions(reader, mimeType, ThumbnailOptions{
+		Width:   300,
+		Height:  300,
+		Quality: 80,
+	})
 }
 
-// generateVideoThumbnailWithOptions generates a video thumbnail with specific options (placeholder)
+// generateVideoThumbnailWithOptions generates a video thumbnail with specific options using FFmpeg
 func (tg *ThumbnailGenerator) generateVideoThumbnailWithOptions(reader io.Reader, mimeType string, options ThumbnailOptions) ([]byte, error) {
-	// This is a placeholder implementation
-	// In a real system, you would use FFmpeg to extract a frame from the video
-	tg.logger.Warnf("Video thumbnail generation not fully implemented for %s", mimeType)
+	// Create temporary files for input video and output thumbnail
+	tempDir := os.TempDir()
 
-	// For now, return a default video placeholder thumbnail
-	return tg.generateVideoPlaceholder(options.Width, options.Height)
+	// Create temporary input file
+	inputFile, err := os.CreateTemp(tempDir, "video_input_*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp input file: %w", err)
+	}
+	defer func() {
+		inputFile.Close()
+		os.Remove(inputFile.Name())
+	}()
+
+	// Copy video data to temporary file
+	_, err = io.Copy(inputFile, reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write video data to temp file: %w", err)
+	}
+	inputFile.Close()
+
+	// Create temporary output file for thumbnail
+	outputFile, err := os.CreateTemp(tempDir, "video_thumb_*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp output file: %w", err)
+	}
+	outputPath := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputPath)
+
+	// Check if FFmpeg is available
+	if !tg.isFFmpegAvailable() {
+		tg.logger.Warn("FFmpeg not available, falling back to placeholder thumbnail")
+		return tg.generateVideoPlaceholder(options.Width, options.Height)
+	}
+
+	// Generate FFmpeg command
+	args := []string{
+		"-i", inputFile.Name(), // Input file
+		"-ss", "00:00:01", // Seek to 1 second (avoid black frames at start)
+		"-vframes", "1", // Extract only 1 frame
+		"-vf", fmt.Sprintf("scale=%d:%d", options.Width, options.Height), // Scale to desired size
+		"-q:v", fmt.Sprintf("%d", 100-options.Quality), // Quality (FFmpeg uses inverse scale)
+		"-y",       // Overwrite output file
+		outputPath, // Output file
+	}
+
+	// Execute FFmpeg command
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	tg.logger.WithFields(map[string]interface{}{
+		"mime_type": mimeType,
+		"width":     options.Width,
+		"height":    options.Height,
+		"quality":   options.Quality,
+	}).Debug("Generating video thumbnail with FFmpeg")
+
+	err = cmd.Run()
+	if err != nil {
+		tg.logger.WithFields(map[string]interface{}{
+			"error":  err.Error(),
+			"stderr": stderr.String(),
+			"args":   args,
+		}).Error("FFmpeg command failed")
+
+		// Fall back to placeholder if FFmpeg fails
+		return tg.generateVideoPlaceholder(options.Width, options.Height)
+	}
+
+	// Read the generated thumbnail
+	thumbnailData, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read generated thumbnail: %w", err)
+	}
+
+	tg.logger.WithFields(map[string]interface{}{
+		"mime_type":      mimeType,
+		"thumbnail_size": len(thumbnailData),
+		"width":          options.Width,
+		"height":         options.Height,
+	}).Info("Video thumbnail generated successfully")
+
+	return thumbnailData, nil
 }
 
 // decodeImage decodes an image from a reader based on MIME type
@@ -188,7 +272,7 @@ func (tg *ThumbnailGenerator) generateDefaultThumbnail() ([]byte, error) {
 func (tg *ThumbnailGenerator) generateVideoPlaceholder(width, height int) ([]byte, error) {
 	// Create a dark gray rectangle with a play icon representation
 	img := imaging.New(width, height, color.RGBA{64, 64, 64, 255})
-	
+
 	buf := new(bytes.Buffer)
 	err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 85})
 	if err != nil {
@@ -301,6 +385,12 @@ func (tg *ThumbnailGenerator) EstimateProcessingTime(imageWidth, imageHeight int
 	baseTime := pixels / 1000000 // ~1 second per megapixel
 
 	return baseTime * int64(thumbnailCount) * 100 // Scale by thumbnail count
+}
+
+// isFFmpegAvailable checks if FFmpeg is available on the system
+func (tg *ThumbnailGenerator) isFFmpegAvailable() bool {
+	_, err := exec.LookPath("ffmpeg")
+	return err == nil
 }
 
 // GetSupportedFormats returns supported formats for thumbnail generation

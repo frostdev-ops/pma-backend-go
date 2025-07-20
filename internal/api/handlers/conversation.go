@@ -495,9 +495,8 @@ func (h *Handlers) CleanupConversations(c *gin.Context) {
 
 // Helper function to get conversation service
 func (h *Handlers) getConversationService() *ai.ConversationService {
-	// This would be initialized in the handlers constructor when the service is wired up
-	// For now, return nil as a placeholder
-	return nil
+	// Return the properly wired conversation service with MCP integration
+	return h.conversationService
 }
 
 // Helper function to get user ID from context

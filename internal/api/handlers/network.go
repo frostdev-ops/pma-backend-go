@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/network"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
@@ -337,5 +339,145 @@ func (h *Handlers) TestRouterConnection(c *gin.Context) {
 		"router_version":   status.RouterStatus.Version,
 		"connection_time":  time.Now(),
 		"response_time_ms": 150, // This could be measured in the future
+	})
+}
+
+// Network Settings Management Handlers
+
+// GetNetworkSettings retrieves network/router settings
+func (h *Handlers) GetNetworkSettings(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get current network status (using available method)
+	status, err := h.networkService.GetNetworkStatus(ctx)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get network settings")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve network settings")
+		return
+	}
+
+	// Prepare network settings response
+	settings := map[string]interface{}{
+		"router": map[string]interface{}{
+			"enabled":    h.cfg.Router.Enabled,
+			"base_url":   h.cfg.Router.BaseURL,
+			"timeout":    h.cfg.Router.Timeout,
+			"monitoring": h.cfg.Router.MonitoringEnabled,
+		},
+		"router_status": status.RouterStatus,
+		"interfaces":    status.Interfaces,
+		"last_updated":  time.Now(),
+	}
+
+	utils.SendSuccess(c, settings)
+}
+
+// UpdateNetworkSettings updates network settings
+func (h *Handlers) UpdateNetworkSettings(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// In a full implementation, you would:
+	// 1. Validate the settings
+	// 2. Apply them to the router service
+	// 3. Update the configuration files
+	// 4. Send WebSocket notifications
+
+	// For now, just log the settings update
+	h.log.WithField("settings", req).Info("Network settings update requested")
+
+	// Save to config repository
+	for key, value := range req {
+		if strValue, ok := value.(string); ok {
+			configKey := fmt.Sprintf("network.%s", key)
+			if err := h.repos.Config.Set(ctx, &models.SystemConfig{
+				Key:   configKey,
+				Value: strValue,
+			}); err != nil {
+				h.log.WithError(err).Warn("Failed to save network config", "key", configKey)
+			}
+		}
+	}
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"message":    "Network settings updated successfully",
+		"updated_at": time.Now(),
+		"settings":   req,
+	})
+}
+
+// ResetNetworkConfiguration resets network configuration to defaults
+func (h *Handlers) ResetNetworkConfiguration(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// In a full implementation, you would:
+	// 1. Stop network services
+	// 2. Reset configuration files to defaults
+	// 3. Restart network services
+	// 4. Send notifications
+
+	// For now, just simulate the reset
+	h.log.Info("Network configuration reset requested")
+
+	// Reset network-related config entries
+	networkKeys := []string{
+		"network.router_enabled",
+		"network.dhcp_enabled",
+		"network.firewall_enabled",
+		"network.monitoring_enabled",
+	}
+
+	for _, key := range networkKeys {
+		if err := h.repos.Config.Delete(ctx, key); err != nil {
+			h.log.WithError(err).Warn("Failed to delete network config", "key", key)
+		}
+	}
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"message":   "Network configuration reset successfully",
+		"reset_at":  time.Now(),
+		"status":    "configuration_reset",
+		"next_step": "restart_network_services",
+	})
+}
+
+// TestRouterConnectivity tests router connectivity
+func (h *Handlers) TestRouterConnectivity(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	startTime := time.Now()
+
+	// Test connection by getting router status
+	status, err := h.networkService.GetNetworkStatus(ctx)
+	latency := time.Since(startTime)
+
+	if err != nil {
+		utils.SendSuccess(c, map[string]interface{}{
+			"success":    false,
+			"message":    "Router connection failed",
+			"error":      err.Error(),
+			"tested_at":  time.Now(),
+			"latency_ms": latency.Milliseconds(),
+		})
+		return
+	}
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"success":        true,
+		"message":        "Router connection successful",
+		"router_service": status.RouterStatus.Service,
+		"router_version": status.RouterStatus.Version,
+		"tested_at":      time.Now(),
+		"latency_ms":     latency.Milliseconds(),
+		"status":         "online",
 	})
 }

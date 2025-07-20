@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -12,48 +13,173 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
 	"github.com/frostdev-ops/pma-backend-go/internal/ai"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/automation"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/bluetooth"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/cache"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/display"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/energymgr"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/kiosk"
 	networkcore "github.com/frostdev-ops/pma-backend-go/internal/core/network"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/queue"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/rooms"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/system"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/test"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	upscore "github.com/frostdev-ops/pma-backend-go/internal/core/ups"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/sqlite"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
-	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 )
 
+// Repository adapters to bridge interface mismatches
+
+// ConversationRepositoryAdapter adapts repositories.ConversationRepository to ai.ConversationRepositoryInterface
+type ConversationRepositoryAdapter struct {
+	repo repositories.ConversationRepository
+}
+
+func NewConversationRepositoryAdapter(repo repositories.ConversationRepository) *ConversationRepositoryAdapter {
+	return &ConversationRepositoryAdapter{repo: repo}
+}
+
+func (a *ConversationRepositoryAdapter) CreateConversation(ctx context.Context, conv *ai.Conversation) error {
+	return a.repo.CreateConversation(ctx, conv)
+}
+
+func (a *ConversationRepositoryAdapter) GetConversation(ctx context.Context, id string, userID string) (*ai.Conversation, error) {
+	return a.repo.GetConversation(ctx, id, userID)
+}
+
+func (a *ConversationRepositoryAdapter) GetConversations(ctx context.Context, filter *ai.ConversationFilter) ([]*ai.Conversation, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetConversations adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetConversations(ctx, filter)
+}
+
+func (a *ConversationRepositoryAdapter) UpdateConversation(ctx context.Context, conv *ai.Conversation) error {
+	return a.repo.UpdateConversation(ctx, conv)
+}
+
+func (a *ConversationRepositoryAdapter) DeleteConversation(ctx context.Context, id string, userID string) error {
+	return a.repo.DeleteConversation(ctx, id, userID)
+}
+
+func (a *ConversationRepositoryAdapter) ArchiveConversation(ctx context.Context, id string, userID string) error {
+	return a.repo.ArchiveConversation(ctx, id, userID)
+}
+
+func (a *ConversationRepositoryAdapter) UnarchiveConversation(ctx context.Context, id string, userID string) error {
+	return a.repo.UnarchiveConversation(ctx, id, userID)
+}
+
+func (a *ConversationRepositoryAdapter) CreateMessage(ctx context.Context, msg *ai.ConversationMessage) error {
+	return a.repo.CreateMessage(ctx, msg)
+}
+
+func (a *ConversationRepositoryAdapter) GetConversationMessages(ctx context.Context, conversationID string, limit int, offset int) ([]*ai.ConversationMessage, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetConversationMessages adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetConversationMessages(ctx, conversationID, limit, offset)
+}
+
+func (a *ConversationRepositoryAdapter) CreateOrUpdateAnalytics(ctx context.Context, analytics *ai.ConversationAnalytics) error {
+	// TODO: Fix type mismatch - temporarily disabled
+	return fmt.Errorf("CreateOrUpdateAnalytics adapter method temporarily disabled due to type mismatch")
+	// return a.repo.CreateOrUpdateAnalytics(ctx, analytics)
+}
+
+func (a *ConversationRepositoryAdapter) GetConversationAnalytics(ctx context.Context, conversationID string, date time.Time) (*ai.ConversationAnalytics, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetConversationAnalytics adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetConversationAnalytics(ctx, conversationID, date)
+}
+
+func (a *ConversationRepositoryAdapter) GetGlobalStatistics(ctx context.Context, userID string, startDate, endDate time.Time) (*ai.ConversationStatistics, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetGlobalStatistics adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetGlobalStatistics(ctx, userID, startDate, endDate)
+}
+
+func (a *ConversationRepositoryAdapter) CleanupOldConversations(ctx context.Context, days int) error {
+	return a.repo.CleanupOldConversations(ctx, days)
+}
+
+func (a *ConversationRepositoryAdapter) CleanupOldMessages(ctx context.Context, days int) error {
+	return a.repo.CleanupOldMessages(ctx, days)
+}
+
+func (a *ConversationRepositoryAdapter) CleanupOldAnalytics(ctx context.Context, days int) error {
+	return a.repo.CleanupOldAnalytics(ctx, days)
+}
+
+// MCPRepositoryAdapter adapts repositories.MCPRepository to ai.MCPRepositoryInterface
+type MCPRepositoryAdapter struct {
+	repo repositories.MCPRepository
+}
+
+func NewMCPRepositoryAdapter(repo repositories.MCPRepository) *MCPRepositoryAdapter {
+	return &MCPRepositoryAdapter{repo: repo}
+}
+
+func (a *MCPRepositoryAdapter) GetToolByName(ctx context.Context, name string) (*ai.MCPTool, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetToolByName adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetToolByName(ctx, name)
+}
+
+func (a *MCPRepositoryAdapter) GetEnabledTools(ctx context.Context, category string) ([]*ai.MCPTool, error) {
+	// TODO: Fix type mismatch - temporarily disabled
+	return nil, fmt.Errorf("GetEnabledTools adapter method temporarily disabled due to type mismatch")
+	// return a.repo.GetEnabledTools(ctx, category)
+}
+
+func (a *MCPRepositoryAdapter) CreateToolExecution(ctx context.Context, execution *ai.MCPToolExecution) error {
+	// TODO: Fix type mismatch - temporarily disabled
+	return fmt.Errorf("CreateToolExecution adapter method temporarily disabled due to type mismatch")
+	// return a.repo.CreateToolExecution(ctx, execution)
+}
+
+func (a *MCPRepositoryAdapter) IncrementToolUsage(ctx context.Context, toolID string) error {
+	return a.repo.IncrementToolUsage(ctx, toolID)
+}
+
+func (a *MCPRepositoryAdapter) CleanupOldExecutions(ctx context.Context, days int) error {
+	return a.repo.CleanupOldExecutions(ctx, days)
+}
+
 // Handlers holds all HTTP handlers and their dependencies
 type Handlers struct {
-	cfg              *config.Config
-	repos            *database.Repositories
-	log              *logrus.Logger
-	wsHub            *websocket.Hub
-	db               *sql.DB
-	automation       *SimpleAutomationHandler
-	llmManager       *ai.LLMManager
-	chatService      *ai.ChatService
-	networkService   *networkcore.Service
-	upsService       *upscore.Service
-	systemService    *system.Service
-	displayService   *display.Service
-	bluetoothService *bluetooth.Service
-	energyService    *energymgr.Service
-	queueService     *queue.QueueService
-	kioskService     kiosk.Service
-	KioskHandler     *KioskHandler
-	eventsHandler    *EventsHandler
-	mcpHandler       *MCPHandler
-	fileHandler      *FileHandler
+	cfg                 *config.Config
+	repos               *database.Repositories
+	log                 *logrus.Logger
+	wsHub               *websocket.Hub
+	db                  *sql.DB
+	automationEngine    *automation.AutomationEngine
+	automationHandler   *AutomationHandler
+	llmManager          *ai.LLMManager
+	chatService         *ai.ChatService
+	conversationService *ai.ConversationService
+	mcpToolExecutor     *ai.MCPToolExecutor
+	networkService      *networkcore.Service
+	upsService          *upscore.Service
+	systemService       *system.Service
+	displayService      *display.Service
+	bluetoothService    *bluetooth.Service
+	energyService       *energymgr.Service
+	roomService         *rooms.RoomService
+	queueService        *queue.QueueService
+	kioskService        kiosk.Service
+	KioskHandler        *KioskHandler
+	eventsHandler       *EventsHandler
+	mcpHandler          *MCPHandler
+	fileHandler         *FileHandler
 
 	testService  *test.Service
 	cacheManager cache.CacheManager
@@ -70,11 +196,6 @@ type Handlers struct {
 
 // NewHandlers creates a new handlers instance
 func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, db *sql.DB) *Handlers {
-	// Create a simple automation handler (without engine for now)
-	automationHandler := &SimpleAutomationHandler{
-		logger: logger,
-	}
-
 	// Initialize AI services
 	var llmManager *ai.LLMManager
 	var chatService *ai.ChatService
@@ -117,6 +238,14 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	// Initialize Energy service
 	energyService := energymgr.NewService(repos.Energy, repos.Entity, repos.UPS, logger)
 
+	// Initialize Room service
+	roomService := rooms.NewRoomService(logger)
+
+	// Initialize Queue service (create queue repository separately)
+	sqlxDB := sqlx.NewDb(db, "sqlite3")
+	queueRepo := sqlite.NewQueueRepository(sqlxDB, logger)
+	queueService := queue.NewQueueService(queueRepo, wsHub, logger)
+
 	// Initialize Kiosk service
 	kioskService := kiosk.NewService(repos.Kiosk, repos.Entity, repos.Room, logger)
 	kioskHandler := NewKioskHandler(kioskService)
@@ -132,7 +261,7 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	typeRegistry := types.NewPMATypeRegistry(logger)
 
 	// Create unified service with registry
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	// Get registry manager and components
 	registryManager := unifiedService.GetRegistryManager()
@@ -140,6 +269,40 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	entityRegistry := registryManager.GetEntityRegistry()
 	conflictResolver := registryManager.GetConflictResolver()
 	priorityManager := registryManager.GetPriorityManager()
+
+	// Initialize Automation Engine
+	var automationEngine *automation.AutomationEngine
+	var automationHandler *AutomationHandler
+
+	automationConfig := &automation.EngineConfig{
+		Workers:              4,
+		QueueSize:            1000,
+		ExecutionTimeout:     30 * time.Second,
+		MaxConcurrentRules:   100,
+		EnableCircuitBreaker: true,
+		CircuitBreakerConfig: &automation.CircuitBreakerConfig{
+			FailureThreshold: 5,
+			ResetTimeout:     60 * time.Second,
+			MaxRequests:      10,
+		},
+		SchedulerConfig: &automation.SchedulerConfig{
+			Timezone: "UTC",
+		},
+	}
+
+	if engine, err := automation.NewAutomationEngine(automationConfig, unifiedService, wsHub, logger); err != nil {
+		logger.WithError(err).Warn("Failed to initialize automation engine")
+	} else {
+		automationEngine = engine
+		automationHandler = NewAutomationHandler(engine, logger)
+
+		// Start the automation engine
+		if err := automationEngine.Start(context.Background()); err != nil {
+			logger.WithError(err).Warn("Failed to start automation engine")
+		} else {
+			logger.Info("Automation engine started successfully")
+		}
+	}
 
 	// Initialize adapters based on config (basic implementation)
 	ctx := context.Background()
@@ -156,6 +319,28 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 				logger.WithError(err).Error("Failed to connect Home Assistant adapter")
 			} else {
 				logger.Info("Home Assistant adapter connected successfully")
+
+				// Trigger initial sync after connection
+				logger.Info("Triggering initial entity sync...")
+				syncCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+
+				result, err := unifiedService.SyncFromSource(syncCtx, types.SourceHomeAssistant)
+				if err != nil {
+					logger.WithError(err).Error("Failed to perform initial sync")
+				} else {
+					logger.WithFields(logrus.Fields{
+						"entities_found":      result.EntitiesFound,
+						"entities_registered": result.EntitiesRegistered,
+						"entities_updated":    result.EntitiesUpdated,
+						"duration":            result.Duration,
+					}).Info("Initial entity sync completed successfully")
+				}
+
+				// Start periodic sync scheduler
+				if err := unifiedService.StartPeriodicSync(); err != nil {
+					logger.WithError(err).Error("Failed to start periodic sync scheduler")
+				}
 			}
 		}()
 	}
@@ -187,27 +372,30 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	cacheHandler := NewCacheHandler(cacheManager, logger)
 
 	handlers := &Handlers{
-		cfg:              cfg,
-		repos:            repos,
-		log:              logger,
-		wsHub:            wsHub,
-		db:               db,
-		automation:       automationHandler,
-		llmManager:       llmManager,
-		chatService:      chatService,
-		networkService:   networkService,
-		upsService:       upsService,
-		systemService:    systemService,
-		displayService:   displayService,
-		bluetoothService: bluetoothService,
-		energyService:    energyService,
-		kioskService:     kioskService,
-		KioskHandler:     kioskHandler,
-		eventsHandler:    eventsHandler,
-		mcpHandler:       mcpHandler,
-		fileHandler:      fileHandler,
+		cfg:               cfg,
+		repos:             repos,
+		log:               logger,
+		wsHub:             wsHub,
+		db:                db,
+		automationEngine:  automationEngine,
+		automationHandler: automationHandler,
+		llmManager:        llmManager,
+		chatService:       chatService,
+		networkService:    networkService,
+		upsService:        upsService,
+		systemService:     systemService,
+		displayService:    displayService,
+		bluetoothService:  bluetoothService,
+		energyService:     energyService,
+		roomService:       roomService,
+		queueService:      queueService,
+		kioskService:      kioskService,
+		KioskHandler:      kioskHandler,
+		eventsHandler:     eventsHandler,
+		mcpHandler:        mcpHandler,
+		fileHandler:       fileHandler,
 
-		testService:  nil, // Initialize testService to nil as it's not yet implemented
+		testService:  test.NewService(cfg, repos, logger, db),
 		cacheManager: cacheManager,
 		CacheHandler: cacheHandler,
 
@@ -218,6 +406,43 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		conflictResolver: conflictResolver,
 		priorityManager:  priorityManager,
 		unifiedService:   unifiedService,
+	}
+
+	// Initialize MCP tool executor with real services
+	mcpToolExecutor := ai.NewMCPToolExecutor(logger)
+	if unifiedService != nil && roomService != nil && systemService != nil && energyService != nil && automationEngine != nil {
+		// Create service wrappers with the real services
+		entityServiceWrapper, roomServiceWrapper, systemServiceWrapper, energyServiceWrapper, automationServiceWrapper := ai.CreateServiceWrappers(
+			unifiedService,
+			roomService,
+			systemService,
+			energyService,
+			automationEngine,
+		)
+
+		// Set the real services on the executor
+		mcpToolExecutor.SetServices(entityServiceWrapper, roomServiceWrapper, systemServiceWrapper, energyServiceWrapper, automationServiceWrapper)
+		logger.Info("MCP tool executor initialized with real services")
+	} else {
+		logger.Warn("Some services not available, MCP tool executor initialized with default wrappers")
+	}
+	handlers.mcpToolExecutor = mcpToolExecutor
+
+	// Initialize conversation service if we have the required components
+	// Note: Conversation service initialization disabled due to interface mismatches
+	// TODO: Fix interface alignment between AI package and repository interfaces
+	if llmManager != nil && repos.Conversation != nil && repos.MCP != nil {
+		conversationService := ai.NewConversationService(
+			llmManager,
+			NewConversationRepositoryAdapter(repos.Conversation), // This already implements ai.ConversationRepositoryInterface
+			NewMCPRepositoryAdapter(repos.MCP),                   // This already implements ai.MCPRepositoryInterface
+			mcpToolExecutor,
+			logger,
+		)
+		handlers.conversationService = conversationService
+		logger.Info("Conversation service initialized with MCP integration")
+	} else {
+		logger.Info("Conversation service initialization skipped - using MCP tool executor directly")
 	}
 
 	logger.Info("Unified PMA type system initialized successfully")
@@ -255,6 +480,11 @@ func (h *Handlers) GetDeviceInfo(c *gin.Context) {
 	systemHandler.GetDeviceInfo(c)
 }
 
+func (h *Handlers) GetSystemMetrics(c *gin.Context) {
+	systemHandler := NewSystemHandler(h.systemService)
+	systemHandler.GetSystemMetrics(c)
+}
+
 func (h *Handlers) GetSystemLogs(c *gin.Context) {
 	systemHandler := NewSystemHandler(h.systemService)
 	systemHandler.GetSystemLogs(c)
@@ -285,57 +515,119 @@ func (h *Handlers) ReportHealth(c *gin.Context) {
 	systemHandler.ReportHealth(c)
 }
 
-// Automation handler methods that return not implemented for now
+func (h *Handlers) GetErrorHistory(c *gin.Context) {
+	systemHandler := NewSystemHandler(h.systemService)
+	systemHandler.GetErrorHistory(c)
+}
+
+func (h *Handlers) ClearErrorHistory(c *gin.Context) {
+	systemHandler := NewSystemHandler(h.systemService)
+	systemHandler.ClearErrorHistory(c)
+}
+
+// Automation handler methods - delegates to AutomationHandler
 func (h *Handlers) GetAutomations(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.GetAutomations(c)
 }
 
 func (h *Handlers) GetAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.GetAutomation(c)
 }
 
 func (h *Handlers) CreateAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.CreateAutomation(c)
 }
 
 func (h *Handlers) UpdateAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.UpdateAutomation(c)
 }
 
 func (h *Handlers) DeleteAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.DeleteAutomation(c)
 }
 
 func (h *Handlers) EnableAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.EnableAutomation(c)
 }
 
 func (h *Handlers) DisableAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.DisableAutomation(c)
 }
 
 func (h *Handlers) TestAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.TestAutomation(c)
 }
 
 func (h *Handlers) ImportAutomations(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.ImportAutomation(c)
 }
 
 func (h *Handlers) ExportAutomations(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.ExportAutomation(c)
 }
 
 func (h *Handlers) ValidateAutomation(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.ValidateAutomation(c)
 }
 
 func (h *Handlers) GetAutomationStatistics(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.GetAutomationStatistics(c)
 }
 
 func (h *Handlers) GetAutomationTemplates(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "automation engine not yet integrated"})
+	if h.automationHandler == nil {
+		c.JSON(501, gin.H{"error": "automation engine not initialized"})
+		return
+	}
+	h.automationHandler.GetAutomationTemplates(c)
 }
 
 func (h *Handlers) GetAutomationHistory(c *gin.Context) {
@@ -544,4 +836,36 @@ func (h *Handlers) CallService(c *gin.Context) {
 func (h *Handlers) UpdateHAEntityState(c *gin.Context) {
 	// This would need to be replaced with ExecuteAction through unified service
 	utils.SendError(c, http.StatusNotImplemented, "Entity state updates should use the unified action execution API")
+}
+
+// HandleNotFound handles requests to non-existent endpoints
+func (h *Handlers) HandleNotFound(c *gin.Context) {
+	h.log.WithFields(logrus.Fields{
+		"method": c.Request.Method,
+		"path":   c.Request.URL.Path,
+		"ip":     c.ClientIP(),
+	}).Info("404 - Endpoint not found")
+
+	utils.SendError(c, http.StatusNotFound, fmt.Sprintf("Endpoint not found: %s %s", c.Request.Method, c.Request.URL.Path))
+}
+
+// HandleMethodNotAllowed handles requests with unsupported HTTP methods
+func (h *Handlers) HandleMethodNotAllowed(c *gin.Context) {
+	h.log.WithFields(logrus.Fields{
+		"method": c.Request.Method,
+		"path":   c.Request.URL.Path,
+		"ip":     c.ClientIP(),
+	}).Info("405 - Method not allowed")
+
+	utils.SendError(c, http.StatusMethodNotAllowed, fmt.Sprintf("Method %s not allowed for endpoint %s", c.Request.Method, c.Request.URL.Path))
+}
+
+// GetUnifiedService returns the unified entity service for external access (e.g., shutdown)
+func (h *Handlers) GetUnifiedService() *unified.UnifiedEntityService {
+	return h.unifiedService
+}
+
+// GetAutomationEngine returns the automation engine for external access (e.g., shutdown)
+func (h *Handlers) GetAutomationEngine() *automation.AutomationEngine {
+	return h.automationEngine
 }

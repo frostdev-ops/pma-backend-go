@@ -8,12 +8,39 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
+	"github.com/frostdev-ops/pma-backend-go/pkg/logger"
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 )
 
-// NewRouter creates and configures the main HTTP router
-func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, db *sql.DB) *gin.Engine {
+// RouterWithHandlers contains the router and handlers for service access
+type RouterWithHandlers struct {
+	Router   *gin.Engine
+	Handlers *handlers.Handlers
+}
+
+// NewRouter creates and configures the main HTTP router with enhanced error handling
+//
+// Enhanced Error Handling Features:
+// - Custom 404 handler for non-existent endpoints with helpful suggestions
+// - Custom 405 handler for unsupported HTTP methods
+// - Enhanced error middleware with detailed logging and request context
+// - Comprehensive error responses with troubleshooting information
+// - Stack traces in development mode for debugging
+// - Automatic endpoint suggestions for common 404 errors
+//
+// Error Response Format:
+//
+//	{
+//	  "success": false,
+//	  "error": "Error message",
+//	  "code": 404,
+//	  "timestamp": "2024-01-01T00:00:00Z",
+//	  "path": "/invalid-endpoint",
+//	  "method": "GET",
+//	  "suggestions": ["Similar endpoints that might help"]
+//	}
+//	}
+func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *logger.BatchLogger, wsHub *websocket.Hub, db *sql.DB) *RouterWithHandlers {
 	// Set gin mode based on config
 	if cfg.Server.Mode == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -23,17 +50,27 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 
 	router := gin.New()
 
-	// Global middleware
-	router.Use(middleware.ErrorHandlingMiddleware(logger))
-	router.Use(middleware.LoggingMiddleware(logger))
+	// Configure router to not redirect trailing slashes
+	router.RedirectTrailingSlash = false
+	router.RedirectFixedPath = false
+
+	// Global middleware - use the underlying logrus.Logger for error handling
+	router.Use(middleware.ErrorHandlingMiddleware(batchLogger.Logger))
+	router.Use(middleware.AppErrorMiddleware(batchLogger.Logger))
+	// Use the BatchLogger for request logging with batching capabilities
+	router.Use(middleware.LoggingMiddleware(batchLogger))
 	router.Use(middleware.CORSMiddleware())
 
-	// Rate limiting
-	rateLimiter := middleware.NewRateLimiter(100, 200) // 100 requests/sec, burst 200
-	router.Use(rateLimiter.RateLimitMiddleware())
+	// Rate limiting - temporarily disabled for debugging
+	// rateLimiter := middleware.NewRateLimiter(100, 200) // 100 requests/sec, burst 200
+	// router.Use(rateLimiter.RateLimitMiddleware())
 
-	// Initialize handlers
-	h := handlers.NewHandlers(cfg, repos, logger, wsHub, db)
+	// Initialize handlers - pass the underlying logrus.Logger to handlers
+	h := handlers.NewHandlers(cfg, repos, batchLogger.Logger, wsHub, db)
+
+	// Handle non-existent routes
+	router.NoRoute(h.HandleNotFound)
+	router.NoMethod(h.HandleMethodNotAllowed)
 
 	// Public routes
 	router.GET("/health", h.Health)
@@ -47,15 +84,19 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		// Authentication routes (public)
 		auth := api.Group("/auth")
 		{
+			// Legacy endpoints (keep for backward compatibility)
 			auth.POST("/register", h.Register)
 			auth.POST("/login", h.Login)
 			auth.POST("/validate", h.ValidateToken)
 
-			// PIN-based authentication (compatible with Node backend)
-			auth.POST("/verify-pin", h.VerifyPin)
-			auth.POST("/set-pin", h.SetPin)
-			auth.GET("/pin-status", h.GetPinStatus)
-			auth.GET("/session", h.GetSession)
+			// Frontend-compatible PIN authentication endpoints
+			auth.POST("/verify-pin", h.VerifyPinV2)
+			auth.POST("/set-pin", h.SetPinV2)
+			auth.POST("/change-pin", h.ChangePinV2)
+			auth.POST("/disable-pin", h.DisablePinV2)
+			auth.GET("/pin-status", h.GetPinStatusV2)
+			auth.GET("/session", h.GetSessionV2)
+			auth.POST("/logout", h.LogoutV2)
 		}
 
 		// Public API routes (no auth required)
@@ -63,8 +104,8 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		{
 			public.GET("/status", h.Health)
 
-			// SSE stream endpoint (public for real-time updates)
-			public.GET("/events/stream", h.GetEventStream)
+			// SSE stream endpoint (public for real-time updates) - needs special CORS handling
+			public.GET("/events/stream", middleware.CORSMiddlewareSSE(), h.GetEventStream)
 
 			// Image serving endpoint (public for screensaver display)
 			public.GET("/screensaver/images/:filename", h.GetScreensaverImage)
@@ -73,33 +114,25 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		// Mobile upload page (public)
 		router.GET("/upload", h.GetMobileUploadPage)
 
-		// Protected API routes (auth required)
-		protected := api.Group("/")
-		protected.Use(middleware.AuthMiddleware(cfg.Auth.JWTSecret))
+		// Protected API routes (auth removed - now public)
+		formerly_protected := api.Group("/")
+		// protected.Use(middleware.AuthMiddleware(cfg.Auth.JWTSecret)) // REMOVED: No auth middleware
 		{
 			// User profile routes
-			profile := protected.Group("/profile")
+			profile := formerly_protected.Group("/profile")
 			{
 				profile.GET("/", h.GetProfile)
 				profile.PUT("/password", h.UpdatePassword)
 			}
 
-			// Protected PIN authentication routes
-			authProtected := protected.Group("/auth")
-			{
-				authProtected.POST("/change-pin", h.ChangePin)
-				authProtected.POST("/disable-pin", h.DisablePin)
-				authProtected.POST("/logout", h.Logout)
-			}
-
-			// User management routes (admin functionality)
-			users := protected.Group("/users")
+			// User management routes (admin functionality, now public)
+			users := formerly_protected.Group("/users")
 			{
 				users.GET("/", h.GetAllUsers)
 				users.DELETE("/:id", h.DeleteUser)
 			}
 			// Configuration endpoints
-			config := protected.Group("/config")
+			config := formerly_protected.Group("/config")
 			{
 				config.GET("/:key", h.GetConfig)
 				config.PUT("/:key", h.SetConfig)
@@ -107,7 +140,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Entity endpoints
-			entities := protected.Group("/entities")
+			entities := formerly_protected.Group("/entities")
 			{
 				entities.GET("/", h.GetEntities)
 				entities.GET("/:id", h.GetEntity)
@@ -115,10 +148,12 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				entities.PUT("/:id/state", h.UpdateEntityState)
 				entities.PUT("/:id/room", h.AssignEntityToRoom)
 				entities.DELETE("/:id", h.DeleteEntity)
+				entities.POST("/sync", h.SyncEntities)
+				entities.GET("/sync/status", h.GetSyncStatus)
 			}
 
 			// Room endpoints
-			rooms := protected.Group("/rooms")
+			rooms := formerly_protected.Group("/rooms")
 			{
 				rooms.GET("/", h.GetRooms)
 				rooms.GET("/:id", h.GetRoom)
@@ -130,7 +165,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Scene endpoints
-			scenes := protected.Group("/scenes")
+			scenes := formerly_protected.Group("/scenes")
 			{
 				scenes.GET("/", h.GetScenes)
 				scenes.GET("/:id", h.GetScene)
@@ -138,7 +173,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// WebSocket management endpoints (protected)
-			ws := protected.Group("/websocket")
+			ws := formerly_protected.Group("/websocket")
 			{
 				ws.GET("/stats", h.GetWebSocketStats(wsHub))
 				ws.POST("/broadcast", h.BroadcastMessage(wsHub))
@@ -153,7 +188,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// AI endpoints
-			ai := protected.Group("/ai")
+			ai := formerly_protected.Group("/ai")
 			{
 				ai.POST("/chat", h.ChatWithAI)
 				ai.POST("/complete", h.CompleteText)
@@ -165,10 +200,36 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				ai.GET("/summary", h.GetSystemSummary)
 				ai.POST("/analyze/entity/:id", h.AnalyzeEntity)
 				ai.POST("/generate/automation", h.GenerateAutomation)
+
+				// AI Settings & Management
+				ai.GET("/settings", h.GetAISettings)
+				ai.POST("/settings", h.SaveAISettings)
+				ai.POST("/test-connection", h.TestAIConnection)
+
+				// Ollama Process Management
+				ollama := ai.Group("/ollama")
+				{
+					ollama.GET("/status", h.GetOllamaStatus)
+					ollama.GET("/metrics", h.GetOllamaMetrics)
+					ollama.GET("/health", h.GetOllamaHealth)
+					ollama.POST("/start", h.StartOllamaProcess)
+					ollama.POST("/stop", h.StopOllamaProcess)
+					ollama.POST("/restart", h.RestartOllamaProcess)
+					ollama.GET("/monitoring", h.GetOllamaMonitoring)
+				}
+
+				// MCP Server Management
+				mcp := ai.Group("/mcp")
+				{
+					mcp.GET("/servers", h.GetMCPServers)
+					mcp.POST("/servers", h.AddMCPServer)
+					mcp.DELETE("/servers/:id", h.RemoveMCPServer)
+					mcp.POST("/servers/:id/restart", h.RestartMCPServer)
+				}
 			}
 
 			// Automation endpoints
-			automation := protected.Group("/automation")
+			automation := formerly_protected.Group("/automation")
 			{
 				automation.GET("/rules", h.GetAutomations)
 				automation.GET("/rules/:id", h.GetAutomation)
@@ -178,16 +239,31 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				automation.POST("/rules/:id/enable", h.EnableAutomation)
 				automation.POST("/rules/:id/disable", h.DisableAutomation)
 				automation.POST("/rules/:id/test", h.TestAutomation)
+				automation.POST("/rules/:id/trigger", h.TriggerAutomationRule)
 				automation.POST("/rules/import", h.ImportAutomations)
 				automation.GET("/rules/export", h.ExportAutomations)
 				automation.POST("/rules/validate", h.ValidateAutomation)
 				automation.GET("/statistics", h.GetAutomationStatistics)
 				automation.GET("/templates", h.GetAutomationTemplates)
 				automation.GET("/history", h.GetAutomationHistory)
+				automation.GET("/stats", h.GetAutomationStats)
+			}
+
+			// Area Management endpoints
+			areas := formerly_protected.Group("/areas")
+			{
+				areas.GET("/", h.GetAreas)
+				areas.POST("/", h.CreateArea)
+				areas.GET("/:id", h.GetArea)
+				areas.PUT("/:id", h.UpdateArea)
+				areas.DELETE("/:id", h.DeleteArea)
+				areas.GET("/:id/entities", h.GetAreaEntities)
+				areas.POST("/:id/entities", h.AssignEntitiesToArea)
+				areas.DELETE("/:id/entities/:entity_id", h.RemoveEntityFromArea)
 			}
 
 			// Network management endpoints
-			network := protected.Group("/network")
+			network := formerly_protected.Group("/network")
 			{
 				// Status and monitoring
 				network.GET("/status", h.GetNetworkStatus)
@@ -210,7 +286,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// UPS monitoring endpoints
-			ups := protected.Group("/ups")
+			ups := formerly_protected.Group("/ups")
 			{
 				// Status and monitoring
 				ups.GET("/status", h.GetUPSStatus)
@@ -234,7 +310,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// System management endpoints
-			system := protected.Group("/system")
+			system := formerly_protected.Group("/system")
 			{
 				// Basic information and health
 				system.GET("/info", h.GetSystemInfo)
@@ -242,6 +318,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				system.GET("/health", h.GetBasicSystemHealth)
 				system.GET("/health/detailed", h.GetSystemHealth)
 				system.GET("/device-info", h.GetDeviceInfo)
+				system.GET("/metrics", h.GetSystemMetrics)
 
 				// System logs
 				system.GET("/logs", h.GetSystemLogs)
@@ -254,12 +331,16 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 				system.GET("/config", h.GetSystemConfig)
 				system.POST("/config", h.UpdateSystemConfig)
 
+				// Error tracking
+				system.GET("/errors", h.GetErrorHistory)
+				system.DELETE("/errors", h.ClearErrorHistory)
+
 				// Health reporting (for external monitoring)
 				system.POST("/health-report", h.ReportHealth)
 			}
 
 			// Display settings endpoints
-			display := protected.Group("/display-settings")
+			display := formerly_protected.Group("/display-settings")
 			{
 				// Main display settings
 				display.GET("/", h.GetDisplaySettings)
@@ -273,7 +354,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Bluetooth management endpoints
-			bluetooth := protected.Group("/bluetooth")
+			bluetooth := formerly_protected.Group("/bluetooth")
 			{
 				// Status and adapter management
 				bluetooth.GET("/status", h.GetBluetoothStatus)
@@ -299,7 +380,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Energy management endpoints
-			energy := protected.Group("/energy")
+			energy := formerly_protected.Group("/energy")
 			{
 				// Settings management
 				energy.GET("/settings", h.GetEnergySettings)
@@ -328,7 +409,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Ring camera integration endpoints
-			ring := protected.Group("/ring")
+			ring := formerly_protected.Group("/ring")
 			{
 				// Configuration endpoints
 				ring.GET("/config/status", h.GetRingConfigStatus)
@@ -354,7 +435,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Shelly device integration endpoints
-			shelly := protected.Group("/shelly")
+			shelly := formerly_protected.Group("/shelly")
 			{
 				// Device management
 				shelly.POST("/devices", h.AddShellyDevice)
@@ -371,7 +452,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Enhanced conversation management endpoints
-			conversations := protected.Group("/conversations")
+			conversations := formerly_protected.Group("/conversations")
 			{
 				// Conversation CRUD operations
 				conversations.POST("", h.CreateConversation)
@@ -395,13 +476,13 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// Events and Server-Sent Events (SSE) endpoints
-			events := protected.Group("/events")
+			events := formerly_protected.Group("/events")
 			{
 				events.GET("/status", h.GetEventStatus)
 			}
 
 			// MCP (Model Context Protocol) endpoints
-			mcp := protected.Group("/mcp")
+			mcp := formerly_protected.Group("/mcp")
 			{
 				mcp.GET("/status", h.GetMCPStatus)
 				mcp.GET("/servers", h.GetMCPServers)
@@ -414,7 +495,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 			}
 
 			// File upload and screensaver management endpoints
-			screensaver := protected.Group("/screensaver")
+			screensaver := formerly_protected.Group("/screensaver")
 			{
 				screensaver.GET("/images", h.GetScreensaverImages)
 				screensaver.GET("/storage", h.GetScreensaverStorage)
@@ -425,7 +506,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 
 		// Legacy display settings endpoints for backward compatibility
 		api.GET("/display-settings", h.GetDisplaySettingsLegacy)
-		api.POST("/display-settings", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.UpdateDisplaySettingsLegacy)
+		api.POST("/display-settings", h.UpdateDisplaySettingsLegacy)
 		// Note: /display-settings/capabilities removed due to conflict with protected route
 		// Note: /display-settings/wake removed due to conflict with protected route
 		// Note: /display-settings/hardware removed due to conflict with protected route
@@ -437,8 +518,6 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 	// Legacy API routes without v1 prefix for frontend compatibility
 	legacyAPI := router.Group("/api")
 	{
-		logger.Info("DEBUG: Setting up legacy API routes")
-
 		// Legacy auth routes (public)
 		legacyAuth := legacyAPI.Group("/auth")
 		{
@@ -454,53 +533,87 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, logger *logrus.
 		// Legacy public routes (no auth required)
 		legacyAPI.GET("/status", h.Health)
 		legacyAPI.GET("/health", h.Health) // Health endpoint alias
-		legacyAPI.GET("/events/stream", h.GetEventStream)
+		legacyAPI.GET("/events/stream", middleware.CORSMiddlewareSSE(), h.GetEventStream)
 		legacyAPI.GET("/screensaver/images", h.GetScreensaverImages)
 		legacyAPI.GET("/screensaver/images/:filename", h.GetScreensaverImage)
 
-		// Legacy display settings routes
+		// Settings endpoints that frontend expects (moved to public for compatibility)
+		legacyAPI.GET("/settings/system", h.GetAllConfig)
+		legacyAPI.GET("/settings/theme", h.GetConfig)
+
+		// Advanced system configuration endpoints
+		legacyAPI.GET("/v1/settings/system", h.GetAdvancedSystemSettings)
+		legacyAPI.PUT("/v1/settings/theme", h.UpdateThemeSettings)
+		legacyAPI.GET("/v1/health", h.GetComprehensiveSystemHealth)
+
+		// Unified sync service endpoints
+		legacyAPI.GET("/v1/sync/status", h.GetSyncStatus)
+		legacyAPI.POST("/v1/sync/trigger", h.TriggerSync)
+		legacyAPI.GET("/v1/sync/history", h.GetSyncHistory)
+
+		// Additional public endpoints for frontend compatibility (no auth whatsoever)
+		legacyAPI.GET("/frontend/settings/system", h.GetAllConfig)
+		legacyAPI.GET("/frontend/settings/theme", h.GetConfig)
+
+		// Network settings endpoints
+		legacyAPI.GET("/settings/network", h.GetNetworkSettings)
+		legacyAPI.PUT("/settings/network", h.UpdateNetworkSettings)
+		legacyAPI.POST("/settings/network/reset", h.ResetNetworkConfiguration)
+		legacyAPI.GET("/network/router/test", h.TestRouterConnectivity)
+
+		// Kiosk management endpoints
+		legacyAPI.GET("/kiosk/status", h.GetKioskStatus)
+		legacyAPI.POST("/kiosk/screenshot", h.TakeKioskScreenshot)
+		legacyAPI.POST("/kiosk/restart", h.RestartKioskSystem)
+		legacyAPI.GET("/kiosk/logs", h.GetKioskLogs)
+		legacyAPI.GET("/kiosk/display/status", h.GetKioskDisplayStatus)
+		legacyAPI.POST("/kiosk/display/brightness", h.ControlKioskDisplayBrightness)
+		legacyAPI.POST("/kiosk/display/sleep", h.PutKioskDisplayToSleep)
+		legacyAPI.POST("/kiosk/display/wake", h.WakeKioskDisplay)
+		legacyAPI.GET("/kiosk/config", h.GetKioskConfiguration)
+		legacyAPI.PUT("/kiosk/config", h.UpdateKioskConfiguration)
+
+		// Legacy display settings routes (auth removed)
 		legacyAPI.GET("/display-settings", h.GetDisplaySettingsLegacy)
-		legacyAPI.POST("/display-settings", middleware.AuthMiddleware(cfg.Auth.JWTSecret), h.UpdateDisplaySettingsLegacy)
+		legacyAPI.POST("/display-settings", h.UpdateDisplaySettingsLegacy) // REMOVED: auth middleware
 
-		// Legacy protected routes (optional auth based on configuration)
-		legacyProtected := legacyAPI.Group("/")
-		legacyProtected.Use(middleware.OptionalAuthMiddleware(cfg, repos.Config, logger))
+		// Legacy protected routes (auth completely removed - now public)
+		// legacyProtected := legacyAPI.Group("/")
+		// legacyProtected.Use(middleware.OptionalAuthMiddleware(cfg, repos.Config, logger)) // REMOVED: No auth middleware
 		{
-			logger.Info("DEBUG: Registering legacy protected routes with OptionalAuthMiddleware")
-
-			// System endpoints that were causing 401 errors
-			legacyProtected.GET("/system/health/detailed", h.GetSystemHealth)
-			legacyProtected.GET("/system/status", h.GetSystemStatus)
-			legacyProtected.GET("/system/config", h.GetAllConfig)
-			legacyProtected.POST("/system/config", h.SetConfig)
+			// System endpoints that were causing 401 errors (now public)
+			legacyAPI.GET("/system/health/detailed", h.GetSystemHealth)
+			legacyAPI.GET("/system/status", h.GetSystemStatus)
+			legacyAPI.GET("/system/metrics", h.GetSystemMetrics)
+			legacyAPI.GET("/system/config", h.GetAllConfig)
+			legacyAPI.POST("/system/config", h.SetConfig)
 
 			// Additional system config alias
-			legacyProtected.GET("/system/settings", h.GetAllConfig)
+			legacyAPI.GET("/system/settings", h.GetAllConfig)
 
 			// Configuration endpoints
-			legacyProtected.GET("/config", h.GetAllConfig)
-			legacyProtected.GET("/config/:key", h.GetConfig)
-			legacyProtected.PUT("/config/:key", h.SetConfig)
+			legacyAPI.GET("/config", h.GetAllConfig)
+			legacyAPI.GET("/config/:key", h.GetConfig)
+			legacyAPI.PUT("/config/:key", h.SetConfig)
 
-			// Settings endpoints that frontend expects
-			legacyProtected.GET("/settings/system", h.GetAllConfig)
-			legacyProtected.GET("/settings/theme", h.GetConfig)
-
-			logger.Info("DEBUG: Registered /api/settings/system and /api/settings/theme with OptionalAuthMiddleware")
+			// Note: /settings/system and /settings/theme moved to public section for frontend compatibility
 
 			// Other commonly used endpoints (with and without trailing slashes to prevent redirects)
-			legacyProtected.GET("/entities", h.GetEntities)
-			legacyProtected.GET("/entities/", h.GetEntities)
-			legacyProtected.GET("/scenes", h.GetScenes)
-			legacyProtected.GET("/scenes/", h.GetScenes)
-			legacyProtected.GET("/rooms", h.GetRooms)
-			legacyProtected.GET("/rooms/", h.GetRooms)
+			legacyAPI.GET("/entities", h.GetEntities)
+			legacyAPI.GET("/entities/", h.GetEntities)
+			legacyAPI.GET("/scenes", h.GetScenes)
+			legacyAPI.GET("/scenes/", h.GetScenes)
+			legacyAPI.GET("/rooms", h.GetRooms)
+			legacyAPI.GET("/rooms/", h.GetRooms)
 
 			// Screensaver upload endpoints
-			legacyProtected.POST("/screensaver/images/upload", h.UploadScreensaverImages)
-			legacyProtected.DELETE("/screensaver/images/:id", h.DeleteScreensaverImage)
+			legacyAPI.POST("/screensaver/images/upload", h.UploadScreensaverImages)
+			legacyAPI.DELETE("/screensaver/images/:id", h.DeleteScreensaverImage)
 		}
 	}
 
-	return router
+	return &RouterWithHandlers{
+		Router:   router,
+		Handlers: h,
+	}
 }

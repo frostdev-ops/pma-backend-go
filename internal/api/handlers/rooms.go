@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 // RoomWithEntities represents a PMA room with its entities
@@ -415,61 +417,96 @@ func (h *Handlers) AssignEntityToRoom(c *gin.Context) {
 // Helper methods (these would need full implementation)
 
 func (h *Handlers) getAllRoomsFromSources(ctx context.Context, source string) ([]*types.PMARoom, error) {
-	// This would iterate through all adapters and get their rooms
-	// For now, return an empty slice
-	// TODO: Implement room registry and room synchronization
-	return []*types.PMARoom{}, nil
+	// Get rooms from the room service
+	return h.roomService.GetAllRooms(ctx)
 }
 
 func (h *Handlers) getRoomByID(ctx context.Context, roomID string) (*types.PMARoom, error) {
-	// This would get room from room registry
-	// For now, return a placeholder
-	return &types.PMARoom{
-		ID:   roomID,
-		Name: "Unknown Room",
-	}, nil
+	// Get room from room service
+	return h.roomService.GetRoomByID(ctx, roomID)
 }
 
 func (h *Handlers) storeRoom(ctx context.Context, room *types.PMARoom) error {
-	// This would store room in room registry
-	// TODO: Implement room storage
-	return nil
+	// Store room in room service
+	return h.roomService.CreateRoom(ctx, room)
 }
 
 func (h *Handlers) updateRoom(ctx context.Context, room *types.PMARoom) error {
-	// This would update room in room registry
-	// TODO: Implement room update
-	return nil
+	// Update room in room service
+	return h.roomService.UpdateRoom(ctx, room)
 }
 
 func (h *Handlers) deleteRoom(ctx context.Context, roomID string) error {
-	// This would delete room from room registry
-	// TODO: Implement room deletion
-	return nil
+	// Delete room from room service
+	return h.roomService.DeleteRoom(ctx, roomID)
 }
 
 func (h *Handlers) reassignRoomEntities(ctx context.Context, fromRoomID, toRoomID string) error {
-	// This would reassign all entities from one room to another
-	// TODO: Implement entity reassignment
-	return nil
+	// Reassign entities between rooms
+	return h.roomService.ReassignEntities(ctx, fromRoomID, toRoomID)
 }
 
 func (h *Handlers) assignEntityToRoom(ctx context.Context, entityID, roomID string) error {
-	// This would assign an entity to a room
-	// TODO: Implement entity-room assignment
-	return nil
+	// Assign entity to room
+	return h.roomService.AssignEntityToRoom(ctx, entityID, roomID)
 }
 
 func (h *Handlers) syncRoomsFromSource(ctx context.Context, source types.PMASourceType) (interface{}, error) {
-	// This would sync rooms from a specific adapter
-	// TODO: Implement room sync from source
-	return gin.H{"message": "Room sync not yet implemented"}, nil
+	// Get all registered adapters
+	adapters := h.adapterRegistry.GetAllAdapters()
+
+	// Find adapter matching the source
+	for _, adapter := range adapters {
+		if adapter.GetSourceType() == source {
+			err := h.roomService.SyncRoomsFromSource(ctx, adapter)
+			if err != nil {
+				return nil, fmt.Errorf("failed to sync rooms from %s: %w", source, err)
+			}
+
+			// Get room stats for response
+			stats := h.roomService.GetRoomStats()
+			return gin.H{
+				"message": fmt.Sprintf("Rooms synchronized from %s", source),
+				"source":  source,
+				"stats":   stats,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("adapter not found for source: %s", source)
 }
 
 func (h *Handlers) syncRoomsFromAllSources(ctx context.Context) (interface{}, error) {
-	// This would sync rooms from all adapters
-	// TODO: Implement room sync from all sources
-	return gin.H{"message": "Room sync not yet implemented"}, nil
+	// Get all registered adapters
+	adapters := h.adapterRegistry.GetAllAdapters()
+
+	var errors []string
+	syncedCount := 0
+
+	for _, adapter := range adapters {
+		err := h.roomService.SyncRoomsFromSource(ctx, adapter)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", adapter.GetSourceType(), err))
+		} else {
+			syncedCount++
+		}
+	}
+
+	// Get room stats for response
+	stats := h.roomService.GetRoomStats()
+
+	response := gin.H{
+		"message":        "Room synchronization completed",
+		"sources_total":  len(adapters),
+		"sources_synced": syncedCount,
+		"stats":          stats,
+	}
+
+	if len(errors) > 0 {
+		response["errors"] = errors
+	}
+
+	return response, nil
 }
 
 func generateRoomID() string {
@@ -478,8 +515,137 @@ func generateRoomID() string {
 	return "pma_room_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
-// SyncRoomsWithHA synchronizes rooms with Home Assistant areas (stub implementation)
+// SyncRoomsWithHA synchronizes rooms with Home Assistant areas
 func (h *Handlers) SyncRoomsWithHA(c *gin.Context) {
-	// TODO: Implement Home Assistant room synchronization
-	utils.SendError(c, http.StatusNotImplemented, "Home Assistant room sync not yet implemented")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Get Home Assistant adapter
+	adapter, err := h.unifiedService.GetRegistryManager().GetAdapterRegistry().GetAdapterBySource(types.SourceHomeAssistant)
+	if err != nil {
+		h.log.WithError(err).Error("Home Assistant adapter not found")
+		utils.SendError(c, http.StatusServiceUnavailable, "Home Assistant adapter not available")
+		return
+	}
+
+	// Check if adapter is connected
+	if !adapter.IsConnected() {
+		h.log.Error("Home Assistant adapter not connected")
+		utils.SendError(c, http.StatusServiceUnavailable, "Home Assistant adapter not connected")
+		return
+	}
+
+	startTime := time.Now()
+	h.log.Info("Starting Home Assistant room synchronization")
+
+	// Sync rooms from Home Assistant
+	haRooms, err := adapter.SyncRooms(ctx)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to sync rooms from Home Assistant")
+		utils.SendError(c, http.StatusInternalServerError, fmt.Sprintf("Failed to sync rooms: %v", err))
+		return
+	}
+
+	// Process and store the synced rooms
+	syncedCount := 0
+	updatedCount := 0
+	errors := []string{}
+
+	for _, haRoom := range haRooms {
+		// Check if room already exists
+		existingRoom, err := h.getRoomByID(ctx, haRoom.ID)
+		if err != nil {
+			// Room doesn't exist, create it
+			if err := h.storeRoom(ctx, haRoom); err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to create room %s: %v", haRoom.Name, err))
+				continue
+			}
+			syncedCount++
+			h.log.WithField("room_name", haRoom.Name).Debug("Created new room from Home Assistant")
+		} else {
+			// Room exists, update it if needed
+			if h.shouldUpdateRoom(existingRoom, haRoom) {
+				haRoom.CreatedAt = existingRoom.CreatedAt // Preserve creation time
+				haRoom.UpdatedAt = time.Now()
+				if err := h.updateRoom(ctx, haRoom); err != nil {
+					errors = append(errors, fmt.Sprintf("Failed to update room %s: %v", haRoom.Name, err))
+					continue
+				}
+				updatedCount++
+				h.log.WithField("room_name", haRoom.Name).Debug("Updated room from Home Assistant")
+			}
+		}
+	}
+
+	duration := time.Since(startTime)
+
+	// Prepare response
+	response := gin.H{
+		"success":       true,
+		"message":       "Home Assistant room synchronization completed",
+		"rooms_found":   len(haRooms),
+		"rooms_synced":  syncedCount,
+		"rooms_updated": updatedCount,
+		"duration":      duration.String(),
+		"processed_at":  time.Now(),
+	}
+
+	if len(errors) > 0 {
+		response["errors"] = errors
+		response["error_count"] = len(errors)
+		h.log.WithField("error_count", len(errors)).Warn("Room sync completed with errors")
+	}
+
+	h.log.WithFields(logrus.Fields{
+		"rooms_found":   len(haRooms),
+		"rooms_synced":  syncedCount,
+		"rooms_updated": updatedCount,
+		"duration":      duration,
+		"errors":        len(errors),
+	}).Info("Home Assistant room synchronization completed")
+
+	// Broadcast WebSocket event for room sync
+	if h.wsHub != nil {
+		message := websocket.Message{
+			Type: "room_sync_completed",
+			Data: map[string]interface{}{
+				"source":        "homeassistant",
+				"rooms_synced":  syncedCount,
+				"rooms_updated": updatedCount,
+				"duration":      duration.String(),
+			},
+		}
+		h.wsHub.BroadcastToAll(message.Type, message.Data)
+	}
+
+	utils.SendSuccess(c, response)
+}
+
+// shouldUpdateRoom determines if a room should be updated based on changes
+func (h *Handlers) shouldUpdateRoom(existing, new *types.PMARoom) bool {
+	// Update if name, description, icon, or entity assignments have changed
+	if existing.Name != new.Name ||
+		existing.Description != new.Description ||
+		existing.Icon != new.Icon {
+		return true
+	}
+
+	// Check if entity assignments have changed
+	if len(existing.EntityIDs) != len(new.EntityIDs) {
+		return true
+	}
+
+	// Check individual entity IDs
+	existingEntities := make(map[string]bool)
+	for _, id := range existing.EntityIDs {
+		existingEntities[id] = true
+	}
+
+	for _, id := range new.EntityIDs {
+		if !existingEntities[id] {
+			return true
+		}
+	}
+
+	return false
 }

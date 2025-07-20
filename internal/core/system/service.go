@@ -24,7 +24,17 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/pkg/version"
 )
+
+// ErrorRecord represents a tracked system error
+type ErrorRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	Message   string    `json:"message"`
+	Type      string    `json:"type"`
+	Source    string    `json:"source"`
+	Details   string    `json:"details,omitempty"`
+}
 
 // Service provides system management functionality
 type Service struct {
@@ -37,6 +47,12 @@ type Service struct {
 
 	// Service tracking
 	trackedServices []ServiceConfig
+
+	// Error tracking
+	errorCount      int64
+	lastError       time.Time
+	errorHistory    []ErrorRecord
+	maxErrorHistory int
 
 	// Configuration
 	config     SystemConfig
@@ -94,6 +110,8 @@ func NewService(cfg *config.Config, logger *logrus.Logger) *Service {
 		maxLogEntries:   maxLogEntries,
 		logBuffer:       make([]LogEntry, 0, maxLogEntries),
 		trackedServices: trackedServices,
+		maxErrorHistory: 100,
+		errorHistory:    make([]ErrorRecord, 0, 100),
 		config: SystemConfig{
 			Environment:     getEnvironment(),
 			Debug:           false,
@@ -152,7 +170,7 @@ func (s *Service) GetDeviceInfo(ctx context.Context) (*DeviceInfo, error) {
 	return &DeviceInfo{
 		DeviceID:    s.deviceID,
 		Name:        hostInfo.Hostname,
-		Version:     "1.0.0", // TODO: Get from build info
+		Version:     version.GetVersion(),
 		OS:          fmt.Sprintf("%s %s", hostInfo.OS, hostInfo.PlatformVersion),
 		Arch:        runtime.GOARCH,
 		Platform:    hostInfo.Platform,
@@ -548,7 +566,7 @@ func (s *Service) checkServiceHealth(ctx context.Context, service ServiceConfig)
 		Uptime:       uptime,
 		LastCheck:    time.Now(),
 		ResponseTime: responseTime,
-		ErrorCount:   0, // TODO: Track error counts
+		ErrorCount:   int(s.GetErrorCount()),
 		Details:      details,
 	}
 }
@@ -807,6 +825,82 @@ func (s *Service) UpdateConfig(config SystemConfig) error {
 func generateDeviceID() string {
 	hostname, _ := os.Hostname()
 	return fmt.Sprintf("pma-device-%s-%d", hostname, time.Now().Unix())
+}
+
+// TrackError records a system error
+func (s *Service) TrackError(errorType, source, message, details string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.errorCount++
+	s.lastError = time.Now()
+
+	// Add to error history
+	errorRecord := ErrorRecord{
+		Timestamp: time.Now(),
+		Message:   message,
+		Type:      errorType,
+		Source:    source,
+		Details:   details,
+	}
+
+	// Add to history, maintaining max size
+	s.errorHistory = append(s.errorHistory, errorRecord)
+	if len(s.errorHistory) > s.maxErrorHistory {
+		// Remove oldest error
+		s.errorHistory = s.errorHistory[1:]
+	}
+
+	// Log the error
+	s.logger.WithFields(logrus.Fields{
+		"error_type": errorType,
+		"source":     source,
+		"details":    details,
+	}).Error(message)
+}
+
+// GetErrorCount returns the total error count
+func (s *Service) GetErrorCount() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.errorCount
+}
+
+// GetLastError returns the timestamp of the last error
+func (s *Service) GetLastError() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastError
+}
+
+// GetErrorHistory returns recent error history
+func (s *Service) GetErrorHistory(limit int) []ErrorRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 || limit > len(s.errorHistory) {
+		limit = len(s.errorHistory)
+	}
+
+	// Return the most recent errors
+	start := len(s.errorHistory) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	result := make([]ErrorRecord, limit)
+	copy(result, s.errorHistory[start:])
+	return result
+}
+
+// ClearErrorHistory clears the error history and resets counters
+func (s *Service) ClearErrorHistory() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.errorCount = 0
+	s.errorHistory = s.errorHistory[:0]
+	s.lastError = time.Time{}
 }
 
 // getEnvironment returns the current environment

@@ -54,8 +54,7 @@ func (h *EventsHandler) GetEventStream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	c.Header("Access-Control-Allow-Origin", "*")
-	c.Header("Access-Control-Allow-Headers", "Cache-Control")
+	// CORS headers are handled by middleware, not here
 	c.Header("X-Accel-Buffering", "no") // Disable Nginx buffering
 
 	// Generate connection ID

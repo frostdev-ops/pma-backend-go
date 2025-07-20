@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 // GetEntities retrieves all entities using the unified PMA service
@@ -481,14 +483,220 @@ func (h *Handlers) GetSyncStatus(c *gin.Context) {
 	})
 }
 
-// CreateOrUpdateEntity creates or updates an entity (stub implementation)
+// CreateOrUpdateEntity creates or updates an entity
 func (h *Handlers) CreateOrUpdateEntity(c *gin.Context) {
-	// TODO: Implement entity creation/update functionality
-	utils.SendError(c, http.StatusNotImplemented, "Entity creation/update not yet implemented")
+	var entityData struct {
+		ID           string                 `json:"id" binding:"required"`
+		Type         types.PMAEntityType    `json:"type" binding:"required"`
+		FriendlyName string                 `json:"friendly_name" binding:"required"`
+		Icon         string                 `json:"icon,omitempty"`
+		State        types.PMAEntityState   `json:"state,omitempty"`
+		Attributes   map[string]interface{} `json:"attributes,omitempty"`
+		Capabilities []types.PMACapability  `json:"capabilities,omitempty"`
+		RoomID       *string                `json:"room_id,omitempty"`
+		AreaID       *string                `json:"area_id,omitempty"`
+		DeviceID     *string                `json:"device_id,omitempty"`
+		Metadata     *types.PMAMetadata     `json:"metadata,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&entityData); err != nil {
+		utils.SendError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
+		return
+	}
+
+	// Validate entity type
+	validTypes := []types.PMAEntityType{
+		types.EntityTypeLight,
+		types.EntityTypeSwitch,
+		types.EntityTypeSensor,
+		types.EntityTypeClimate,
+		types.EntityTypeCover,
+		types.EntityTypeCamera,
+		types.EntityTypeLock,
+		types.EntityTypeFan,
+		types.EntityTypeMediaPlayer,
+		types.EntityTypeBinarySensor,
+		types.EntityTypeDevice,
+		types.EntityTypeGeneric,
+	}
+
+	validType := false
+	for _, validT := range validTypes {
+		if entityData.Type == validT {
+			validType = true
+			break
+		}
+	}
+
+	if !validType {
+		utils.SendError(c, http.StatusBadRequest, fmt.Sprintf("Invalid entity type: %s", entityData.Type))
+		return
+	}
+
+	// Check if entity already exists to determine if this is create or update
+	existingEntity, err := h.unifiedService.GetRegistryManager().GetEntityRegistry().GetEntity(entityData.ID)
+	isUpdate := err == nil && existingEntity != nil
+
+	// Create PMA entity
+	entity := &types.PMABaseEntity{
+		ID:           entityData.ID,
+		Type:         entityData.Type,
+		FriendlyName: entityData.FriendlyName,
+		Icon:         entityData.Icon,
+		State:        entityData.State,
+		Attributes:   entityData.Attributes,
+		LastUpdated:  time.Now(),
+		Capabilities: entityData.Capabilities,
+		RoomID:       entityData.RoomID,
+		AreaID:       entityData.AreaID,
+		DeviceID:     entityData.DeviceID,
+		Available:    true, // New entities are available by default
+	}
+
+	// Set default state if not provided
+	if entity.State == "" {
+		if entity.Type == types.EntityTypeSwitch || entity.Type == types.EntityTypeLight {
+			entity.State = types.StateOff
+		} else {
+			entity.State = types.StateUnknown
+		}
+	}
+
+	// Set default icon if not provided
+	if entity.Icon == "" {
+		entity.Icon = h.getDefaultIconForEntityType(entity.Type)
+	}
+
+	// Handle metadata
+	if entityData.Metadata != nil {
+		entity.Metadata = entityData.Metadata
+	} else {
+		entity.Metadata = &types.PMAMetadata{
+			Source:         types.SourcePMA, // User-created entities are PMA source
+			SourceEntityID: entityData.ID,
+			LastSynced:     time.Now(),
+			QualityScore:   1.0, // Perfect quality for manually created entities
+			IsVirtual:      false,
+		}
+	}
+
+	// Set default attributes if not provided
+	if entity.Attributes == nil {
+		entity.Attributes = make(map[string]interface{})
+	}
+
+	// Add some default attributes based on entity type
+	entity.Attributes["created_by"] = "api"
+	entity.Attributes["created_at"] = time.Now()
+	if isUpdate {
+		entity.Attributes["updated_at"] = time.Now()
+	}
+
+	// Register or update the entity
+	if isUpdate {
+		err = h.unifiedService.GetRegistryManager().GetEntityRegistry().UpdateEntity(entity)
+		if err != nil {
+			h.log.WithError(err).Error("Failed to update entity")
+			utils.SendError(c, http.StatusInternalServerError, fmt.Sprintf("Failed to update entity: %v", err))
+			return
+		}
+
+		h.log.WithFields(logrus.Fields{
+			"entity_id":   entity.ID,
+			"entity_type": entity.Type,
+		}).Info("Entity updated successfully")
+
+		utils.SendSuccess(c, gin.H{
+			"message":    "Entity updated successfully",
+			"entity_id":  entity.ID,
+			"operation":  "update",
+			"entity":     entity,
+			"updated_at": time.Now(),
+		})
+	} else {
+		err = h.unifiedService.GetRegistryManager().GetEntityRegistry().RegisterEntity(entity)
+		if err != nil {
+			h.log.WithError(err).Error("Failed to create entity")
+			utils.SendError(c, http.StatusInternalServerError, fmt.Sprintf("Failed to create entity: %v", err))
+			return
+		}
+
+		h.log.WithFields(logrus.Fields{
+			"entity_id":   entity.ID,
+			"entity_type": entity.Type,
+		}).Info("Entity created successfully")
+
+		utils.SendSuccess(c, gin.H{
+			"message":    "Entity created successfully",
+			"entity_id":  entity.ID,
+			"operation":  "create",
+			"entity":     entity,
+			"created_at": time.Now(),
+		})
+	}
 }
 
-// DeleteEntity deletes an entity (stub implementation)
+// getDefaultIconForEntityType returns a default icon for an entity type
+func (h *Handlers) getDefaultIconForEntityType(entityType types.PMAEntityType) string {
+	iconMap := map[types.PMAEntityType]string{
+		types.EntityTypeLight:        "mdi:lightbulb",
+		types.EntityTypeSwitch:       "mdi:toggle-switch",
+		types.EntityTypeSensor:       "mdi:gauge",
+		types.EntityTypeClimate:      "mdi:thermostat",
+		types.EntityTypeCover:        "mdi:window-shutter",
+		types.EntityTypeCamera:       "mdi:camera",
+		types.EntityTypeLock:         "mdi:lock",
+		types.EntityTypeFan:          "mdi:fan",
+		types.EntityTypeMediaPlayer:  "mdi:speaker",
+		types.EntityTypeBinarySensor: "mdi:checkbox-marked-circle",
+		types.EntityTypeDevice:       "mdi:chip",
+		types.EntityTypeGeneric:      "mdi:circle",
+	}
+
+	if icon, exists := iconMap[entityType]; exists {
+		return icon
+	}
+	return "mdi:help-circle"
+}
+
+// DeleteEntity deletes an entity
 func (h *Handlers) DeleteEntity(c *gin.Context) {
-	// TODO: Implement entity deletion functionality
-	utils.SendError(c, http.StatusNotImplemented, "Entity deletion not yet implemented")
+	entityID := c.Param("entity_id")
+	if entityID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Entity ID is required")
+		return
+	}
+
+	// Check if entity exists
+	entity, err := h.unifiedService.GetRegistryManager().GetEntityRegistry().GetEntity(entityID)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, fmt.Sprintf("Entity not found: %s", entityID))
+		return
+	}
+
+	// Don't allow deletion of entities from external sources (safety measure)
+	if entity.GetSource() != types.SourcePMA {
+		utils.SendError(c, http.StatusBadRequest, fmt.Sprintf("Cannot delete entity from external source: %s", entity.GetSource()))
+		return
+	}
+
+	// Delete the entity
+	err = h.unifiedService.GetRegistryManager().GetEntityRegistry().UnregisterEntity(entityID)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to delete entity")
+		utils.SendError(c, http.StatusInternalServerError, fmt.Sprintf("Failed to delete entity: %v", err))
+		return
+	}
+
+	h.log.WithFields(logrus.Fields{
+		"entity_id":   entityID,
+		"entity_type": entity.GetType(),
+	}).Info("Entity deleted successfully")
+
+	utils.SendSuccess(c, gin.H{
+		"message":    "Entity deleted successfully",
+		"entity_id":  entityID,
+		"operation":  "delete",
+		"deleted_at": time.Now(),
+	})
 }

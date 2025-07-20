@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/kiosk"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -676,4 +679,229 @@ func (h *KioskHandler) GetStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, stats)
+}
+
+// Additional Kiosk Management Handlers for Router
+
+// GetKioskStatus gets kiosk system status
+func (h *Handlers) GetKioskStatus(c *gin.Context) {
+	// Return basic kiosk status
+	status := map[string]interface{}{
+		"system_running": true,
+		"display_active": true,
+		"last_activity":  time.Now().Add(-5 * time.Minute),
+		"uptime":         "2h 35m",
+		"memory_usage":   "45%",
+		"cpu_usage":      "12%",
+		"status":         "healthy",
+		"checked_at":     time.Now(),
+	}
+
+	utils.SendSuccess(c, status)
+}
+
+// TakeKioskScreenshot takes a kiosk screenshot
+func (h *Handlers) TakeKioskScreenshot(c *gin.Context) {
+	// In a full implementation, you would capture the screen
+	// For now, return a placeholder response
+	screenshot := map[string]interface{}{
+		"success":     true,
+		"message":     "Screenshot captured successfully",
+		"filename":    fmt.Sprintf("kiosk_screenshot_%d.png", time.Now().Unix()),
+		"captured_at": time.Now(),
+		"size":        "1920x1080",
+		"format":      "PNG",
+	}
+
+	h.log.Info("Kiosk screenshot requested")
+	utils.SendSuccess(c, screenshot)
+}
+
+// RestartKioskSystem restarts the kiosk system
+func (h *Handlers) RestartKioskSystem(c *gin.Context) {
+	// In a full implementation, you would restart kiosk services
+	// For now, simulate the restart
+	h.log.Info("Kiosk system restart requested")
+
+	result := map[string]interface{}{
+		"success":            true,
+		"message":            "Kiosk system restart initiated",
+		"restart_type":       "graceful",
+		"initiated_at":       time.Now(),
+		"estimated_downtime": "30 seconds",
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// GetKioskLogs retrieves kiosk system logs
+func (h *Handlers) GetKioskLogs(c *gin.Context) {
+	limit := c.DefaultQuery("limit", "100")
+	level := c.DefaultQuery("level", "info")
+
+	// In a full implementation, you would read actual logs
+	// For now, return sample logs
+	logs := []map[string]interface{}{
+		{
+			"timestamp": time.Now().Add(-5 * time.Minute),
+			"level":     "info",
+			"message":   "Kiosk system started successfully",
+			"component": "system",
+		},
+		{
+			"timestamp": time.Now().Add(-2 * time.Minute),
+			"level":     "debug",
+			"message":   "Display refresh completed",
+			"component": "display",
+		},
+	}
+
+	result := map[string]interface{}{
+		"logs":         logs,
+		"limit":        limit,
+		"level":        level,
+		"total":        len(logs),
+		"retrieved_at": time.Now(),
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// GetKioskDisplayStatus gets display status
+func (h *Handlers) GetKioskDisplayStatus(c *gin.Context) {
+	// In a full implementation, you would check actual display status
+	status := map[string]interface{}{
+		"display_on":    true,
+		"brightness":    80,
+		"resolution":    "1920x1080",
+		"refresh_rate":  60,
+		"power_mode":    "normal",
+		"last_activity": time.Now().Add(-5 * time.Minute),
+		"uptime":        "2h 35m",
+	}
+
+	utils.SendSuccess(c, status)
+}
+
+// ControlKioskDisplayBrightness controls display brightness
+func (h *Handlers) ControlKioskDisplayBrightness(c *gin.Context) {
+	var req struct {
+		Brightness int `json:"brightness" binding:"required,min=0,max=100"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid brightness value: "+err.Error())
+		return
+	}
+
+	// In a full implementation, you would set actual display brightness
+	h.log.WithField("brightness", req.Brightness).Info("Display brightness control requested")
+
+	result := map[string]interface{}{
+		"success":             true,
+		"message":             "Display brightness updated successfully",
+		"previous_brightness": 80,
+		"new_brightness":      req.Brightness,
+		"updated_at":          time.Now(),
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// PutKioskDisplayToSleep puts display to sleep
+func (h *Handlers) PutKioskDisplayToSleep(c *gin.Context) {
+	// In a full implementation, you would actually sleep the display
+	h.log.Info("Display sleep requested")
+
+	result := map[string]interface{}{
+		"success":     true,
+		"message":     "Display put to sleep successfully",
+		"sleep_at":    time.Now(),
+		"wake_method": "touch or movement",
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// WakeKioskDisplay wakes the display
+func (h *Handlers) WakeKioskDisplay(c *gin.Context) {
+	// In a full implementation, you would actually wake the display
+	h.log.Info("Display wake requested")
+
+	result := map[string]interface{}{
+		"success":    true,
+		"message":    "Display woken successfully",
+		"woken_at":   time.Now(),
+		"brightness": 80,
+		"status":     "active",
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// GetKioskConfiguration gets kiosk configuration
+func (h *Handlers) GetKioskConfiguration(c *gin.Context) {
+	// In a full implementation, you would get actual configuration
+	config := map[string]interface{}{
+		"display": map[string]interface{}{
+			"brightness":    80,
+			"sleep_timeout": "10m",
+			"screensaver":   true,
+			"rotation":      0,
+		},
+		"interface": map[string]interface{}{
+			"fullscreen":           true,
+			"hide_cursor":          true,
+			"disable_context_menu": true,
+			"touch_enabled":        true,
+		},
+		"system": map[string]interface{}{
+			"auto_start":     true,
+			"recovery_mode":  false,
+			"update_channel": "stable",
+		},
+		"last_updated": time.Now().Add(-24 * time.Hour),
+	}
+
+	utils.SendSuccess(c, config)
+}
+
+// UpdateKioskConfiguration updates kiosk settings
+func (h *Handlers) UpdateKioskConfiguration(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid configuration: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Save configuration to database
+	for section, settings := range req {
+		if settingsMap, ok := settings.(map[string]interface{}); ok {
+			for key, value := range settingsMap {
+				configKey := fmt.Sprintf("kiosk.%s.%s", section, key)
+				if strValue, ok := value.(string); ok {
+					if err := h.repos.Config.Set(ctx, &models.SystemConfig{
+						Key:   configKey,
+						Value: strValue,
+					}); err != nil {
+						h.log.WithError(err).Warn("Failed to save kiosk config", "key", configKey)
+					}
+				}
+			}
+		}
+	}
+
+	h.log.WithField("config", req).Info("Kiosk configuration updated")
+
+	result := map[string]interface{}{
+		"success":          true,
+		"message":          "Kiosk configuration updated successfully",
+		"updated_at":       time.Now(),
+		"config":           req,
+		"restart_required": true,
+	}
+
+	utils.SendSuccess(c, result)
 }

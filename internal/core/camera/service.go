@@ -2,8 +2,12 @@ package camera
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	neturl "net/url"
+	"strings"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
@@ -322,15 +326,106 @@ func (s *CameraService) GetCameraStats(ctx context.Context) (map[string]interfac
 
 // ValidateCameraURL validates if a camera stream or snapshot URL is accessible
 func (s *CameraService) ValidateCameraURL(ctx context.Context, url string) error {
-	// Basic URL validation for now
+	// Basic URL validation
 	if url == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
 
+	// Parse URL to ensure it's valid
+	parsedURL, err := neturl.Parse(url)
+	if err != nil {
+		return fmt.Errorf("invalid URL format: %w", err)
+	}
+
+	// Ensure it's HTTP or HTTPS
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s (only http and https are supported)", parsedURL.Scheme)
+	}
+
+	// Ensure host is present
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL must have a valid host")
+	}
+
 	s.logger.WithField("url", url).Info("Validating camera URL")
 
-	// TODO: Implement actual HTTP validation
-	// For now, just log the validation attempt
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Often needed for camera systems with self-signed certs
+			},
+		},
+	}
+
+	// Create request with context for cancellation
+	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set user agent to identify as camera validation
+	req.Header.Set("User-Agent", "PMA-Camera-Validator/1.0")
+
+	// Perform request
+	resp, err := client.Do(req)
+	if err != nil {
+		// Try GET request if HEAD fails (some cameras don't support HEAD)
+		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create GET request: %w", err)
+		}
+		req.Header.Set("User-Agent", "PMA-Camera-Validator/1.0")
+		
+		resp, err = client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to access camera URL: %w", err)
+		}
+	}
+	defer resp.Body.Close()
+
+	// Check status code
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return fmt.Errorf("camera URL returned status %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Check content type for image/video streams
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" {
+		validTypes := []string{
+			"image/jpeg",
+			"image/png", 
+			"image/gif",
+			"video/mp4",
+			"video/webm",
+			"video/x-msvideo",
+			"application/x-mpegURL", // HLS streams
+			"multipart/x-mixed-replace", // MJPEG streams
+		}
+		
+		isValidType := false
+		for _, validType := range validTypes {
+			if strings.Contains(contentType, validType) {
+				isValidType = true
+				break
+			}
+		}
+		
+		if !isValidType {
+			s.logger.WithFields(map[string]interface{}{
+				"url":          url,
+				"content_type": contentType,
+			}).Warn("Camera URL has unexpected content type")
+		}
+	}
+
+	s.logger.WithFields(map[string]interface{}{
+		"url":          url,
+		"status_code":  resp.StatusCode,
+		"content_type": contentType,
+	}).Info("Camera URL validation successful")
+
 	return nil
 }
 

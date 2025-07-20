@@ -24,27 +24,6 @@ type Config struct {
 	Monitoring       MonitoringConfig       `mapstructure:"monitoring"`
 	FileManager      FileManagerConfig      `mapstructure:"file_manager"`
 	Performance      PerformanceConfig      `mapstructure:"performance"`
-
-	// Unified Adapter Configuration
-	Ring struct {
-		Enabled  bool   `mapstructure:"enabled"`
-		Email    string `mapstructure:"email"`
-		Password string `mapstructure:"password"`
-	} `mapstructure:"ring"`
-
-	Shelly struct {
-		Enabled bool `mapstructure:"enabled"`
-	} `mapstructure:"shelly"`
-
-	UPS struct {
-		Enabled bool   `mapstructure:"enabled"`
-		Host    string `mapstructure:"host"`
-		Port    int    `mapstructure:"port"`
-	} `mapstructure:"ups"`
-
-	Network struct {
-		Enabled bool `mapstructure:"enabled"`
-	} `mapstructure:"network"`
 }
 
 type ServerConfig struct {
@@ -151,10 +130,11 @@ type AIResourceLimits struct {
 
 // DevicesConfig contains device integration configuration
 type DevicesConfig struct {
-	HealthCheckInterval string       `mapstructure:"health_check_interval"`
-	Ring                RingConfig   `mapstructure:"ring"`
-	Shelly              ShellyConfig `mapstructure:"shelly"`
-	UPS                 UPSConfig    `mapstructure:"ups"`
+	HealthCheckInterval string        `mapstructure:"health_check_interval"`
+	Ring                RingConfig    `mapstructure:"ring"`
+	Shelly              ShellyConfig  `mapstructure:"shelly"`
+	UPS                 UPSConfig     `mapstructure:"ups"`
+	Network             NetworkConfig `mapstructure:"network"`
 }
 
 // RingConfig contains Ring integration configuration
@@ -170,12 +150,15 @@ type RingConfig struct {
 
 // ShellyConfig contains Shelly integration configuration
 type ShellyConfig struct {
-	Enabled           bool             `mapstructure:"enabled"`
-	DiscoveryInterval string           `mapstructure:"discovery_interval"`
-	Username          string           `mapstructure:"username"`
-	Password          string           `mapstructure:"password"`
-	DiscoveryTimeout  string           `mapstructure:"discovery_timeout"`
-	MockDevices       ShellyMockConfig `mapstructure:"mock_devices"`
+	Enabled           bool                `mapstructure:"enabled"`
+	DiscoveryInterval string              `mapstructure:"discovery_interval"`
+	PollInterval      string              `mapstructure:"poll_interval"`
+	Username          string              `mapstructure:"username"`
+	Password          string              `mapstructure:"password"`
+	DiscoveryTimeout  string              `mapstructure:"discovery_timeout"`
+	AutoReconnect     bool                `mapstructure:"auto_reconnect"`
+	Devices           []ShellyDeviceConfig `mapstructure:"devices"`
+	MockDevices       ShellyMockConfig    `mapstructure:"mock_devices"`
 }
 
 // UPSConfig contains UPS integration configuration
@@ -184,10 +167,34 @@ type UPSConfig struct {
 	NUTHost              string   `mapstructure:"nut_host"`
 	NUTPort              int      `mapstructure:"nut_port"`
 	UPSName              string   `mapstructure:"ups_name"`
+	Username             string   `mapstructure:"username"`
+	Password             string   `mapstructure:"password"`
 	NUTServers           []string `mapstructure:"nut_servers"`
 	PollInterval         string   `mapstructure:"poll_interval"`
 	MonitoringInterval   string   `mapstructure:"monitoring_interval"`
 	HistoryRetentionDays int      `mapstructure:"history_retention_days"`
+}
+
+// NetworkConfig contains network adapter configuration
+type NetworkConfig struct {
+	Enabled         bool     `mapstructure:"enabled"`
+	ScanInterval    string   `mapstructure:"scan_interval"`
+	ScanSubnets     []string `mapstructure:"scan_subnets"`
+	EnableWakeOnLAN bool     `mapstructure:"enable_wake_on_lan"`
+	DiscoveryPorts  []int    `mapstructure:"discovery_ports"`
+	PingTimeout     string   `mapstructure:"ping_timeout"`
+	AutoReconnect   bool     `mapstructure:"auto_reconnect"`
+}
+
+// ShellyDeviceConfig contains individual Shelly device configuration
+type ShellyDeviceConfig struct {
+	IP       string `mapstructure:"ip"`
+	Name     string `mapstructure:"name"`
+	Model    string `mapstructure:"model"`
+	Type     string `mapstructure:"type"`
+	Enabled  bool   `mapstructure:"enabled"`
+	Username string `mapstructure:"username,omitempty"`
+	Password string `mapstructure:"password,omitempty"`
 }
 
 // RouterConfig contains router/network configuration

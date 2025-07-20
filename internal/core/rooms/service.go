@@ -3,115 +3,81 @@ package rooms
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
-	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/sirupsen/logrus"
 )
 
-// Service handles room business logic
-type Service struct {
-	roomRepo   repositories.RoomRepository
-	entityRepo repositories.EntityRepository
-	logger     *logrus.Logger
+// RoomService manages rooms and their entity assignments
+type RoomService struct {
+	rooms  map[string]*types.PMARoom
+	logger *logrus.Logger
+	mutex  sync.RWMutex
 }
 
-// NewService creates a new room service
-func NewService(roomRepo repositories.RoomRepository, entityRepo repositories.EntityRepository, logger *logrus.Logger) *Service {
-	return &Service{
-		roomRepo:   roomRepo,
-		entityRepo: entityRepo,
-		logger:     logger,
+// NewRoomService creates a new room service
+func NewRoomService(logger *logrus.Logger) *RoomService {
+	return &RoomService{
+		rooms:  make(map[string]*types.PMARoom),
+		logger: logger,
 	}
 }
 
-// RoomWithEntities represents a room with its entities
-type RoomWithEntities struct {
-	*models.Room
-	Entities    []*models.Entity `json:"entities,omitempty"`
-	EntityCount int              `json:"entity_count"`
+// GetAllRooms returns all rooms
+func (s *RoomService) GetAllRooms(ctx context.Context) ([]*types.PMARoom, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	rooms := make([]*types.PMARoom, 0, len(s.rooms))
+	for _, room := range s.rooms {
+		rooms = append(rooms, room)
+	}
+
+	return rooms, nil
 }
 
-// RoomStats represents room statistics
-type RoomStats struct {
-	TotalRooms         int            `json:"total_rooms"`
-	RoomsWithEntities  int            `json:"rooms_with_entities"`
-	EmptyRooms         int            `json:"empty_rooms"`
-	EntityDistribution map[string]int `json:"entity_distribution"` // domain -> count
+// GetRoomByID returns a room by ID
+func (s *RoomService) GetRoomByID(ctx context.Context, roomID string) (*types.PMARoom, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	room, exists := s.rooms[roomID]
+	if !exists {
+		return nil, fmt.Errorf("room not found: %s", roomID)
+	}
+
+	return room, nil
 }
 
-// GetAll retrieves all rooms with optional entity information
-func (s *Service) GetAll(ctx context.Context, includeEntities bool) ([]*RoomWithEntities, error) {
-	rooms, err := s.roomRepo.GetAll(ctx)
-	if err != nil {
-		s.logger.WithError(err).Error("Failed to get all rooms")
-		return nil, fmt.Errorf("failed to get rooms: %w", err)
+// CreateRoom creates a new room
+func (s *RoomService) CreateRoom(ctx context.Context, room *types.PMARoom) error {
+	if room.ID == "" {
+		return fmt.Errorf("room ID is required")
+	}
+	if room.Name == "" {
+		return fmt.Errorf("room name is required")
 	}
 
-	result := make([]*RoomWithEntities, len(rooms))
-	for i, room := range rooms {
-		roomWithEntities := &RoomWithEntities{Room: room}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-		// Get entities for this room
-		entities, err := s.entityRepo.GetByRoom(ctx, room.ID)
-		if err != nil {
-			s.logger.WithError(err).Warnf("Failed to get entities for room %d", room.ID)
-			roomWithEntities.EntityCount = 0
-		} else {
-			roomWithEntities.EntityCount = len(entities)
-			if includeEntities {
-				roomWithEntities.Entities = entities
-			}
-		}
-
-		result[i] = roomWithEntities
+	// Check if room already exists
+	if _, exists := s.rooms[room.ID]; exists {
+		return fmt.Errorf("room already exists: %s", room.ID)
 	}
 
-	return result, nil
-}
-
-// GetByID retrieves a room by ID with optional entity information
-func (s *Service) GetByID(ctx context.Context, roomID int, includeEntities bool) (*RoomWithEntities, error) {
-	room, err := s.roomRepo.GetByID(ctx, roomID)
-	if err != nil {
-		s.logger.WithError(err).Errorf("Failed to get room: %d", roomID)
-		return nil, fmt.Errorf("failed to get room: %w", err)
-	}
-
-	roomWithEntities := &RoomWithEntities{Room: room}
-
-	// Get entities for this room
-	entities, err := s.entityRepo.GetByRoom(ctx, roomID)
-	if err != nil {
-		s.logger.WithError(err).Warnf("Failed to get entities for room %d", roomID)
-		roomWithEntities.EntityCount = 0
-	} else {
-		roomWithEntities.EntityCount = len(entities)
-		if includeEntities {
-			roomWithEntities.Entities = entities
-		}
-	}
-
-	return roomWithEntities, nil
-}
-
-// Create creates a new room
-func (s *Service) Create(ctx context.Context, room *models.Room) error {
-	// Check if room with same name already exists
-	existing, err := s.roomRepo.GetByName(ctx, room.Name)
-	if err == nil && existing != nil {
-		return fmt.Errorf("room with name '%s' already exists", room.Name)
-	}
-
+	// Set creation time
 	room.CreatedAt = time.Now()
 	room.UpdatedAt = time.Now()
 
-	err = s.roomRepo.Create(ctx, room)
-	if err != nil {
-		s.logger.WithError(err).Errorf("Failed to create room: %s", room.Name)
-		return fmt.Errorf("failed to create room: %w", err)
+	// Initialize entity list if nil
+	if room.EntityIDs == nil {
+		room.EntityIDs = make([]string, 0)
 	}
+
+	s.rooms[room.ID] = room
 
 	s.logger.WithFields(logrus.Fields{
 		"room_id":   room.ID,
@@ -121,196 +87,217 @@ func (s *Service) Create(ctx context.Context, room *models.Room) error {
 	return nil
 }
 
-// Update updates a room
-func (s *Service) Update(ctx context.Context, roomID int, updates *models.Room) error {
-	existing, err := s.roomRepo.GetByID(ctx, roomID)
-	if err != nil {
-		return fmt.Errorf("room not found: %w", err)
+// UpdateRoom updates an existing room
+func (s *RoomService) UpdateRoom(ctx context.Context, room *types.PMARoom) error {
+	if room.ID == "" {
+		return fmt.Errorf("room ID is required")
 	}
 
-	// Check if name is being changed to an existing name
-	if updates.Name != existing.Name {
-		existingWithName, err := s.roomRepo.GetByName(ctx, updates.Name)
-		if err == nil && existingWithName != nil && existingWithName.ID != roomID {
-			return fmt.Errorf("room with name '%s' already exists", updates.Name)
-		}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Check if room exists
+	existingRoom, exists := s.rooms[room.ID]
+	if !exists {
+		return fmt.Errorf("room not found: %s", room.ID)
 	}
 
-	// Update fields
-	existing.Name = updates.Name
-	existing.Icon = updates.Icon
-	existing.Description = updates.Description
-	existing.HomeAssistantAreaID = updates.HomeAssistantAreaID
-	existing.UpdatedAt = time.Now()
+	// Preserve creation time and update timestamp
+	room.CreatedAt = existingRoom.CreatedAt
+	room.UpdatedAt = time.Now()
 
-	err = s.roomRepo.Update(ctx, existing)
-	if err != nil {
-		s.logger.WithError(err).Errorf("Failed to update room: %d", roomID)
-		return fmt.Errorf("failed to update room: %w", err)
-	}
+	s.rooms[room.ID] = room
 
 	s.logger.WithFields(logrus.Fields{
-		"room_id":   roomID,
-		"room_name": existing.Name,
+		"room_id":   room.ID,
+		"room_name": room.Name,
 	}).Info("Room updated")
 
 	return nil
 }
 
-// Delete deletes a room and optionally reassigns its entities
-func (s *Service) Delete(ctx context.Context, roomID int, reassignToRoomID *int) error {
+// DeleteRoom deletes a room
+func (s *RoomService) DeleteRoom(ctx context.Context, roomID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	// Check if room exists
-	room, err := s.roomRepo.GetByID(ctx, roomID)
-	if err != nil {
-		return fmt.Errorf("room not found: %w", err)
+	if _, exists := s.rooms[roomID]; !exists {
+		return fmt.Errorf("room not found: %s", roomID)
 	}
 
-	// Get entities in this room
-	entities, err := s.entityRepo.GetByRoom(ctx, roomID)
-	if err != nil {
-		s.logger.WithError(err).Warnf("Failed to get entities for room %d during deletion", roomID)
-	} else if len(entities) > 0 {
-		if reassignToRoomID != nil {
-			// Verify target room exists
-			_, err := s.roomRepo.GetByID(ctx, *reassignToRoomID)
-			if err != nil {
-				return fmt.Errorf("target room for reassignment not found: %w", err)
-			}
+	delete(s.rooms, roomID)
 
-			// Reassign all entities to the new room
-			for _, entity := range entities {
-				entity.RoomID.Int64 = int64(*reassignToRoomID)
-				entity.RoomID.Valid = true
-				err = s.entityRepo.Update(ctx, entity)
-				if err != nil {
-					s.logger.WithError(err).Errorf("Failed to reassign entity %s during room deletion", entity.EntityID)
-					return fmt.Errorf("failed to reassign entities: %w", err)
-				}
-			}
+	s.logger.WithField("room_id", roomID).Info("Room deleted")
+	return nil
+}
 
-			s.logger.WithFields(logrus.Fields{
-				"room_id":        roomID,
-				"target_room_id": *reassignToRoomID,
-				"entities_moved": len(entities),
-			}).Info("Entities reassigned during room deletion")
-		} else {
-			// Unassign all entities from the room
-			for _, entity := range entities {
-				entity.RoomID.Valid = false
-				err = s.entityRepo.Update(ctx, entity)
-				if err != nil {
-					s.logger.WithError(err).Errorf("Failed to unassign entity %s during room deletion", entity.EntityID)
-					return fmt.Errorf("failed to unassign entities: %w", err)
-				}
-			}
+// AssignEntityToRoom assigns an entity to a room
+func (s *RoomService) AssignEntityToRoom(ctx context.Context, entityID, roomID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-			s.logger.WithFields(logrus.Fields{
-				"room_id":             roomID,
-				"entities_unassigned": len(entities),
-			}).Info("Entities unassigned during room deletion")
+	// Check if room exists
+	room, exists := s.rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found: %s", roomID)
+	}
+
+	// Check if entity is already in the room
+	for _, existingEntityID := range room.EntityIDs {
+		if existingEntityID == entityID {
+			return nil // Already assigned
 		}
 	}
 
-	// Delete the room
-	err = s.roomRepo.Delete(ctx, roomID)
+	// Add entity to room
+	room.EntityIDs = append(room.EntityIDs, entityID)
+	room.UpdatedAt = time.Now()
+
+	s.logger.WithFields(logrus.Fields{
+		"entity_id": entityID,
+		"room_id":   roomID,
+	}).Info("Entity assigned to room")
+
+	return nil
+}
+
+// UnassignEntityFromRoom removes an entity from a room
+func (s *RoomService) UnassignEntityFromRoom(ctx context.Context, entityID, roomID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Check if room exists
+	room, exists := s.rooms[roomID]
+	if !exists {
+		return fmt.Errorf("room not found: %s", roomID)
+	}
+
+	// Find and remove entity
+	for i, existingEntityID := range room.EntityIDs {
+		if existingEntityID == entityID {
+			room.EntityIDs = append(room.EntityIDs[:i], room.EntityIDs[i+1:]...)
+			room.UpdatedAt = time.Now()
+
+			s.logger.WithFields(logrus.Fields{
+				"entity_id": entityID,
+				"room_id":   roomID,
+			}).Info("Entity unassigned from room")
+
+			return nil
+		}
+	}
+
+	return fmt.Errorf("entity not found in room: %s", entityID)
+}
+
+// GetEntitiesInRoom returns all entities in a room
+func (s *RoomService) GetEntitiesInRoom(ctx context.Context, roomID string) ([]string, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	room, exists := s.rooms[roomID]
+	if !exists {
+		return nil, fmt.Errorf("room not found: %s", roomID)
+	}
+
+	// Return a copy to prevent external modification
+	entities := make([]string, len(room.EntityIDs))
+	copy(entities, room.EntityIDs)
+
+	return entities, nil
+}
+
+// ReassignEntities moves all entities from one room to another
+func (s *RoomService) ReassignEntities(ctx context.Context, fromRoomID, toRoomID string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Check if both rooms exist
+	fromRoom, exists := s.rooms[fromRoomID]
+	if !exists {
+		return fmt.Errorf("source room not found: %s", fromRoomID)
+	}
+
+	toRoom, exists := s.rooms[toRoomID]
+	if !exists {
+		return fmt.Errorf("destination room not found: %s", toRoomID)
+	}
+
+	// Move entities
+	entityCount := len(fromRoom.EntityIDs)
+	toRoom.EntityIDs = append(toRoom.EntityIDs, fromRoom.EntityIDs...)
+	fromRoom.EntityIDs = make([]string, 0)
+
+	// Update timestamps
+	fromRoom.UpdatedAt = time.Now()
+	toRoom.UpdatedAt = time.Now()
+
+	s.logger.WithFields(logrus.Fields{
+		"from_room_id": fromRoomID,
+		"to_room_id":   toRoomID,
+		"entity_count": entityCount,
+	}).Info("Entities reassigned between rooms")
+
+	return nil
+}
+
+// SyncRoomsFromSource synchronizes rooms from an adapter source
+func (s *RoomService) SyncRoomsFromSource(ctx context.Context, adapter types.PMAAdapter) error {
+	// Get rooms from adapter
+	rooms, err := adapter.SyncRooms(ctx)
 	if err != nil {
-		s.logger.WithError(err).Errorf("Failed to delete room: %d", roomID)
-		return fmt.Errorf("failed to delete room: %w", err)
+		return fmt.Errorf("failed to sync rooms from adapter %s: %w", adapter.GetID(), err)
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	syncCount := 0
+	for _, room := range rooms {
+		// Check if room already exists
+		existingRoom, exists := s.rooms[room.ID]
+		if exists {
+			// Update existing room
+			room.CreatedAt = existingRoom.CreatedAt
+			room.UpdatedAt = time.Now()
+		} else {
+			// New room
+			room.CreatedAt = time.Now()
+			room.UpdatedAt = time.Now()
+			syncCount++
+		}
+
+		s.rooms[room.ID] = room
 	}
 
 	s.logger.WithFields(logrus.Fields{
-		"room_id":   roomID,
-		"room_name": room.Name,
-	}).Info("Room deleted")
+		"adapter_id":      adapter.GetID(),
+		"rooms_synced":    len(rooms),
+		"new_rooms_added": syncCount,
+	}).Info("Rooms synchronized from adapter")
 
 	return nil
 }
 
-// GetStats returns room statistics
-func (s *Service) GetStats(ctx context.Context) (*RoomStats, error) {
-	rooms, err := s.GetAll(ctx, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rooms for stats: %w", err)
+// GetRoomStats returns statistics about rooms
+func (s *RoomService) GetRoomStats() map[string]interface{} {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	totalEntities := 0
+	for _, room := range s.rooms {
+		totalEntities += len(room.EntityIDs)
 	}
 
-	stats := &RoomStats{
-		TotalRooms:         len(rooms),
-		EntityDistribution: make(map[string]int),
-	}
-
-	roomsWithEntities := 0
-	for _, room := range rooms {
-		if room.EntityCount > 0 {
-			roomsWithEntities++
-		}
-
-		// Count entities by domain
-		for _, entity := range room.Entities {
-			stats.EntityDistribution[entity.Domain]++
-		}
-	}
-
-	stats.RoomsWithEntities = roomsWithEntities
-	stats.EmptyRooms = stats.TotalRooms - roomsWithEntities
-
-	return stats, nil
-}
-
-// SyncWithHomeAssistant synchronizes room data with Home Assistant areas
-func (s *Service) SyncWithHomeAssistant(ctx context.Context, haAreas []HAArea) error {
-	s.logger.Info("Starting Home Assistant area synchronization")
-
-	for _, area := range haAreas {
-		// Check if room with this HA area ID already exists
-		existing, err := s.roomRepo.GetByName(ctx, area.Name)
-		if err == nil && existing != nil {
-			// Update existing room
-			if existing.HomeAssistantAreaID.String != area.ID {
-				existing.HomeAssistantAreaID.String = area.ID
-				existing.HomeAssistantAreaID.Valid = true
-				existing.UpdatedAt = time.Now()
-
-				err = s.roomRepo.Update(ctx, existing)
-				if err != nil {
-					s.logger.WithError(err).Errorf("Failed to update room with HA area ID: %s", area.Name)
-					continue
-				}
-
-				s.logger.WithFields(logrus.Fields{
-					"room_name":  area.Name,
-					"ha_area_id": area.ID,
-				}).Info("Room synchronized with HA area")
+	return map[string]interface{}{
+		"total_rooms":    len(s.rooms),
+		"total_entities": totalEntities,
+		"avg_entities_per_room": func() float64 {
+			if len(s.rooms) == 0 {
+				return 0
 			}
-		} else {
-			// Create new room from HA area
-			room := &models.Room{
-				Name:      area.Name,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			}
-
-			room.HomeAssistantAreaID.String = area.ID
-			room.HomeAssistantAreaID.Valid = true
-
-			err = s.roomRepo.Create(ctx, room)
-			if err != nil {
-				s.logger.WithError(err).Errorf("Failed to create room from HA area: %s", area.Name)
-				continue
-			}
-
-			s.logger.WithFields(logrus.Fields{
-				"room_name":  area.Name,
-				"ha_area_id": area.ID,
-			}).Info("Room created from HA area")
-		}
+			return float64(totalEntities) / float64(len(s.rooms))
+		}(),
 	}
-
-	s.logger.Info("Home Assistant area synchronization completed")
-	return nil
-}
-
-// HAArea represents a Home Assistant area
-type HAArea struct {
-	ID   string `json:"area_id"`
-	Name string `json:"name"`
 }

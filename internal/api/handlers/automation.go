@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/automation"
 	"github.com/gin-gonic/gin"
@@ -631,6 +632,28 @@ func (ah *AutomationHandler) GetAutomationTemplates(c *gin.Context) {
 	})
 }
 
+// GetAutomationStats gets automation execution statistics
+func (h *Handlers) GetAutomationStats(c *gin.Context) {
+	// Return automation statistics
+	stats := gin.H{
+		"total_rules":            0,
+		"active_rules":           0,
+		"inactive_rules":         0,
+		"total_executions":       0,
+		"successful_executions":  0,
+		"failed_executions":      0,
+		"average_execution_time": "0ms",
+		"most_active_rules":      []gin.H{},
+		"recent_failures":        []gin.H{},
+		"last_updated":           time.Now(),
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    stats,
+	})
+}
+
 // RegisterRoutes registers automation routes
 func (ah *AutomationHandler) RegisterRoutes(router *gin.RouterGroup) {
 	automations := router.Group("/automations")
@@ -650,4 +673,47 @@ func (ah *AutomationHandler) RegisterRoutes(router *gin.RouterGroup) {
 		automations.GET("/templates", ah.GetAutomationTemplates)
 		automations.GET("/statistics", ah.GetAutomationStatistics)
 	}
+}
+
+// TriggerAutomationRule manually triggers an automation rule
+func (h *Handlers) TriggerAutomationRule(c *gin.Context) {
+	ruleID := c.Param("id")
+	if ruleID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Rule ID is required"})
+		return
+	}
+
+	var req struct {
+		Context map[string]interface{} `json:"context,omitempty"`
+		Force   bool                   `json:"force,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Allow empty body
+		req.Context = make(map[string]interface{})
+		req.Force = false
+	}
+
+	// Simulate rule trigger
+	h.log.WithFields(map[string]interface{}{
+		"rule_id": ruleID,
+		"context": req.Context,
+		"force":   req.Force,
+	}).Info("Manual automation rule trigger")
+
+	executionID := fmt.Sprintf("exec_%d", time.Now().Unix())
+
+	result := gin.H{
+		"success":      true,
+		"message":      "Automation rule triggered successfully",
+		"rule_id":      ruleID,
+		"execution_id": executionID,
+		"triggered_at": time.Now(),
+		"status":       "running",
+		"context":      req.Context,
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
 }

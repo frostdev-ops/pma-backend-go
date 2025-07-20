@@ -12,10 +12,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RingAdapter implements the DeviceAdapter interface for Ring devices
+// RingAdapter implements the PMAAdapter interface for Ring devices
 type RingAdapter struct {
 	client            *RingClient
 	devices           map[string]devices.Device
+	entities          map[string]types.PMAEntity
 	eventCallbacks    []func(devices.DeviceEvent)
 	logger            *logrus.Logger
 	config            RingAdapterConfig
@@ -61,6 +62,7 @@ func NewRingAdapter(config RingAdapterConfig, fullConfig *config.Config, logger 
 	return &RingAdapter{
 		client:         NewRingClient(logger, fullConfig),
 		devices:        make(map[string]devices.Device),
+		entities:       make(map[string]types.PMAEntity),
 		eventCallbacks: make([]func(devices.DeviceEvent), 0),
 		logger:         logger,
 		config:         config,
@@ -101,7 +103,7 @@ func (a *RingAdapter) Connect(ctx context.Context) error {
 }
 
 // Disconnect closes the connection to Ring API
-func (a *RingAdapter) Disconnect() error {
+func (a *RingAdapter) Disconnect(ctx context.Context) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 

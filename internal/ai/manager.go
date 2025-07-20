@@ -614,3 +614,302 @@ func (m *LLMManager) getProviderStatus(ctx context.Context, provider LLMProvider
 
 	return status
 }
+
+// AI Settings Management Methods
+
+// GetSettings retrieves current AI configuration settings
+func (m *LLMManager) GetSettings(ctx context.Context) (*AISettingsResponse, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	providers := make([]AIProviderInfo, 0, len(m.providers))
+	for _, provider := range m.providers {
+		providerName := provider.GetName()
+		status := "disconnected"
+		if provider.IsAvailable(ctx) {
+			status = "connected"
+		}
+
+		providerInfo := AIProviderInfo{
+			Type:         providerName,
+			Enabled:      true, // All registered providers are enabled
+			URL:          "",   // URL not available from interface
+			DefaultModel: "",   // Default model not available from interface
+			Priority:     1,    // Default priority for now
+			Status:       status,
+			LastChecked:  time.Now(),
+		}
+
+		// Get models
+		if models, err := provider.GetModels(ctx); err == nil {
+			modelNames := make([]string, len(models))
+			for i, model := range models {
+				modelNames[i] = model.Name
+			}
+			providerInfo.Models = modelNames
+		}
+
+		providers = append(providers, providerInfo)
+	}
+
+	return &AISettingsResponse{
+		Providers:       providers,
+		DefaultProvider: m.primaryProvider,
+		FallbackEnabled: m.fallbackEnabled,
+		MaxRetries:      m.maxRetries,
+		Timeout:         m.timeout.String(),
+		LastUpdated:     time.Now(),
+	}, nil
+}
+
+// SaveSettings saves AI configuration settings
+func (m *LLMManager) SaveSettings(ctx context.Context, req AISettingsRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Update manager settings
+	m.primaryProvider = req.DefaultProvider
+	m.fallbackEnabled = req.FallbackEnabled
+	m.maxRetries = req.MaxRetries
+
+	if req.Timeout != "" {
+		if timeout, err := time.ParseDuration(req.Timeout); err == nil {
+			m.timeout = timeout
+		}
+	}
+
+	// Note: In a full implementation, you'd save to config file/database
+	// For now, just log the update
+	m.logger.Info("AI settings updated",
+		"default_provider", req.DefaultProvider,
+		"fallback_enabled", req.FallbackEnabled,
+		"max_retries", req.MaxRetries,
+		"timeout", req.Timeout)
+
+	return nil
+}
+
+// TestConnection tests connectivity to an AI provider
+func (m *LLMManager) TestConnection(ctx context.Context, req AIConnectionTestRequest) (*AIConnectionTestResponse, error) {
+	startTime := time.Now()
+
+	// Find provider by type
+	provider := m.providersByName[req.ProviderType]
+	if provider == nil {
+		return &AIConnectionTestResponse{
+			Success:     false,
+			Message:     "Provider not found",
+			TestedAt:    time.Now(),
+			ErrorDetail: fmt.Sprintf("Provider '%s' is not registered", req.ProviderType),
+		}, nil
+	}
+
+	// Test connection
+	if !provider.IsAvailable(ctx) {
+		return &AIConnectionTestResponse{
+			Success:     false,
+			Message:     "Provider not available",
+			TestedAt:    time.Now(),
+			ErrorDetail: "Provider is not currently available",
+		}, nil
+	}
+
+	// Test with a simple request
+	testMessages := []ChatMessage{
+		{Role: "user", Content: "Hello"},
+	}
+
+	testOpts := ChatOptions{
+		Model: req.Model,
+	}
+
+	_, err := provider.Chat(ctx, testMessages, testOpts)
+	latency := time.Since(startTime)
+
+	if err != nil {
+		return &AIConnectionTestResponse{
+			Success:     false,
+			Message:     "Connection test failed",
+			Latency:     latency.String(),
+			TestedAt:    time.Now(),
+			ErrorDetail: err.Error(),
+		}, nil
+	}
+
+	// Get available models
+	var models []string
+	if modelList, err := provider.GetModels(ctx); err == nil {
+		models = make([]string, len(modelList))
+		for i, model := range modelList {
+			models[i] = model.Name
+		}
+	}
+
+	return &AIConnectionTestResponse{
+		Success:  true,
+		Message:  "Connection successful",
+		Models:   models,
+		Latency:  latency.String(),
+		TestedAt: time.Now(),
+	}, nil
+}
+
+// Ollama-specific Methods
+
+// GetOllamaStatus gets Ollama process status
+func (m *LLMManager) GetOllamaStatus(ctx context.Context) (*OllamaStatusResponse, error) {
+	// Find Ollama provider
+	ollamaProvider := m.providersByName["ollama"]
+	if ollamaProvider == nil {
+		return &OllamaStatusResponse{
+			Running:     false,
+			LastChecked: time.Now(),
+		}, nil
+	}
+
+	running := ollamaProvider.IsAvailable(ctx)
+	status := &OllamaStatusResponse{
+		Running:     running,
+		LastChecked: time.Now(),
+	}
+
+	if running {
+		// Get models
+		if models, err := ollamaProvider.GetModels(ctx); err == nil {
+			ollamaModels := make([]OllamaModelInfo, len(models))
+			for i, model := range models {
+				ollamaModels[i] = OllamaModelInfo{
+					Name:       model.Name,
+					ModifiedAt: time.Now(), // Placeholder
+				}
+			}
+			status.Models = ollamaModels
+		}
+
+		status.SystemInfo = OllamaSystemInfo{
+			Platform:     "linux",
+			Architecture: "amd64",
+			GPU:          false,
+			Memory:       8 * 1024 * 1024 * 1024, // 8GB placeholder
+		}
+
+		status.ResourceUsage = OllamaResourceInfo{
+			CPUUsage:    0.0,
+			MemoryUsage: 0,
+		}
+	}
+
+	return status, nil
+}
+
+// GetOllamaMetrics gets Ollama resource usage metrics
+func (m *LLMManager) GetOllamaMetrics(ctx context.Context) (*OllamaMetricsResponse, error) {
+	status, err := m.GetOllamaStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	health := "down"
+	if status.Running {
+		health = "healthy"
+	}
+
+	return &OllamaMetricsResponse{
+		Status:         *status,
+		RequestCount:   m.requestCount["ollama"],
+		ErrorCount:     m.errorCount["ollama"],
+		AverageLatency: 0.0,  // Placeholder
+		TotalUptime:    "0s", // Placeholder
+		Health:         health,
+	}, nil
+}
+
+// GetOllamaHealth performs health check for Ollama service
+func (m *LLMManager) GetOllamaHealth(ctx context.Context) (map[string]interface{}, error) {
+	ollamaProvider := m.providersByName["ollama"]
+	if ollamaProvider == nil {
+		return map[string]interface{}{
+			"status":  "not_configured",
+			"healthy": false,
+			"message": "Ollama provider not configured",
+		}, nil
+	}
+
+	healthy := ollamaProvider.IsAvailable(ctx)
+	status := "down"
+	message := "Ollama service is not running"
+
+	if healthy {
+		status = "up"
+		message = "Ollama service is running normally"
+	}
+
+	return map[string]interface{}{
+		"status":     status,
+		"healthy":    healthy,
+		"message":    message,
+		"checked_at": time.Now(),
+	}, nil
+}
+
+// StartOllamaProcess starts Ollama process
+func (m *LLMManager) StartOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
+	// In a real implementation, this would start the Ollama systemd service
+	// For now, return a placeholder response
+	return &OllamaProcessResponse{
+		Success:   false,
+		Message:   "Ollama process management not implemented",
+		Timestamp: time.Now(),
+	}, fmt.Errorf("ollama process management not implemented")
+}
+
+// StopOllamaProcess stops Ollama process
+func (m *LLMManager) StopOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
+	// In a real implementation, this would stop the Ollama systemd service
+	// For now, return a placeholder response
+	return &OllamaProcessResponse{
+		Success:   false,
+		Message:   "Ollama process management not implemented",
+		Timestamp: time.Now(),
+	}, fmt.Errorf("ollama process management not implemented")
+}
+
+// RestartOllamaProcess restarts Ollama process
+func (m *LLMManager) RestartOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
+	// In a real implementation, this would restart the Ollama systemd service
+	// For now, return a placeholder response
+	return &OllamaProcessResponse{
+		Success:   false,
+		Message:   "Ollama process management not implemented",
+		Timestamp: time.Now(),
+	}, fmt.Errorf("ollama process management not implemented")
+}
+
+// GetOllamaMonitoring gets comprehensive monitoring data
+func (m *LLMManager) GetOllamaMonitoring(ctx context.Context) (map[string]interface{}, error) {
+	status, err := m.GetOllamaStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics, err := m.GetOllamaMetrics(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	health, err := m.GetOllamaHealth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"status":  status,
+		"metrics": metrics,
+		"health":  health,
+		"monitoring": map[string]interface{}{
+			"enabled":        true,
+			"last_check":     time.Now(),
+			"check_interval": "30s",
+		},
+	}, nil
+}

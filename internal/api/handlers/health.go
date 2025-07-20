@@ -43,5 +43,13 @@ func (h *Handlers) Health(c *gin.Context) {
 		health["adapter_count"] = len(adapters)
 	}
 
+	// Add error handling info to health check
+	health["error_handling"] = gin.H{
+		"enhanced_404":      true,
+		"enhanced_405":      true,
+		"detailed_logging":  true,
+		"error_suggestions": true,
+	}
+
 	utils.SendSuccess(c, health)
 }

@@ -660,3 +660,101 @@ func (h *Handlers) GetAreaRoomAssignments(c *gin.Context) {
 		"count":   len(assignments),
 	})
 }
+
+// Entity Management for Areas
+
+// GetAreaEntities retrieves entities in an area
+func (h *Handlers) GetAreaEntities(c *gin.Context) {
+	areaIDStr := c.Param("id")
+	areaID, err := strconv.Atoi(areaIDStr)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid area ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+
+	entities, err := areaService.GetAreaEntities(ctx, areaID)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get area entities")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve area entities")
+		return
+	}
+
+	utils.SendSuccessWithMeta(c, entities, gin.H{
+		"area_id": areaID,
+		"count":   len(entities),
+	})
+}
+
+// AssignEntitiesToArea assigns entities to an area
+func (h *Handlers) AssignEntitiesToArea(c *gin.Context) {
+	areaIDStr := c.Param("id")
+	areaID, err := strconv.Atoi(areaIDStr)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid area ID")
+		return
+	}
+
+	var req struct {
+		EntityIDs []string `json:"entity_ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+
+	result, err := areaService.AssignEntitiesToArea(ctx, areaID, req.EntityIDs)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to assign entities to area")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to assign entities to area: "+err.Error())
+		return
+	}
+
+	utils.SendSuccessWithMeta(c, result, gin.H{
+		"area_id":       areaID,
+		"assigned_count": len(req.EntityIDs),
+	})
+}
+
+// RemoveEntityFromArea removes an entity from an area
+func (h *Handlers) RemoveEntityFromArea(c *gin.Context) {
+	areaIDStr := c.Param("id")
+	areaID, err := strconv.Atoi(areaIDStr)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid area ID")
+		return
+	}
+
+	entityID := c.Param("entity_id")
+	if entityID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Entity ID is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+
+	err = areaService.RemoveEntityFromArea(ctx, areaID, entityID)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to remove entity from area")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to remove entity from area: "+err.Error())
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{
+		"message":   "Entity removed from area successfully",
+		"area_id":   areaID,
+		"entity_id": entityID,
+	})
+}

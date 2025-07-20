@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/network"
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/ring"
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/shelly"
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/ups"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types/registries"
@@ -19,6 +23,15 @@ type RoomServiceInterface interface {
 	GetRoomByID(ctx context.Context, roomID string) (*types.PMARoom, error)
 }
 
+// EventEmitter defines the interface for broadcasting real-time updates
+type EventEmitter interface {
+	BroadcastPMAEntityStateChange(entityID string, oldState, newState interface{}, entity interface{})
+	BroadcastPMAEntityAdded(entity interface{})
+	BroadcastPMAEntityRemoved(entityID string, source interface{})
+	BroadcastPMASyncStatus(source string, status string, details map[string]interface{})
+	BroadcastPMAAdapterStatus(adapterID, adapterName, source, status string, health interface{}, metrics interface{})
+}
+
 // UnifiedEntityService manages all entities through the PMA type system
 type UnifiedEntityService struct {
 	typeRegistry    *types.PMATypeRegistry
@@ -26,16 +39,24 @@ type UnifiedEntityService struct {
 	logger          *logrus.Logger
 	mutex           sync.RWMutex
 	roomService     RoomServiceInterface
+	eventEmitter    EventEmitter
 
 	// Caching
 	entityCache     map[string]types.PMAEntity
 	cacheExpiry     time.Duration
 	lastCacheUpdate time.Time
+
+	// Sync scheduler
+	syncTicker   *time.Ticker
+	syncStopChan chan bool
+	syncRunning  bool
+	config       *config.Config
 }
 
 // NewUnifiedEntityService creates a new unified entity service
 func NewUnifiedEntityService(
 	typeRegistry *types.PMATypeRegistry,
+	config *config.Config,
 	logger *logrus.Logger,
 ) *UnifiedEntityService {
 	// Create the registry manager
@@ -47,6 +68,8 @@ func NewUnifiedEntityService(
 		logger:          logger,
 		entityCache:     make(map[string]types.PMAEntity),
 		cacheExpiry:     5 * time.Minute,
+		config:          config,
+		syncStopChan:    make(chan bool, 1),
 	}
 
 	return service
@@ -67,6 +90,12 @@ func (s *UnifiedEntityService) SetRoomService(roomService RoomServiceInterface) 
 	s.roomService = roomService
 }
 
+// SetEventEmitter sets the event emitter for real-time broadcasting
+func (s *UnifiedEntityService) SetEventEmitter(eventEmitter EventEmitter) {
+	s.eventEmitter = eventEmitter
+	s.logger.Info("Event emitter configured for real-time WebSocket updates")
+}
+
 // InitializeAdapters initializes all configured adapters
 func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 	var errors []error
@@ -81,25 +110,101 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 		}
 	}
 
-	// Initialize Ring adapter (commented out due to interface mismatch - needs update)
-	// TODO: Fix Ring adapter to properly implement PMAAdapter interface
+	// Initialize Ring adapter
 	if config.Devices.Ring.Enabled && config.Devices.Ring.Email != "" && config.Devices.Ring.Password != "" {
-		s.logger.Info("Ring adapter configured but not registered - needs interface updates")
-		// ringConfig := ring.RingAdapterConfig{
-		// 	Credentials: ring.RingCredentials{
-		// 		Email:    config.Devices.Ring.Email,
-		// 		Password: config.Devices.Ring.Password,
-		// 	},
-		// 	AutoReconnect: config.Devices.Ring.AutoReconnect,
-		// }
-		// ringAdapter := ring.NewRingAdapter(ringConfig, config, s.logger)
-		// if err := s.RegisterAdapter(ringAdapter); err != nil {
-		// 	errors = append(errors, fmt.Errorf("failed to register Ring adapter: %w", err))
-		// }
+		ringConfig := ring.RingAdapterConfig{
+			Credentials: ring.RingCredentials{
+				Email:    config.Devices.Ring.Email,
+				Password: config.Devices.Ring.Password,
+			},
+			AutoReconnect: config.Devices.Ring.AutoReconnect,
+		}
+		ringAdapter := ring.NewRingAdapter(ringConfig, config, s.logger)
+		if err := s.RegisterAdapter(ringAdapter); err != nil {
+			errors = append(errors, fmt.Errorf("failed to register Ring adapter: %w", err))
+		} else {
+			s.logger.Info("Ring adapter registered successfully")
+		}
 	}
 
-	// Initialize other adapters as they become available...
-	// TODO: Add Shelly, UPS, and other adapters when ready
+	// Initialize Shelly adapter
+	if config.Devices.Shelly.Enabled {
+		pollInterval, err := time.ParseDuration(config.Devices.Shelly.PollInterval)
+		if err != nil {
+			pollInterval = 30 * time.Second // Default fallback
+		}
+
+		// Convert device configs to IP addresses
+		var deviceIPs []string
+		for _, device := range config.Devices.Shelly.Devices {
+			if device.Enabled {
+				deviceIPs = append(deviceIPs, device.IP)
+			}
+		}
+
+		shellyConfig := shelly.ShellyAdapterConfig{
+			Username:      config.Devices.Shelly.Username,
+			Password:      config.Devices.Shelly.Password,
+			PollInterval:  pollInterval,
+			AutoReconnect: config.Devices.Shelly.AutoReconnect,
+			Devices:       deviceIPs,
+		}
+		shellyAdapter := shelly.NewShellyAdapter(shellyConfig, s.logger)
+		if err := s.RegisterAdapter(shellyAdapter); err != nil {
+			errors = append(errors, fmt.Errorf("failed to register Shelly adapter: %w", err))
+		} else {
+			s.logger.Info("Shelly adapter registered successfully")
+		}
+	}
+
+	// Initialize UPS adapter
+	if config.Devices.UPS.Enabled && config.Devices.UPS.NUTHost != "" {
+		pollInterval, err := time.ParseDuration(config.Devices.UPS.PollInterval)
+		if err != nil {
+			pollInterval = 30 * time.Second // Default fallback
+		}
+
+		// Convert UPS names from string to slice
+		var upsNames []string
+		if config.Devices.UPS.UPSName != "" {
+			upsNames = append(upsNames, config.Devices.UPS.UPSName)
+		}
+
+		upsConfig := ups.UPSAdapterConfig{
+			Host:         config.Devices.UPS.NUTHost,
+			Port:         config.Devices.UPS.NUTPort,
+			Username:     config.Devices.UPS.Username,
+			Password:     config.Devices.UPS.Password,
+			UPSNames:     upsNames,
+			PollInterval: pollInterval,
+		}
+		upsAdapter := ups.NewUPSAdapter(upsConfig, s.logger)
+		if err := s.RegisterAdapter(upsAdapter); err != nil {
+			errors = append(errors, fmt.Errorf("failed to register UPS adapter: %w", err))
+		} else {
+			s.logger.Info("UPS adapter registered successfully")
+		}
+	}
+
+	// Initialize Network adapter
+	if config.Devices.Network.Enabled && config.Router.BaseURL != "" {
+		scanInterval, err := time.ParseDuration(config.Devices.Network.ScanInterval)
+		if err != nil {
+			scanInterval = 5 * time.Minute // Default fallback
+		}
+
+		networkConfig := network.NetworkAdapterConfig{
+			RouterURL:    config.Router.BaseURL,
+			AuthToken:    config.Router.AuthToken,
+			PollInterval: scanInterval,
+		}
+		networkAdapter := network.NewNetworkAdapter(networkConfig, s.logger)
+		if err := s.RegisterAdapter(networkAdapter); err != nil {
+			errors = append(errors, fmt.Errorf("failed to register Network adapter: %w", err))
+		} else {
+			s.logger.Info("Network adapter registered successfully")
+		}
+	}
 
 	if len(errors) > 0 {
 		return fmt.Errorf("adapter initialization had %d errors: %v", len(errors), errors)
@@ -391,6 +496,19 @@ func (s *UnifiedEntityService) ExecuteAction(ctx context.Context, action types.P
 
 	// Update the entity in the registry if the action was successful
 	if result.Success {
+		// Store the old state for broadcasting
+		oldEntity := entity
+
+		// Broadcast the action execution to WebSocket clients
+		if s.eventEmitter != nil {
+			s.eventEmitter.BroadcastPMAEntityStateChange(
+				action.EntityID,
+				oldEntity.GetState(),
+				result.NewState, // Assuming the result contains the new state
+				entity,
+			)
+		}
+
 		// Refresh the entity from the source to get the latest state
 		go func() {
 			time.Sleep(1 * time.Second) // Give the device time to update
@@ -410,9 +528,24 @@ func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.
 
 	startTime := time.Now()
 
+	// Broadcast sync start
+	if s.eventEmitter != nil {
+		s.eventEmitter.BroadcastPMASyncStatus(string(source), "syncing", map[string]interface{}{
+			"started_at": startTime,
+		})
+	}
+
 	// Sync entities
 	entities, err := adapter.SyncEntities(ctx)
 	if err != nil {
+		// Broadcast sync error
+		if s.eventEmitter != nil {
+			s.eventEmitter.BroadcastPMASyncStatus(string(source), "error", map[string]interface{}{
+				"error":    err.Error(),
+				"duration": time.Since(startTime),
+			})
+		}
+
 		return &SyncResult{
 			Source:      source,
 			Success:     false,
@@ -437,14 +570,32 @@ func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.
 				continue
 			}
 			registeredCount++
+
+			// Broadcast new entity added
+			if s.eventEmitter != nil {
+				s.eventEmitter.BroadcastPMAEntityAdded(entity)
+			}
 		} else {
 			// Entity exists, check for conflicts and update
 			if s.shouldUpdateEntity(existingEntity, entity) {
+				// Store old state for broadcasting
+				oldState := existingEntity.GetState()
+
 				if err := s.registryManager.GetEntityRegistry().UpdateEntity(entity); err != nil {
 					errors = append(errors, fmt.Sprintf("Failed to update entity %s: %v", entity.GetID(), err))
 					continue
 				}
 				updatedCount++
+
+				// Broadcast entity state change
+				if s.eventEmitter != nil && oldState != entity.GetState() {
+					s.eventEmitter.BroadcastPMAEntityStateChange(
+						entity.GetID(),
+						oldState,
+						entity.GetState(),
+						entity,
+					)
+				}
 			}
 		}
 	}
@@ -461,6 +612,22 @@ func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.
 
 	if len(errors) > 0 {
 		result.Error = fmt.Sprintf("Sync completed with %d errors: %s", len(errors), strings.Join(errors, "; "))
+	}
+
+	// Broadcast sync completion
+	if s.eventEmitter != nil {
+		status := "completed"
+		if len(errors) > 0 {
+			status = "completed_with_errors"
+		}
+
+		s.eventEmitter.BroadcastPMASyncStatus(string(source), status, map[string]interface{}{
+			"entities_found":      len(entities),
+			"entities_registered": registeredCount,
+			"entities_updated":    updatedCount,
+			"duration":            time.Since(startTime),
+			"error_count":         len(errors),
+		})
 	}
 
 	s.logger.WithFields(logrus.Fields{
@@ -513,6 +680,109 @@ func (s *UnifiedEntityService) SyncFromAllSources(ctx context.Context) ([]*SyncR
 
 	wg.Wait()
 	return results, nil
+}
+
+// StartPeriodicSync starts the periodic synchronization scheduler
+func (s *UnifiedEntityService) StartPeriodicSync() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if s.syncRunning {
+		return fmt.Errorf("periodic sync is already running")
+	}
+
+	if !s.config.HomeAssistant.Sync.Enabled {
+		s.logger.Info("Periodic sync disabled in configuration")
+		return nil
+	}
+
+	// Parse sync interval
+	syncInterval, err := time.ParseDuration(s.config.HomeAssistant.Sync.FullSyncInterval)
+	if err != nil {
+		s.logger.WithError(err).Warn("Invalid sync interval, using default 1 hour")
+		syncInterval = 1 * time.Hour
+	}
+
+	s.logger.WithField("interval", syncInterval).Info("Starting periodic entity sync scheduler")
+
+	// Create ticker for periodic sync
+	s.syncTicker = time.NewTicker(syncInterval)
+	s.syncRunning = true
+
+	// Start sync goroutine
+	go s.periodicSyncLoop()
+
+	return nil
+}
+
+// StopPeriodicSync stops the periodic synchronization scheduler
+func (s *UnifiedEntityService) StopPeriodicSync() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if !s.syncRunning {
+		return
+	}
+
+	s.logger.Info("Stopping periodic entity sync scheduler")
+
+	if s.syncTicker != nil {
+		s.syncTicker.Stop()
+		s.syncTicker = nil
+	}
+
+	s.syncStopChan <- true
+	s.syncRunning = false
+}
+
+// periodicSyncLoop runs the periodic synchronization
+func (s *UnifiedEntityService) periodicSyncLoop() {
+	for {
+		select {
+		case <-s.syncStopChan:
+			s.logger.Info("Periodic sync loop stopped")
+			return
+		case <-s.syncTicker.C:
+			s.performPeriodicSync()
+		}
+	}
+}
+
+// performPeriodicSync executes a full sync from all sources
+func (s *UnifiedEntityService) performPeriodicSync() {
+	s.logger.Info("Starting periodic sync from all sources")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	results, err := s.SyncFromAllSources(ctx)
+	if err != nil {
+		s.logger.WithError(err).Error("Periodic sync failed")
+		return
+	}
+
+	// Log results
+	totalFound := 0
+	totalRegistered := 0
+	totalUpdated := 0
+	successCount := 0
+
+	for _, result := range results {
+		totalFound += result.EntitiesFound
+		totalRegistered += result.EntitiesRegistered
+		totalUpdated += result.EntitiesUpdated
+		if result.Success {
+			successCount++
+		}
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"total_sources":             len(results),
+		"successful_sources":        successCount,
+		"total_entities_found":      totalFound,
+		"total_entities_registered": totalRegistered,
+		"total_entities_updated":    totalUpdated,
+	}).Info("Periodic sync completed")
 }
 
 // Helper methods
@@ -591,22 +861,51 @@ func (s *UnifiedEntityService) shouldUpdateEntity(existing, new types.PMAEntity)
 }
 
 func (s *UnifiedEntityService) refreshEntity(ctx context.Context, entityID string) {
-	entity, err := s.registryManager.GetEntityRegistry().GetEntity(entityID)
+	// Get the current entity state before refresh
+	oldEntity, err := s.registryManager.GetEntityRegistry().GetEntity(entityID)
 	if err != nil {
 		s.logger.WithError(err).Warnf("Failed to get entity for refresh: %s", entityID)
 		return
 	}
 
-	adapter, err := s.registryManager.GetAdapterRegistry().GetAdapterBySource(entity.GetSource())
+	adapter, err := s.registryManager.GetAdapterRegistry().GetAdapterBySource(oldEntity.GetSource())
 	if err != nil {
 		s.logger.WithError(err).Warnf("Failed to get adapter for entity refresh: %s", entityID)
 		return
 	}
 
+	// Store old state for comparison
+	oldState := oldEntity.GetState()
+
 	// Sync entities from the source (this will update the registry)
 	_, err = adapter.SyncEntities(ctx)
 	if err != nil {
 		s.logger.WithError(err).Warnf("Failed to sync entities for refresh")
+		return
+	}
+
+	// Get the updated entity and check if state changed
+	newEntity, err := s.registryManager.GetEntityRegistry().GetEntity(entityID)
+	if err != nil {
+		s.logger.WithError(err).Warnf("Failed to get refreshed entity: %s", entityID)
+		return
+	}
+
+	// Broadcast state change if the state actually changed
+	newState := newEntity.GetState()
+	if s.eventEmitter != nil && oldState != newState {
+		s.eventEmitter.BroadcastPMAEntityStateChange(
+			entityID,
+			oldState,
+			newState,
+			newEntity,
+		)
+
+		s.logger.WithFields(logrus.Fields{
+			"entity_id": entityID,
+			"old_state": oldState,
+			"new_state": newState,
+		}).Debug("Broadcasted entity state change")
 	}
 }
 

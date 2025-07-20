@@ -5,21 +5,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
 // PerformanceHandler handles performance-related API endpoints
 type PerformanceHandler struct {
-	// These would be injected from the main application
-	// memoryManager   memory.MemoryManager
-	// queryOptimizer  database.QueryOptimizer
-	// poolManager     database.PoolManager
-	// queryCache      database.QueryCache
+	enhancedDB *database.EnhancedDB
 }
 
 // NewPerformanceHandler creates a new performance handler
-func NewPerformanceHandler() *PerformanceHandler {
-	return &PerformanceHandler{}
+func NewPerformanceHandler(enhancedDB *database.EnhancedDB) *PerformanceHandler {
+	return &PerformanceHandler{
+		enhancedDB: enhancedDB,
+	}
 }
 
 // RegisterRoutes registers performance-related routes
@@ -43,7 +42,6 @@ func (ph *PerformanceHandler) RegisterRoutes(router *gin.RouterGroup) {
 
 // GetPerformanceStatus returns current performance metrics
 func (ph *PerformanceHandler) GetPerformanceStatus(c *gin.Context) {
-	// In a real implementation, this would collect data from various performance managers
 	status := map[string]interface{}{
 		"timestamp": time.Now(),
 		"cpu": map[string]interface{}{
@@ -57,12 +55,6 @@ func (ph *PerformanceHandler) GetPerformanceStatus(c *gin.Context) {
 			"num_goroutines":   125,
 			"gc_pause_time":    "2.5ms",
 		},
-		"database": map[string]interface{}{
-			"active_connections":   8,
-			"idle_connections":     2,
-			"query_cache_hit_rate": 0.85,
-			"avg_query_time":       "15ms",
-		},
 		"api": map[string]interface{}{
 			"avg_response_time": "25ms",
 			"requests_per_sec":  150,
@@ -73,6 +65,25 @@ func (ph *PerformanceHandler) GetPerformanceStatus(c *gin.Context) {
 			"messages_per_sec":   320,
 			"avg_latency":        "5ms",
 		},
+	}
+
+	// Add real database performance stats if enhanced DB is available
+	if ph.enhancedDB != nil {
+		dbStats := ph.enhancedDB.GetPerformanceStats()
+		dbHealth := ph.enhancedDB.GetHealthStatus()
+
+		status["database"] = map[string]interface{}{
+			"health": dbHealth,
+			"stats":  dbStats,
+		}
+	} else {
+		// Fallback to mock data
+		status["database"] = map[string]interface{}{
+			"active_connections":   8,
+			"idle_connections":     2,
+			"query_cache_hit_rate": 0.85,
+			"avg_query_time":       "15ms",
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -275,36 +286,54 @@ func (ph *PerformanceHandler) GetPerformanceReport(c *gin.Context) {
 func (ph *PerformanceHandler) GetCacheStats(c *gin.Context) {
 	cacheType := c.DefaultQuery("type", "all")
 
-	stats := map[string]interface{}{
-		"query_cache": map[string]interface{}{
+	stats := make(map[string]interface{})
+
+	// Get real query cache stats if available
+	if ph.enhancedDB != nil && ph.enhancedDB.QueryCache != nil {
+		cacheStats := ph.enhancedDB.QueryCache.GetStats()
+		stats["query_cache"] = map[string]interface{}{
+			"hit_rate":     cacheStats.HitRate,
+			"total_hits":   cacheStats.TotalHits,
+			"total_misses": cacheStats.TotalMisses,
+			"entry_count":  cacheStats.EntryCount,
+			"memory_usage": cacheStats.MemoryUsage,
+			"avg_ttl":      cacheStats.AvgTTL,
+			"last_cleared": cacheStats.LastCleared,
+		}
+	} else {
+		// Fallback to mock data
+		stats["query_cache"] = map[string]interface{}{
 			"hit_rate":     0.85,
 			"total_hits":   12450,
 			"total_misses": 2201,
 			"entry_count":  156,
 			"memory_usage": "8.5MB",
 			"avg_ttl":      "5m30s",
+		}
+	}
+
+	// Mock data for other cache types (these would be implemented similarly)
+	stats["response_cache"] = map[string]interface{}{
+		"hit_rate":     0.72,
+		"total_hits":   8920,
+		"total_misses": 3480,
+		"entry_count":  89,
+		"memory_usage": "12.3MB",
+		"avg_ttl":      "3m45s",
+	}
+
+	stats["object_pools"] = map[string]interface{}{
+		"buffer_pool": map[string]interface{}{
+			"hit_rate": 0.95,
+			"gets":     5420,
+			"puts":     5380,
+			"size":     "estimated_100",
 		},
-		"response_cache": map[string]interface{}{
-			"hit_rate":     0.72,
-			"total_hits":   8920,
-			"total_misses": 3480,
-			"entry_count":  89,
-			"memory_usage": "12.3MB",
-			"avg_ttl":      "3m45s",
-		},
-		"object_pools": map[string]interface{}{
-			"buffer_pool": map[string]interface{}{
-				"hit_rate": 0.95,
-				"gets":     5420,
-				"puts":     5380,
-				"size":     "estimated_100",
-			},
-			"json_response_pool": map[string]interface{}{
-				"hit_rate": 0.89,
-				"gets":     3250,
-				"puts":     3210,
-				"size":     "estimated_200",
-			},
+		"json_response_pool": map[string]interface{}{
+			"hit_rate": 0.89,
+			"gets":     3250,
+			"puts":     3210,
+			"size":     "estimated_200",
 		},
 	}
 
@@ -581,21 +610,42 @@ func (ph *PerformanceHandler) ForceGarbageCollection(c *gin.Context) {
 
 // GetDatabasePoolStats returns database connection pool statistics
 func (ph *PerformanceHandler) GetDatabasePoolStats(c *gin.Context) {
-	stats := map[string]interface{}{
-		"active_connections": 8,
-		"idle_connections":   2,
-		"total_connections":  10,
-		"max_connections":    25,
-		"wait_count":         0,
-		"wait_duration":      "0ms",
-		"max_lifetime":       "1h",
-		"connection_health":  "excellent",
-		"utilization":        0.4,
-		"efficiency_score":   92.5,
-		"recommendations": []string{
-			"Connection pool is well-sized for current load",
-			"Consider reducing max_connections if usage remains low",
-		},
+	var stats map[string]interface{}
+
+	if ph.enhancedDB != nil && ph.enhancedDB.PoolManager != nil {
+		// Get real pool stats
+		poolStats := ph.enhancedDB.PoolManager.MonitorConnections()
+		healthMetrics := ph.enhancedDB.PoolManager.GetConnectionHealth()
+
+		stats = map[string]interface{}{
+			"active_connections": poolStats.ActiveConnections,
+			"idle_connections":   poolStats.IdleConnections,
+			"total_connections":  poolStats.TotalConnections,
+			"wait_count":         poolStats.WaitCount,
+			"wait_duration":      poolStats.WaitDuration,
+			"max_lifetime":       poolStats.MaxLifetime,
+			"leaked_connections": poolStats.LeakedConnections,
+			"health_metrics":     healthMetrics,
+			"utilization":        float64(poolStats.ActiveConnections) / float64(poolStats.TotalConnections),
+		}
+	} else {
+		// Fallback to mock data
+		stats = map[string]interface{}{
+			"active_connections": 8,
+			"idle_connections":   2,
+			"total_connections":  10,
+			"max_connections":    25,
+			"wait_count":         0,
+			"wait_duration":      "0ms",
+			"max_lifetime":       "1h",
+			"connection_health":  "excellent",
+			"utilization":        0.4,
+			"efficiency_score":   92.5,
+			"recommendations": []string{
+				"Connection pool is well-sized for current load",
+				"Consider reducing max_connections if usage remains low",
+			},
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -625,6 +675,38 @@ func (ph *PerformanceHandler) OptimizeDatabase(c *gin.Context) {
 
 	results := make(map[string]interface{})
 
+	// Use enhanced database optimization if available
+	if ph.enhancedDB != nil {
+		if ph.enhancedDB.PoolManager != nil {
+			if err := ph.enhancedDB.PoolManager.OptimizePool(); err != nil {
+				results["pool_optimization"] = map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				}
+			} else {
+				results["pool_optimization"] = map[string]interface{}{
+					"success": true,
+					"message": "Connection pool optimized successfully",
+				}
+			}
+		}
+
+		if ph.enhancedDB.QueryOptimizer != nil {
+			if err := ph.enhancedDB.QueryOptimizer.OptimizeSchema(); err != nil {
+				results["schema_optimization"] = map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				}
+			} else {
+				results["schema_optimization"] = map[string]interface{}{
+					"success": true,
+					"message": "Database schema optimized successfully",
+				}
+			}
+		}
+	}
+
+	// Perform basic SQLite optimizations
 	for _, op := range request.Operations {
 		switch op {
 		case "analyze":

@@ -163,8 +163,60 @@ func (h *Handlers) GetAdapterMetrics(c *gin.Context) {
 		metrics["health"] = health
 	}
 
-	// TODO: Add more detailed metrics like entity count, sync statistics, etc.
-	// This would require extensions to the adapter interface
+	// Get detailed metrics from the adapter
+	if adapterMetrics := adapter.GetMetrics(); adapterMetrics != nil {
+		metrics["detailed_metrics"] = adapterMetrics
+		
+		// Extract key metrics for easier access
+		metrics["entities_managed"] = adapterMetrics.EntitiesManaged
+		metrics["rooms_managed"] = adapterMetrics.RoomsManaged
+		metrics["actions_executed"] = adapterMetrics.ActionsExecuted
+		metrics["successful_actions"] = adapterMetrics.SuccessfulActions
+		metrics["failed_actions"] = adapterMetrics.FailedActions
+		metrics["average_response_time"] = adapterMetrics.AverageResponseTime.String()
+		metrics["sync_errors"] = adapterMetrics.SyncErrors
+		metrics["uptime"] = adapterMetrics.Uptime.String()
+		
+		if adapterMetrics.LastSync != nil {
+			metrics["last_sync"] = adapterMetrics.LastSync.Format(time.RFC3339)
+		}
+		
+		// Calculate additional derived metrics
+		totalActions := adapterMetrics.ActionsExecuted
+		if totalActions > 0 {
+			metrics["success_rate"] = float64(adapterMetrics.SuccessfulActions) / float64(totalActions)
+			metrics["failure_rate"] = float64(adapterMetrics.FailedActions) / float64(totalActions)
+		} else {
+			metrics["success_rate"] = 0.0
+			metrics["failure_rate"] = 0.0
+		}
+	}
+
+	// Get supported capabilities
+	supportedEntityTypes := adapter.GetSupportedEntityTypes()
+	supportedCapabilities := adapter.GetSupportedCapabilities()
+	
+	metrics["supported_entity_types"] = supportedEntityTypes
+	metrics["supported_capabilities"] = supportedCapabilities
+	metrics["entity_type_count"] = len(supportedEntityTypes)
+	metrics["capability_count"] = len(supportedCapabilities)
+	metrics["supports_realtime"] = adapter.SupportsRealtime()
+
+	// Get sync information if available
+	if lastSyncTime := adapter.GetLastSyncTime(); lastSyncTime != nil {
+		metrics["last_sync_time"] = lastSyncTime.Format(time.RFC3339)
+		metrics["time_since_last_sync"] = time.Since(*lastSyncTime).String()
+	}
+
+	// Add adapter identification details
+	metrics["adapter_details"] = map[string]interface{}{
+		"id":          adapter.GetID(),
+		"name":        adapter.GetName(),
+		"version":     adapter.GetVersion(),
+		"source_type": adapter.GetSourceType(),
+		"status":      adapter.GetStatus(),
+		"connected":   adapter.IsConnected(),
+	}
 
 	utils.SendSuccess(c, metrics)
 }

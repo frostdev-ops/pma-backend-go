@@ -417,6 +417,213 @@ func (h *Handlers) ChatWithContext(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// AI Settings & Management Handlers
+
+// GetAISettings retrieves AI provider configurations
+func (h *Handlers) GetAISettings(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Get current AI configuration
+	settings, err := llmManager.GetSettings(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get AI settings")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve AI settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, settings)
+}
+
+// SaveAISettings saves AI provider settings
+func (h *Handlers) SaveAISettings(c *gin.Context) {
+	var req ai.AISettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Save settings
+	if err := llmManager.SaveSettings(c.Request.Context(), req); err != nil {
+		h.log.WithError(err).Error("Failed to save AI settings")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save AI settings", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    "AI settings saved successfully",
+		"updated_at": time.Now(),
+	})
+}
+
+// TestAIConnection tests AI provider connectivity
+func (h *Handlers) TestAIConnection(c *gin.Context) {
+	var req ai.AIConnectionTestRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Test connection
+	result, err := llmManager.TestConnection(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("Connection test failed")
+		c.JSON(http.StatusOK, gin.H{
+			"success":   false,
+			"message":   "Connection test failed",
+			"error":     err.Error(),
+			"tested_at": time.Now(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// Ollama Process Management Handlers
+
+// GetOllamaStatus gets Ollama process status
+func (h *Handlers) GetOllamaStatus(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	status, err := llmManager.GetOllamaStatus(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama status")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama status", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, status)
+}
+
+// GetOllamaMetrics gets Ollama resource usage metrics
+func (h *Handlers) GetOllamaMetrics(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	metrics, err := llmManager.GetOllamaMetrics(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama metrics")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama metrics", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetOllamaHealth performs health check for Ollama service
+func (h *Handlers) GetOllamaHealth(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	health, err := llmManager.GetOllamaHealth(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama health")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama health", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, health)
+}
+
+// StartOllamaProcess starts Ollama process
+func (h *Handlers) StartOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.StartOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to start Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// StopOllamaProcess stops Ollama process
+func (h *Handlers) StopOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.StopOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to stop Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to stop Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// RestartOllamaProcess restarts Ollama process
+func (h *Handlers) RestartOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.RestartOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to restart Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restart Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// GetOllamaMonitoring gets comprehensive monitoring data
+func (h *Handlers) GetOllamaMonitoring(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	monitoring, err := llmManager.GetOllamaMonitoring(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama monitoring data")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama monitoring data", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, monitoring)
+}
+
 // Helper methods
 
 // getChatService returns the chat service instance

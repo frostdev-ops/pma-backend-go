@@ -2,6 +2,7 @@ package ai
 
 import (
 	"time"
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 )
 
 // ChatRequest represents an incoming chat request
@@ -363,4 +364,119 @@ type EntityChangeRecord struct {
 	NewState   string    `json:"new_state"`
 	ChangedAt  time.Time `json:"changed_at"`
 	ChangeType string    `json:"change_type"` // "state", "attribute", "availability"
+}
+
+// AI Settings & Management Models
+
+// AISettingsResponse represents AI configuration settings
+type AISettingsResponse struct {
+	Providers       []AIProviderInfo `json:"providers"`
+	DefaultProvider string           `json:"default_provider"`
+	FallbackEnabled bool             `json:"fallback_enabled"`
+	MaxRetries      int              `json:"max_retries"`
+	Timeout         string           `json:"timeout"`
+	LastUpdated     time.Time        `json:"last_updated"`
+}
+
+// AIProviderInfo represents AI provider information
+type AIProviderInfo struct {
+	Type         string                 `json:"type"`
+	Enabled      bool                   `json:"enabled"`
+	URL          string                 `json:"url,omitempty"`
+	DefaultModel string                 `json:"default_model"`
+	Models       []string               `json:"models,omitempty"`
+	Priority     int                    `json:"priority"`
+	Status       string                 `json:"status"` // "connected", "disconnected", "error"
+	LastChecked  time.Time              `json:"last_checked"`
+	Extra        map[string]interface{} `json:"extra,omitempty"`
+}
+
+// AISettingsRequest represents AI settings update request
+type AISettingsRequest struct {
+	Providers       []config.AIProviderConfig `json:"providers"`
+	DefaultProvider string                    `json:"default_provider"`
+	FallbackEnabled bool                      `json:"fallback_enabled"`
+	MaxRetries      int                       `json:"max_retries"`
+	Timeout         string                    `json:"timeout"`
+}
+
+// AIConnectionTestRequest represents connection test request
+type AIConnectionTestRequest struct {
+	ProviderType string                 `json:"provider_type"`
+	URL          string                 `json:"url,omitempty"`
+	APIKey       string                 `json:"api_key,omitempty"`
+	Model        string                 `json:"model,omitempty"`
+	Extra        map[string]interface{} `json:"extra,omitempty"`
+}
+
+// AIConnectionTestResponse represents connection test response
+type AIConnectionTestResponse struct {
+	Success     bool      `json:"success"`
+	Message     string    `json:"message"`
+	Models      []string  `json:"models,omitempty"`
+	Latency     string    `json:"latency,omitempty"`
+	TestedAt    time.Time `json:"tested_at"`
+	ErrorDetail string    `json:"error_detail,omitempty"`
+}
+
+// Ollama Management Models
+
+// OllamaStatusResponse represents Ollama process status
+type OllamaStatusResponse struct {
+	Running       bool               `json:"running"`
+	ProcessID     int                `json:"process_id,omitempty"`
+	StartTime     time.Time          `json:"start_time,omitempty"`
+	Version       string             `json:"version,omitempty"`
+	Models        []OllamaModelInfo  `json:"models,omitempty"`
+	SystemInfo    OllamaSystemInfo   `json:"system_info"`
+	ResourceUsage OllamaResourceInfo `json:"resource_usage"`
+	LastChecked   time.Time          `json:"last_checked"`
+}
+
+// OllamaModelInfo represents Ollama model information
+type OllamaModelInfo struct {
+	Name          string    `json:"name"`
+	Size          int64     `json:"size"`
+	Digest        string    `json:"digest"`
+	ModifiedAt    time.Time `json:"modified_at"`
+	Details       string    `json:"details,omitempty"`
+	Family        string    `json:"family,omitempty"`
+	Format        string    `json:"format,omitempty"`
+	ParameterSize string    `json:"parameter_size,omitempty"`
+}
+
+// OllamaSystemInfo represents Ollama system information
+type OllamaSystemInfo struct {
+	Platform     string `json:"platform"`
+	Architecture string `json:"architecture"`
+	GPU          bool   `json:"gpu"`
+	GPUInfo      string `json:"gpu_info,omitempty"`
+	Memory       int64  `json:"memory"`
+}
+
+// OllamaResourceInfo represents Ollama resource usage
+type OllamaResourceInfo struct {
+	CPUUsage    float64   `json:"cpu_usage"`
+	MemoryUsage int64     `json:"memory_usage"`
+	GPUUsage    float64   `json:"gpu_usage,omitempty"`
+	ActiveModel string    `json:"active_model,omitempty"`
+	LastRequest time.Time `json:"last_request,omitempty"`
+}
+
+// OllamaMetricsResponse represents Ollama metrics
+type OllamaMetricsResponse struct {
+	Status         OllamaStatusResponse `json:"status"`
+	RequestCount   int64                `json:"request_count"`
+	ErrorCount     int64                `json:"error_count"`
+	AverageLatency float64              `json:"average_latency"`
+	TotalUptime    string               `json:"total_uptime"`
+	Health         string               `json:"health"` // "healthy", "degraded", "down"
+}
+
+// OllamaProcessResponse represents Ollama process control response
+type OllamaProcessResponse struct {
+	Success   bool      `json:"success"`
+	Message   string    `json:"message"`
+	ProcessID int       `json:"process_id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }

@@ -304,6 +304,74 @@ func (h *Hub) BroadcastEntityUpdate(entity *models.Entity) {
 	h.BroadcastToTopic(fmt.Sprintf("entity:%s", entity.EntityID), EventTypeEntityUpdated, entity)
 }
 
+// BroadcastPMAEntityStateChange broadcasts a PMA entity state change to WebSocket clients
+func (h *Hub) BroadcastPMAEntityStateChange(entityID string, oldState, newState interface{}, entity interface{}) {
+	message := map[string]interface{}{
+		"entity_id": entityID,
+		"old_state": oldState,
+		"new_state": newState,
+		"entity":    entity,
+		"timestamp": time.Now().UTC(),
+	}
+
+	// Broadcast to all clients
+	h.BroadcastToAll("pma_entity_state_changed", message)
+
+	// Broadcast to entity-specific topic
+	h.BroadcastToTopic(fmt.Sprintf("entity:%s", entityID), "pma_entity_state_changed", message)
+}
+
+// BroadcastPMAEntityAdded broadcasts when a new PMA entity is discovered
+func (h *Hub) BroadcastPMAEntityAdded(entity interface{}) {
+	message := map[string]interface{}{
+		"entity":    entity,
+		"timestamp": time.Now().UTC(),
+	}
+
+	h.BroadcastToAll("pma_entity_added", message)
+}
+
+// BroadcastPMAEntityRemoved broadcasts when a PMA entity is removed
+func (h *Hub) BroadcastPMAEntityRemoved(entityID string, source interface{}) {
+	message := map[string]interface{}{
+		"entity_id": entityID,
+		"source":    source,
+		"timestamp": time.Now().UTC(),
+	}
+
+	h.BroadcastToAll("pma_entity_removed", message)
+	h.BroadcastToTopic(fmt.Sprintf("entity:%s", entityID), "pma_entity_removed", message)
+}
+
+// BroadcastPMASyncStatus broadcasts synchronization status updates
+func (h *Hub) BroadcastPMASyncStatus(source string, status string, details map[string]interface{}) {
+	message := map[string]interface{}{
+		"source":    source,
+		"status":    status,
+		"details":   details,
+		"timestamp": time.Now().UTC(),
+	}
+
+	h.BroadcastToAll("pma_sync_status", message)
+	h.BroadcastToTopic(fmt.Sprintf("source:%s", source), "pma_sync_status", message)
+}
+
+// BroadcastPMAAdapterStatus broadcasts adapter health and connection status
+func (h *Hub) BroadcastPMAAdapterStatus(adapterID, adapterName, source, status string, health interface{}, metrics interface{}) {
+	message := map[string]interface{}{
+		"adapter_id":   adapterID,
+		"adapter_name": adapterName,
+		"source":       source,
+		"status":       status,
+		"health":       health,
+		"metrics":      metrics,
+		"timestamp":    time.Now().UTC(),
+	}
+
+	h.BroadcastToAll("pma_adapter_status", message)
+	h.BroadcastToTopic(fmt.Sprintf("adapter:%s", adapterID), "pma_adapter_status", message)
+}
+
 // BroadcastRoomUpdate broadcasts a room update to all clients
 func (h *Hub) BroadcastRoomUpdate(room *models.Room) {
 	h.BroadcastToAll(EventTypeRoomUpdated, room)
@@ -543,4 +611,48 @@ func getClientIP(r *http.Request) string {
 	}
 	// Fall back to RemoteAddr
 	return r.RemoteAddr
+}
+
+// WebSocketEventEmitter wraps the Hub to implement the EventEmitter interface
+// This allows other services to broadcast events without directly importing websocket types
+type WebSocketEventEmitter struct {
+	hub *Hub
+}
+
+// NewWebSocketEventEmitter creates a new WebSocket event emitter
+func NewWebSocketEventEmitter(hub *Hub) *WebSocketEventEmitter {
+	return &WebSocketEventEmitter{
+		hub: hub,
+	}
+}
+
+// Implement EventEmitter interface methods
+func (w *WebSocketEventEmitter) BroadcastPMAEntityStateChange(entityID string, oldState, newState interface{}, entity interface{}) {
+	if w.hub != nil {
+		w.hub.BroadcastPMAEntityStateChange(entityID, oldState, newState, entity)
+	}
+}
+
+func (w *WebSocketEventEmitter) BroadcastPMAEntityAdded(entity interface{}) {
+	if w.hub != nil {
+		w.hub.BroadcastPMAEntityAdded(entity)
+	}
+}
+
+func (w *WebSocketEventEmitter) BroadcastPMAEntityRemoved(entityID string, source interface{}) {
+	if w.hub != nil {
+		w.hub.BroadcastPMAEntityRemoved(entityID, source)
+	}
+}
+
+func (w *WebSocketEventEmitter) BroadcastPMASyncStatus(source string, status string, details map[string]interface{}) {
+	if w.hub != nil {
+		w.hub.BroadcastPMASyncStatus(source, status, details)
+	}
+}
+
+func (w *WebSocketEventEmitter) BroadcastPMAAdapterStatus(adapterID, adapterName, source, status string, health interface{}, metrics interface{}) {
+	if w.hub != nil {
+		w.hub.BroadcastPMAAdapterStatus(adapterID, adapterName, source, status, health, metrics)
+	}
 }
