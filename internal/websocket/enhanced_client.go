@@ -299,7 +299,7 @@ const (
 	StateConnected    ClientState = "connected"
 	StateReconnecting ClientState = "reconnecting"
 	StateError        ClientState = "error"
-	StateClosed       ClientState = "closed"
+	ClientStateClosed ClientState = "closed"
 )
 
 type NetworkQuality string
@@ -716,7 +716,7 @@ func (ec *EnhancedClient) Stop() error {
 	ec.logger.Info("Stopping enhanced WebSocket client...")
 
 	ec.stateMu.Lock()
-	ec.state = StateClosed
+	ec.state = ClientStateClosed
 	ec.stateMu.Unlock()
 
 	// Cancel context to signal shutdown
@@ -826,8 +826,6 @@ func (ec *EnhancedClient) updateMetrics() {
 }
 
 func (ec *EnhancedClient) updateHealth() {
-	now := time.Now()
-
 	// Calculate health score based on various factors
 	score := 100.0
 

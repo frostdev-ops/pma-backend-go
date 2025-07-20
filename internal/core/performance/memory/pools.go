@@ -194,7 +194,7 @@ func (opm *ObjectPoolManager) startMonitoring() {
 		for {
 			select {
 			case <-opm.monitorTicker.C:
-				opm.optimizePools()
+				opm.OptimizePools()
 			case <-opm.stopChan:
 				opm.monitorTicker.Stop()
 				return
@@ -203,8 +203,8 @@ func (opm *ObjectPoolManager) startMonitoring() {
 	}()
 }
 
-// optimizePools performs automatic pool size optimization
-func (opm *ObjectPoolManager) optimizePools() {
+// OptimizePools performs automatic pool size optimization
+func (opm *ObjectPoolManager) OptimizePools() {
 	opm.mu.Lock()
 	defer opm.mu.Unlock()
 

@@ -355,6 +355,32 @@ func (pm *PreallocationManager) OptimizePools() error {
 	return nil
 }
 
+// OptimizePreallocation performs comprehensive preallocation optimization
+func (pm *PreallocationManager) OptimizePreallocation() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if !pm.isRunning {
+		return fmt.Errorf("preallocation manager is not running")
+	}
+
+	// Delegate to existing OptimizePools method
+	return pm.OptimizePools()
+}
+
+// AnalyzeUsagePatterns analyzes memory usage patterns and returns recommendations
+func (pm *PreallocationManager) AnalyzeUsagePatterns() ([]*AllocationRecommendation, error) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	if !pm.isRunning {
+		return nil, fmt.Errorf("preallocation manager is not running")
+	}
+
+	// Use existing method to get recommendations
+	return pm.GetAllocationRecommendations(), nil
+}
+
 // Private methods
 
 func (pm *PreallocationManager) initializeStrategies() {

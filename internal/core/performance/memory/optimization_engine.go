@@ -297,7 +297,7 @@ func (oe *OptimizationEngine) GetOptimizationMetrics() *OptimizationMetrics {
 	return &metricsCopy
 }
 
-// GetOptimizationHistory returns recent optimization history
+// GetOptimizationHistory returns the optimization history
 func (oe *OptimizationEngine) GetOptimizationHistory(limit int) []*OptimizationRecord {
 	oe.mu.RLock()
 	defer oe.mu.RUnlock()
@@ -306,18 +306,68 @@ func (oe *OptimizationEngine) GetOptimizationHistory(limit int) []*OptimizationR
 		limit = len(oe.optimizationHistory)
 	}
 
+	// Return the most recent records
+	if len(oe.optimizationHistory) == 0 {
+		return []*OptimizationRecord{}
+	}
+
 	start := len(oe.optimizationHistory) - limit
 	if start < 0 {
 		start = 0
 	}
 
-	result := make([]*OptimizationRecord, 0, limit)
-	for i := start; i < len(oe.optimizationHistory); i++ {
-		recordCopy := *oe.optimizationHistory[i]
-		result = append(result, &recordCopy)
-	}
+	result := make([]*OptimizationRecord, limit)
+	copy(result, oe.optimizationHistory[start:])
 
 	return result
+}
+
+// GetStatus returns the current status of the optimization engine
+func (oe *OptimizationEngine) GetStatus() *OptimizationEngineStatus {
+	oe.mu.RLock()
+	defer oe.mu.RUnlock()
+
+	status := &OptimizationEngineStatus{
+		IsRunning:           oe.isRunning,
+		LastOptimization:    time.Time{},
+		TotalOptimizations:  int64(len(oe.optimizationHistory)),
+		AverageResponseTime: 0,
+		SuccessRate:         0,
+		EnabledOptimizers:   oe.config.EnabledOptimizers,
+		CurrentConfig:       *oe.config,
+	}
+
+	// Calculate metrics if we have history
+	if len(oe.optimizationHistory) > 0 {
+		status.LastOptimization = oe.optimizationHistory[len(oe.optimizationHistory)-1].Timestamp
+
+		// Calculate success rate and average response time
+		var totalDuration time.Duration
+		successCount := int64(0)
+
+		for _, record := range oe.optimizationHistory {
+			totalDuration += record.Duration
+			if record.Success {
+				successCount++
+			}
+		}
+
+		status.AverageResponseTime = totalDuration / time.Duration(len(oe.optimizationHistory))
+		status.SuccessRate = float64(successCount) / float64(len(oe.optimizationHistory))
+	}
+
+	return status
+}
+
+// OptimizationEngineStatus represents the current status of the optimization engine
+type OptimizationEngineStatus struct {
+	IsRunning           bool                     `json:"is_running"`
+	LastOptimization    time.Time                `json:"last_optimization"`
+	TotalOptimizations  int64                    `json:"total_optimizations"`
+	AverageResponseTime time.Duration            `json:"average_response_time"`
+	SuccessRate         float64                  `json:"success_rate"`
+	EnabledOptimizers   []string                 `json:"enabled_optimizers"`
+	CurrentConfig       OptimizationEngineConfig `json:"current_config"`
 }
 
 // AnalyzeOptimizationEffectiveness analyzes optimization effectiveness

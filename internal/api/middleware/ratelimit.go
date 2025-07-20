@@ -92,7 +92,7 @@ func (tb *TokenBucket) consume() bool {
 
 	// Refill tokens
 	tokensToAdd := int(elapsed.Seconds()) * tb.refillRate
-	tb.tokens = min(tb.capacity, tb.tokens+tokensToAdd)
+	tb.tokens = minInt(tb.capacity, tb.tokens+tokensToAdd)
 	tb.lastRefill = now
 
 	if tb.tokens > 0 {
@@ -118,7 +118,7 @@ func (rl *RateLimiter) cleanupVisitors() {
 	}
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

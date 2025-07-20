@@ -568,7 +568,7 @@ func (amm *AdvancedMemoryManager) executeOptimizationAction(ctx context.Context,
 		return nil
 
 	case "optimize_pools":
-		amm.poolManager.optimizePools()
+		amm.poolManager.OptimizePools()
 		return nil
 
 	case "compact_heap":

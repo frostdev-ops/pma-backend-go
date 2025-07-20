@@ -59,7 +59,7 @@ func NewRingDoorbell(client *RingClient, data *RingDeviceData) *RingDoorbell {
 
 	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring_%s", data.ID),
+		ID:           fmt.Sprintf("ring_%d", data.ID),
 		Type:         devices.DeviceTypeDoorbell,
 		AdapterType:  "ring",
 		Name:         data.Description,
@@ -92,11 +92,22 @@ func NewRingDoorbell(client *RingClient, data *RingDeviceData) *RingDoorbell {
 	baseDevice.Metadata["features"] = data.Features
 	baseDevice.Metadata["settings"] = data.Settings
 
-	return &RingDoorbell{
-		BaseDevice: baseDevice,
+	doorbell := &RingDoorbell{
 		client:     client,
 		deviceData: data,
 	}
+	// Copy BaseDevice fields individually to avoid copying the mutex
+	doorbell.ID = baseDevice.ID
+	doorbell.Type = baseDevice.Type
+	doorbell.Name = baseDevice.Name
+	doorbell.Status = baseDevice.Status
+	doorbell.Capabilities = baseDevice.Capabilities
+	doorbell.State = baseDevice.State
+	doorbell.Adapter = baseDevice.Adapter
+	doorbell.AdapterType = baseDevice.AdapterType
+	doorbell.Metadata = baseDevice.Metadata
+	doorbell.LastSeen = baseDevice.LastSeen
+	return doorbell
 }
 
 // NewRingCamera creates a new Ring camera device
@@ -121,7 +132,7 @@ func NewRingCamera(client *RingClient, data *RingDeviceData) *RingCamera {
 
 	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring_%s", data.ID),
+		ID:           fmt.Sprintf("ring_%d", data.ID),
 		Type:         devices.DeviceTypeCamera,
 		AdapterType:  "ring",
 		Name:         data.Description,
@@ -154,11 +165,22 @@ func NewRingCamera(client *RingClient, data *RingDeviceData) *RingCamera {
 	baseDevice.Metadata["features"] = data.Features
 	baseDevice.Metadata["settings"] = data.Settings
 
-	return &RingCamera{
-		BaseDevice: baseDevice,
+	camera := &RingCamera{
 		client:     client,
 		deviceData: data,
 	}
+	// Copy BaseDevice fields individually to avoid copying the mutex
+	camera.ID = baseDevice.ID
+	camera.Type = baseDevice.Type
+	camera.Name = baseDevice.Name
+	camera.Status = baseDevice.Status
+	camera.Capabilities = baseDevice.Capabilities
+	camera.State = baseDevice.State
+	camera.Adapter = baseDevice.Adapter
+	camera.AdapterType = baseDevice.AdapterType
+	camera.Metadata = baseDevice.Metadata
+	camera.LastSeen = baseDevice.LastSeen
+	return camera
 }
 
 // NewRingChime creates a new Ring chime device
@@ -169,7 +191,7 @@ func NewRingChime(client *RingClient, data *RingDeviceData) *RingChime {
 
 	// Create base device
 	baseDevice := devices.BaseDevice{
-		ID:           fmt.Sprintf("ring_%s", data.ID),
+		ID:           fmt.Sprintf("ring_%d", data.ID),
 		Type:         "chime",
 		AdapterType:  "ring",
 		Name:         data.Description,
@@ -186,11 +208,22 @@ func NewRingChime(client *RingClient, data *RingDeviceData) *RingChime {
 	baseDevice.Metadata["ring_device_id"] = data.ID
 	baseDevice.Metadata["kind"] = data.Kind
 
-	return &RingChime{
-		BaseDevice: baseDevice,
+	chime := &RingChime{
 		client:     client,
 		deviceData: data,
 	}
+	// Copy BaseDevice fields individually to avoid copying the mutex
+	chime.ID = baseDevice.ID
+	chime.Type = baseDevice.Type
+	chime.Name = baseDevice.Name
+	chime.Status = baseDevice.Status
+	chime.Capabilities = baseDevice.Capabilities
+	chime.State = baseDevice.State
+	chime.Adapter = baseDevice.Adapter
+	chime.AdapterType = baseDevice.AdapterType
+	chime.Metadata = baseDevice.Metadata
+	chime.LastSeen = baseDevice.LastSeen
+	return chime
 }
 
 // Execute executes a command on the Ring doorbell

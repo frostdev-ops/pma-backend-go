@@ -460,7 +460,7 @@ func (etb *EnhancedTokenBucket) Consume(tokens float64) bool {
 
 	// Refill tokens based on adaptive rate
 	tokensToAdd := elapsed * etb.RefillRate * etb.AdaptiveRate
-	etb.Tokens = min(etb.Capacity, etb.Tokens+tokensToAdd)
+	etb.Tokens = minFloat64(etb.Capacity, etb.Tokens+tokensToAdd)
 	etb.LastRefill = now
 
 	if etb.Tokens >= tokens {
@@ -839,7 +839,7 @@ func (erl *EnhancedRateLimiter) UnblockIP(ip string) {
 	erl.logger.Infof("Manually unblocked IP: %s", ip)
 }
 
-func min(a, b float64) float64 {
+func minFloat64(a, b float64) float64 {
 	if a < b {
 		return a
 	}

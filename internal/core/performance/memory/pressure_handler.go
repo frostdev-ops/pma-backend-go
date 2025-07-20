@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,28 +11,28 @@ import (
 
 // MemoryPressureHandler monitors and responds to memory pressure
 type MemoryPressureHandler struct {
-	config           *PressureHandlerConfig
-	logger           *logrus.Logger
-	currentLevel     MemoryPressureLevel
-	events           []*MemoryPressureEvent
-	callback         func(context.Context, MemoryPressureLevel) error
-	mu               sync.RWMutex
-	monitorTicker    *time.Ticker
-	stopChan         chan bool
-	isRunning        bool
-	thresholds       *PressureThresholds
-	responseTimes    []time.Duration
-	recoveryMetrics  *RecoveryMetrics
+	config          *PressureHandlerConfig
+	logger          *logrus.Logger
+	currentLevel    MemoryPressureLevel
+	events          []*MemoryPressureEvent
+	callback        func(context.Context, MemoryPressureLevel) error
+	mu              sync.RWMutex
+	monitorTicker   *time.Ticker
+	stopChan        chan bool
+	isRunning       bool
+	thresholds      *PressureThresholds
+	responseTimes   []time.Duration
+	recoveryMetrics *RecoveryMetrics
 }
 
 // PressureHandlerConfig contains pressure handler configuration
 type PressureHandlerConfig struct {
-	MonitorInterval     time.Duration        `json:"monitor_interval"`
-	Thresholds          *PressureThresholds  `json:"thresholds"`
-	MaxEventHistory     int                  `json:"max_event_history"`
-	ResponseTimeout     time.Duration        `json:"response_timeout"`
-	AdaptiveThresholds  bool                 `json:"adaptive_thresholds"`
-	PredictiveModeEnabled bool               `json:"predictive_mode_enabled"`
+	MonitorInterval       time.Duration       `json:"monitor_interval"`
+	Thresholds            *PressureThresholds `json:"thresholds"`
+	MaxEventHistory       int                 `json:"max_event_history"`
+	ResponseTimeout       time.Duration       `json:"response_timeout"`
+	AdaptiveThresholds    bool                `json:"adaptive_thresholds"`
+	PredictiveModeEnabled bool                `json:"predictive_mode_enabled"`
 }
 
 // PressureThresholds defines memory pressure level thresholds
@@ -44,22 +45,22 @@ type PressureThresholds struct {
 
 // Threshold defines conditions for a pressure level
 type Threshold struct {
-	HeapUtilization    float64 `json:"heap_utilization"`
-	GoroutineCount     int     `json:"goroutine_count"`
-	AllocationRate     uint64  `json:"allocation_rate"`     // bytes per second
-	GCFrequency        float64 `json:"gc_frequency"`        // GCs per second
-	SustainedDuration  time.Duration `json:"sustained_duration"`
+	HeapUtilization   float64       `json:"heap_utilization"`
+	GoroutineCount    int           `json:"goroutine_count"`
+	AllocationRate    uint64        `json:"allocation_rate"` // bytes per second
+	GCFrequency       float64       `json:"gc_frequency"`    // GCs per second
+	SustainedDuration time.Duration `json:"sustained_duration"`
 }
 
 // RecoveryMetrics tracks pressure recovery performance
 type RecoveryMetrics struct {
-	TotalEvents       int           `json:"total_events"`
-	SuccessfulRecoveries int        `json:"successful_recoveries"`
-	FailedRecoveries  int           `json:"failed_recoveries"`
-	AverageResponseTime time.Duration `json:"average_response_time"`
-	FastestRecovery   time.Duration `json:"fastest_recovery"`
-	SlowestRecovery   time.Duration `json:"slowest_recovery"`
-	RecoveryRate      float64       `json:"recovery_rate"`
+	TotalEvents          int           `json:"total_events"`
+	SuccessfulRecoveries int           `json:"successful_recoveries"`
+	FailedRecoveries     int           `json:"failed_recoveries"`
+	AverageResponseTime  time.Duration `json:"average_response_time"`
+	FastestRecovery      time.Duration `json:"fastest_recovery"`
+	SlowestRecovery      time.Duration `json:"slowest_recovery"`
+	RecoveryRate         float64       `json:"recovery_rate"`
 }
 
 // DefaultPressureConfig returns default pressure handler configuration
@@ -68,31 +69,31 @@ func DefaultPressureConfig() *PressureHandlerConfig {
 		MonitorInterval: time.Second * 5,
 		Thresholds: &PressureThresholds{
 			LowPressure: &Threshold{
-				HeapUtilization: 50.0,
-				GoroutineCount:  1000,
-				AllocationRate:  10 * 1024 * 1024, // 10 MB/s
-				GCFrequency:     0.1,
+				HeapUtilization:   50.0,
+				GoroutineCount:    1000,
+				AllocationRate:    10 * 1024 * 1024, // 10 MB/s
+				GCFrequency:       0.1,
 				SustainedDuration: time.Second * 30,
 			},
 			MediumPressure: &Threshold{
-				HeapUtilization: 70.0,
-				GoroutineCount:  2000,
-				AllocationRate:  25 * 1024 * 1024, // 25 MB/s
-				GCFrequency:     0.3,
+				HeapUtilization:   70.0,
+				GoroutineCount:    2000,
+				AllocationRate:    25 * 1024 * 1024, // 25 MB/s
+				GCFrequency:       0.3,
 				SustainedDuration: time.Second * 15,
 			},
 			HighPressure: &Threshold{
-				HeapUtilization: 85.0,
-				GoroutineCount:  5000,
-				AllocationRate:  50 * 1024 * 1024, // 50 MB/s
-				GCFrequency:     0.5,
+				HeapUtilization:   85.0,
+				GoroutineCount:    5000,
+				AllocationRate:    50 * 1024 * 1024, // 50 MB/s
+				GCFrequency:       0.5,
 				SustainedDuration: time.Second * 10,
 			},
 			CriticalPressure: &Threshold{
-				HeapUtilization: 95.0,
-				GoroutineCount:  10000,
-				AllocationRate:  100 * 1024 * 1024, // 100 MB/s
-				GCFrequency:     1.0,
+				HeapUtilization:   95.0,
+				GoroutineCount:    10000,
+				AllocationRate:    100 * 1024 * 1024, // 100 MB/s
+				GCFrequency:       1.0,
 				SustainedDuration: time.Second * 5,
 			},
 		},
@@ -238,7 +239,7 @@ func (mph *MemoryPressureHandler) AdaptThresholds() {
 
 	// Analyze recent events to determine if thresholds need adjustment
 	recentEvents := mph.getRecentEvents(20)
-	
+
 	if len(recentEvents) < 5 {
 		return // Not enough data
 	}
@@ -264,6 +265,65 @@ func (mph *MemoryPressureHandler) AdaptThresholds() {
 		mph.adjustThresholds(0.9) // Decrease by 10%
 		mph.logger.Info("Adapted pressure thresholds downward for earlier detection")
 	}
+}
+
+// GetCurrentPressure returns the current memory pressure status
+func (mph *MemoryPressureHandler) GetCurrentPressure() *PressureStatus {
+	return mph.GetStatus()
+}
+
+// HandleCurrentPressure handles the current memory pressure situation
+func (mph *MemoryPressureHandler) HandleCurrentPressure() error {
+	mph.mu.RLock()
+	currentLevel := mph.currentLevel
+	mph.mu.RUnlock()
+
+	if currentLevel == PressureNone || currentLevel == PressureLow {
+		return nil // No action needed
+	}
+
+	// Trigger callback if set
+	if mph.callback != nil {
+		ctx := context.Background()
+		return mph.callback(ctx, currentLevel)
+	}
+
+	return nil
+}
+
+// GetConfig returns the current pressure handler configuration
+func (mph *MemoryPressureHandler) GetConfig() *PressureHandlerConfig {
+	mph.mu.RLock()
+	defer mph.mu.RUnlock()
+
+	// Return a copy to prevent external modification
+	configCopy := *mph.config
+	return &configCopy
+}
+
+// UpdateConfig updates the pressure handler configuration
+func (mph *MemoryPressureHandler) UpdateConfig(newConfig *PressureHandlerConfig) error {
+	if newConfig == nil {
+		return fmt.Errorf("config cannot be nil")
+	}
+
+	mph.mu.Lock()
+	defer mph.mu.Unlock()
+
+	// Validate the new configuration
+	if newConfig.MonitorInterval <= 0 {
+		return fmt.Errorf("monitor interval must be positive")
+	}
+
+	if newConfig.ResponseTimeout <= 0 {
+		return fmt.Errorf("response timeout must be positive")
+	}
+
+	// Update the configuration
+	mph.config = newConfig
+	mph.thresholds = newConfig.Thresholds
+
+	return nil
 }
 
 // Private methods
@@ -466,7 +526,7 @@ func (mph *MemoryPressureHandler) updateRecoveryMetrics(event *MemoryPressureEve
 
 	// Update recovery rate
 	if mph.recoveryMetrics.TotalEvents > 0 {
-		mph.recoveryMetrics.RecoveryRate = float64(mph.recoveryMetrics.SuccessfulRecoveries) / 
+		mph.recoveryMetrics.RecoveryRate = float64(mph.recoveryMetrics.SuccessfulRecoveries) /
 			float64(mph.recoveryMetrics.TotalEvents) * 100
 	}
 
@@ -534,7 +594,7 @@ func (mph *MemoryPressureHandler) cleanupOldEvents() {
 
 	// Remove events older than 24 hours
 	cutoff := time.Now().Add(-24 * time.Hour)
-	
+
 	var recentEvents []*MemoryPressureEvent
 	for _, event := range mph.events {
 		if event.Timestamp.After(cutoff) {
@@ -543,4 +603,4 @@ func (mph *MemoryPressureHandler) cleanupOldEvents() {
 	}
 
 	mph.events = recentEvents
-} 
+}

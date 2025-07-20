@@ -596,22 +596,7 @@ func (h *Hub) updateMetrics() {
 
 // Helper functions
 
-func generateClientID() string {
-	return fmt.Sprintf("client_%d_%d", time.Now().UnixNano(), time.Now().Nanosecond())
-}
 
-func getClientIP(r *http.Request) string {
-	// Try X-Forwarded-For header first
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
-	}
-	// Try X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
-}
 
 // WebSocketEventEmitter wraps the Hub to implement the EventEmitter interface
 // This allows other services to broadcast events without directly importing websocket types
