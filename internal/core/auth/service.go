@@ -309,9 +309,14 @@ func (s *Service) GetPinStatus(ctx context.Context) (*PinStatusResponse, error) 
 		return nil, fmt.Errorf("failed to get auth settings: %w", err)
 	}
 
+	// Check if users exist in the system for remote authentication
+	// Note: This requires access to user repository, which auth service doesn't have
+	// For now, we'll use PIN status but this should be enhanced
+	setupComplete := hasPin
+
 	response := &PinStatusResponse{
 		PinSet:         hasPin,
-		SetupComplete:  hasPin,
+		SetupComplete:  setupComplete,
 		SessionTimeout: settings.SessionTimeout,
 	}
 

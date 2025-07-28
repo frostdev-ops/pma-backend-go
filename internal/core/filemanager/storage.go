@@ -21,15 +21,16 @@ import (
 
 // LocalStorage implements the FileManager interface using local filesystem
 type LocalStorage struct {
-	config  *config.FileManagerConfig
-	db      *sql.DB
-	logger  *logrus.Logger
-	encoder *zstd.Encoder
-	decoder *zstd.Decoder
+	config          *config.FileManagerConfig
+	db              *sql.DB
+	logger          *logrus.Logger
+	encoder         *zstd.Encoder
+	decoder         *zstd.Decoder
+	securityManager *SecurityManager
 }
 
 // NewLocalStorage creates a new local storage instance
-func NewLocalStorage(cfg *config.FileManagerConfig, db *sql.DB, logger *logrus.Logger) (*LocalStorage, error) {
+func NewLocalStorage(cfg *config.FileManagerConfig, db *sql.DB, logger *logrus.Logger, securityManager *SecurityManager) (*LocalStorage, error) {
 	// Create necessary directories
 	dirs := []string{
 		cfg.Storage.BasePath,
@@ -56,11 +57,12 @@ func NewLocalStorage(cfg *config.FileManagerConfig, db *sql.DB, logger *logrus.L
 	}
 
 	return &LocalStorage{
-		config:  cfg,
-		db:      db,
-		logger:  logger,
-		encoder: encoder,
-		decoder: decoder,
+		config:          cfg,
+		db:              db,
+		logger:          logger,
+		encoder:         encoder,
+		decoder:         decoder,
+		securityManager: securityManager,
 	}, nil
 }
 
@@ -99,6 +101,29 @@ func (ls *LocalStorage) Upload(filename string, content io.Reader, metadata File
 	if size > ls.config.Storage.MaxFileSize {
 		os.Remove(tempPath)
 		return nil, fmt.Errorf("file size %d exceeds maximum allowed size %d", size, ls.config.Storage.MaxFileSize)
+	}
+
+	// Security validation
+	if ls.securityManager != nil {
+		securityConfig := SecurityConfig{
+			EncryptionEnabled: false, // Can be made configurable
+			VirusScanEnabled:  true,
+			AllowedExtensions: []string{".jpg", ".jpeg", ".png", ".gif", ".pdf", ".txt", ".doc", ".docx", ".mp4", ".mp3"},
+			BlockedExtensions: []string{".exe", ".bat", ".com", ".scr", ".pif", ".cmd"},
+			MaxFileSize:       ls.config.Storage.MaxFileSize,
+			ScanOnUpload:      true,
+		}
+
+		// Reset file pointer for security scanning
+		tempFile.Seek(0, 0)
+		if err := ls.securityManager.ValidateFileUpload(filename, tempFile, securityConfig); err != nil {
+			os.Remove(tempPath)
+			ls.logger.WithError(err).WithFields(logrus.Fields{
+				"filename": filename,
+				"size":     size,
+			}).Warn("File upload blocked by security validation")
+			return nil, fmt.Errorf("security validation failed: %w", err)
+		}
 	}
 
 	// Final quota check with actual size

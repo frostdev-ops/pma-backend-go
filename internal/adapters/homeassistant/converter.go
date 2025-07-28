@@ -3,11 +3,13 @@ package homeassistant
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/sirupsen/logrus"
+	"log"
+	"reflect"
+	"unsafe"
 )
 
 // EntityConverter handles conversion between HomeAssistant entities and PMA types
@@ -49,6 +51,18 @@ func (c *EntityConverter) ConvertToPMAEntity(haEntity *HAEntity) (types.PMAEntit
 			LastSynced:   time.Now(),
 			QualityScore: c.calculateQualityScore(haEntity),
 		},
+	}
+
+	// Debug: print size of Attributes and Metadata.SourceData for the first entity
+	if haEntity.EntityID == "sensor.shellypro4pm_ece334eae974_switch_0_temperature" { // Use a known entity or log for the first call
+		attrSize := int(unsafe.Sizeof(baseEntity.Attributes))
+		attrLen := len(baseEntity.Attributes)
+		sourceDataSize := int(unsafe.Sizeof(baseEntity.Metadata.SourceData))
+		sourceDataLen := len(baseEntity.Metadata.SourceData)
+		log.Printf("[DEBUG] Attributes size: %d bytes, len: %d", attrSize, attrLen)
+		log.Printf("[DEBUG] SourceData size: %d bytes, len: %d", sourceDataSize, sourceDataLen)
+		log.Printf("[DEBUG] Attributes type: %s", reflect.TypeOf(baseEntity.Attributes))
+		log.Printf("[DEBUG] SourceData type: %s", reflect.TypeOf(baseEntity.Metadata.SourceData))
 	}
 
 	// Add area/room information if available
@@ -196,13 +210,35 @@ func (c *EntityConverter) mapState(haState, domain string) types.PMAEntityState 
 func (c *EntityConverter) convertAttributes(haAttributes map[string]interface{}) map[string]interface{} {
 	pmaAttributes := make(map[string]interface{})
 
-	// Copy all attributes, filtering out internal ones
-	for key, value := range haAttributes {
-		// Skip internal attributes
-		if strings.HasPrefix(key, "__") || key == "context" {
-			continue
+	// Only copy essential attributes to prevent memory leaks
+	essentialAttributes := []string{
+		"friendly_name", "device_class", "unit_of_measurement", "icon",
+		"brightness", "color_temp", "rgb_color", "hs_color", "white_value",
+		"supported_features", "assumed_state", "current_position", "current_cover_position",
+		"temperature", "humidity", "battery_level", "battery_charging",
+		"motion", "occupancy", "illuminance", "pressure", "voltage", "current",
+		"power", "energy", "gas", "water", "co2", "tvoc", "pm25", "pm10",
+		"air_quality_index", "noise_level", "signal_strength", "rssi",
+		"media_title", "media_artist", "media_album", "media_duration",
+		"volume_level", "is_volume_muted", "source", "source_list",
+		"climate_mode", "target_temp", "current_temp", "current_humidity",
+		"hvac_action", "hvac_modes", "preset_mode", "preset_modes",
+		"lock_state", "lock_locked", "lock_unlocked", "lock_jammed",
+		"fan_speed", "fan_speeds", "oscillating", "direction",
+		"camera_image", "camera_recording", "camera_motion_detected",
+		"area_id", "device_id", "entity_picture", "attribution",
+	}
+
+	// Copy only essential attributes
+	for _, key := range essentialAttributes {
+		if value, exists := haAttributes[key]; exists {
+			pmaAttributes[key] = value
 		}
-		pmaAttributes[key] = value
+	}
+
+	// Limit the total number of attributes to prevent memory leaks
+	if len(pmaAttributes) > 50 {
+		c.logger.WithField("attribute_count", len(haAttributes)).Warn("Entity has too many attributes, limiting to essential ones")
 	}
 
 	return pmaAttributes
@@ -215,7 +251,7 @@ func (c *EntityConverter) detectCapabilities(haEntity *HAEntity) []types.PMACapa
 	switch haEntity.Domain {
 	case "light":
 		capabilities = append(capabilities, types.CapabilityBrightness)
-		
+
 		// Check for color capabilities
 		if _, hasColorMode := haEntity.Attributes["color_mode"]; hasColorMode {
 			capabilities = append(capabilities, types.CapabilityColorable)
@@ -223,7 +259,7 @@ func (c *EntityConverter) detectCapabilities(haEntity *HAEntity) []types.PMACapa
 		if _, hasRGB := haEntity.Attributes["rgb_color"]; hasRGB {
 			capabilities = append(capabilities, types.CapabilityColorable)
 		}
-		
+
 		// Check for dimming capability
 		if _, hasBrightness := haEntity.Attributes["brightness"]; hasBrightness {
 			capabilities = append(capabilities, types.CapabilityDimmable)
@@ -341,31 +377,31 @@ func (c *EntityConverter) convertToSwitch(haEntity *HAEntity, base *types.PMABas
 
 func (c *EntityConverter) convertToSensor(haEntity *HAEntity, base *types.PMABaseEntity) (types.PMAEntity, error) {
 	base.Type = types.EntityTypeSensor
-	
+
 	// Add sensor-specific attributes
 	if unitOfMeasurement, ok := haEntity.Attributes["unit_of_measurement"].(string); ok {
 		base.Attributes["unit_of_measurement"] = unitOfMeasurement
 	}
-	
+
 	if deviceClass, ok := haEntity.Attributes["device_class"].(string); ok {
 		base.Attributes["device_class"] = deviceClass
 	}
-	
+
 	// Try to parse numeric value
 	if value, err := strconv.ParseFloat(haEntity.State, 64); err == nil {
 		base.Attributes["numeric_value"] = value
 	}
-	
+
 	return base, nil
 }
 
 func (c *EntityConverter) convertToBinarySensor(haEntity *HAEntity, base *types.PMABaseEntity) (types.PMAEntity, error) {
 	base.Type = types.EntityTypeBinarySensor
-	
+
 	if deviceClass, ok := haEntity.Attributes["device_class"].(string); ok {
 		base.Attributes["device_class"] = deviceClass
 	}
-	
+
 	return base, nil
 }
 
@@ -408,4 +444,4 @@ func (c *EntityConverter) hasCapability(capabilities []types.PMACapability, capa
 		}
 	}
 	return false
-} 
+}

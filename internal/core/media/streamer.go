@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/filemanager"
@@ -232,12 +234,16 @@ func (lms *LocalMediaStreamer) TranscodeVideo(fileID string, profile TranscodePr
 	return nil
 }
 
-// checkFFmpeg verifies that FFmpeg is available on the system
+// checkFFmpeg checks if ffmpeg is available and returns version info
 func (lms *LocalMediaStreamer) checkFFmpeg() error {
-	cmd := exec.Command("ffmpeg", "-version")
+	// Use timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-version")
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("FFmpeg is not installed or not in PATH")
+		return fmt.Errorf("ffmpeg not found or not working: %w", err)
 	}
 	return nil
 }

@@ -215,6 +215,80 @@ type AreaHierarchy struct {
 	TotalAreas int                 `json:"total_areas"`
 }
 
+// Bulk operation models for Areas → Rooms → Entities hierarchy
+
+// AreaWithRoomsAndEntities represents a complete area hierarchy for bulk operations
+type AreaWithRoomsAndEntities struct {
+	Area
+	Rooms []RoomWithEntities `json:"rooms"`
+}
+
+// RoomWithEntities represents a room with all its entities
+type RoomWithEntities struct {
+	ID                  int            `json:"id"`
+	Name                string         `json:"name"`
+	AreaID              *int           `json:"area_id"`
+	HomeAssistantAreaID *string        `json:"home_assistant_area_id"`
+	Icon                *string        `json:"icon"`
+	Description         *string        `json:"description"`
+	EntityCount         int            `json:"entity_count"`
+	Entities            []SimpleEntity `json:"entities,omitempty"`
+}
+
+// SimpleEntity represents a simplified entity for bulk operations
+type SimpleEntity struct {
+	EntityID     string `json:"entity_id"`
+	FriendlyName string `json:"friendly_name"`
+	Domain       string `json:"domain"`
+	State        string `json:"state"`
+	RoomID       *int   `json:"room_id"`
+}
+
+// BulkAreaAction represents a bulk action to be performed on an area
+type BulkAreaAction struct {
+	AreaID     int                    `json:"area_id" binding:"required"`
+	Action     string                 `json:"action" binding:"required"` // turn_on, turn_off, set_temperature, etc.
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	Filters    BulkActionFilters      `json:"filters,omitempty"`
+}
+
+// BulkActionFilters allows filtering which entities to target in bulk operations
+type BulkActionFilters struct {
+	Domains      []string `json:"domains,omitempty"`      // light, switch, climate, etc.
+	EntityIDs    []string `json:"entity_ids,omitempty"`   // specific entities
+	RoomIDs      []int    `json:"room_ids,omitempty"`     // specific rooms within area
+	Capabilities []string `json:"capabilities,omitempty"` // brightness, temperature, etc.
+}
+
+// BulkAreaActionResult represents the result of a bulk action
+type BulkAreaActionResult struct {
+	AreaID          int                  `json:"area_id"`
+	TotalEntities   int                  `json:"total_entities"`
+	SuccessCount    int                  `json:"success_count"`
+	FailureCount    int                  `json:"failure_count"`
+	Results         []EntityActionResult `json:"results"`
+	ExecutionTimeMs int64                `json:"execution_time_ms"`
+}
+
+// EntityActionResult represents the result of an action on a single entity
+type EntityActionResult struct {
+	EntityID string `json:"entity_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}
+
+// AreaSummary represents a simplified area view for dashboards
+type AreaSummary struct {
+	ID           int     `json:"id"`
+	Name         string  `json:"name"`
+	AreaType     string  `json:"area_type"`
+	RoomCount    int     `json:"room_count"`
+	EntityCount  int     `json:"entity_count"`
+	ActiveCount  int     `json:"active_count"`  // entities that are "on" or "active"
+	OfflineCount int     `json:"offline_count"` // entities that are unavailable
+	HealthScore  float64 `json:"health_score"`  // 0-100 based on entity availability/status
+}
+
 // HomeAssistantArea represents a Home Assistant area structure
 type HomeAssistantArea struct {
 	AreaID  string   `json:"area_id"`

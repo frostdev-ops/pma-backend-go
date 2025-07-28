@@ -5,6 +5,7 @@ import (
 
 	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/sqlite"
+	"github.com/jmoiron/sqlx"
 )
 
 // Repositories holds all repository instances
@@ -24,10 +25,15 @@ type Repositories struct {
 	Conversation repositories.ConversationRepository
 	MCP          repositories.MCPRepository
 	Area         repositories.AreaRepository
+	Controller   repositories.ControllerRepository
+	Screensaver  repositories.ScreensaverRepository
 }
 
 // NewRepositories creates all repository instances
 func NewRepositories(db *sql.DB) *Repositories {
+	// Create sqlx wrapper for repositories that need it
+	sqlxDB := sqlx.NewDb(db, "sqlite")
+
 	return &Repositories{
 		User:         sqlite.NewUserRepository(db),
 		Config:       sqlite.NewConfigRepository(db),
@@ -44,5 +50,7 @@ func NewRepositories(db *sql.DB) *Repositories {
 		Conversation: sqlite.NewConversationRepository(db),
 		MCP:          sqlite.NewMCPRepository(db),
 		Area:         sqlite.NewAreaRepository(db),
+		Controller:   sqlite.NewControllerRepository(db),
+		Screensaver:  sqlite.NewScreensaverRepository(sqlxDB),
 	}
 }

@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Server           ServerConfig           `mapstructure:"server"`
 	Database         DatabaseConfig         `mapstructure:"database"`
+	Redis            RedisConfig            `mapstructure:"redis"`
 	Auth             AuthConfig             `mapstructure:"auth"`
 	HomeAssistant    HomeAssistantConfig    `mapstructure:"home_assistant"`
 	Logging          LoggingConfig          `mapstructure:"logging"`
@@ -46,10 +47,24 @@ type MigrationConfig struct {
 	AutoMigrate bool `mapstructure:"auto_migrate"`
 }
 
+type RedisConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	Host           string `mapstructure:"host"`
+	Port           int    `mapstructure:"port"`
+	Password       string `mapstructure:"password"`
+	DB             int    `mapstructure:"db"`
+	PoolSize       int    `mapstructure:"pool_size"`
+	MinIdleConns   int    `mapstructure:"min_idle_conns"`
+	KeyPrefix      string `mapstructure:"key_prefix"`
+	EntityCacheTTL string `mapstructure:"entity_cache_ttl"`
+}
+
 type AuthConfig struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	JWTSecret   string `mapstructure:"jwt_secret"`
-	TokenExpiry int    `mapstructure:"token_expiry"`
+	Enabled              bool   `mapstructure:"enabled"`
+	JWTSecret            string `mapstructure:"jwt_secret"`
+	TokenExpiry          int    `mapstructure:"token_expiry"`
+	APISecret            string `mapstructure:"api_secret"`
+	AllowLocalhostBypass bool   `mapstructure:"allow_localhost_bypass"`
 }
 
 type HomeAssistantConfig struct {
@@ -72,8 +87,20 @@ type HomeAssistantSync struct {
 }
 
 type LoggingConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
+	Level  string      `mapstructure:"level"`
+	Format string      `mapstructure:"format"`
+	Debug  DebugConfig `mapstructure:"debug"`
+}
+
+type DebugConfig struct {
+	Enabled     bool     `mapstructure:"enabled"`
+	Level       string   `mapstructure:"level"` // debug, info, warn, error
+	FileEnabled bool     `mapstructure:"file_enabled"`
+	FilePath    string   `mapstructure:"file_path"`
+	MaxFileSize int64    `mapstructure:"max_file_size"` // in bytes
+	MaxFiles    int      `mapstructure:"max_files"`
+	Console     bool     `mapstructure:"console"`
+	Components  []string `mapstructure:"components"` // specific components to debug
 }
 
 type WebSocketConfig struct {
@@ -150,15 +177,29 @@ type RingConfig struct {
 
 // ShellyConfig contains Shelly integration configuration
 type ShellyConfig struct {
-	Enabled           bool                `mapstructure:"enabled"`
-	DiscoveryInterval string              `mapstructure:"discovery_interval"`
-	PollInterval      string              `mapstructure:"poll_interval"`
-	Username          string              `mapstructure:"username"`
-	Password          string              `mapstructure:"password"`
-	DiscoveryTimeout  string              `mapstructure:"discovery_timeout"`
-	AutoReconnect     bool                `mapstructure:"auto_reconnect"`
-	Devices           []ShellyDeviceConfig `mapstructure:"devices"`
-	MockDevices       ShellyMockConfig    `mapstructure:"mock_devices"`
+	Enabled                bool     `mapstructure:"enabled"`
+	DiscoveryInterval      string   `mapstructure:"discovery_interval"`
+	DiscoveryTimeout       string   `mapstructure:"discovery_timeout"`
+	NetworkScanEnabled     bool     `mapstructure:"network_scan_enabled"`
+	NetworkScanRanges      []string `mapstructure:"network_scan_ranges"`
+	AutoWiFiSetup          bool     `mapstructure:"auto_wifi_setup"`
+	DefaultUsername        string   `mapstructure:"default_username"`
+	DefaultPassword        string   `mapstructure:"default_password"`
+	PollInterval           string   `mapstructure:"poll_interval"`
+	MaxDevices             int      `mapstructure:"max_devices"`
+	HealthCheckInterval    string   `mapstructure:"health_check_interval"`
+	RetryAttempts          int      `mapstructure:"retry_attempts"`
+	RetryBackoff           string   `mapstructure:"retry_backoff"`
+	EnableGen1Support      bool     `mapstructure:"enable_gen1_support"`
+	EnableGen2Support      bool     `mapstructure:"enable_gen2_support"`
+	DiscoveryBroadcastAddr string   `mapstructure:"discovery_broadcast_addr"`
+
+	// Auto-detection configuration
+	AutoDetectSubnets         bool     `mapstructure:"auto_detect_subnets"`
+	AutoDetectInterfaceFilter []string `mapstructure:"auto_detect_interface_filter"`
+	ExcludeLoopback           bool     `mapstructure:"exclude_loopback"`
+	ExcludeDockerInterfaces   bool     `mapstructure:"exclude_docker_interfaces"`
+	MinSubnetSize             int      `mapstructure:"min_subnet_size"`
 }
 
 // UPSConfig contains UPS integration configuration
@@ -184,17 +225,6 @@ type NetworkConfig struct {
 	DiscoveryPorts  []int    `mapstructure:"discovery_ports"`
 	PingTimeout     string   `mapstructure:"ping_timeout"`
 	AutoReconnect   bool     `mapstructure:"auto_reconnect"`
-}
-
-// ShellyDeviceConfig contains individual Shelly device configuration
-type ShellyDeviceConfig struct {
-	IP       string `mapstructure:"ip"`
-	Name     string `mapstructure:"name"`
-	Model    string `mapstructure:"model"`
-	Type     string `mapstructure:"type"`
-	Enabled  bool   `mapstructure:"enabled"`
-	Username string `mapstructure:"username,omitempty"`
-	Password string `mapstructure:"password,omitempty"`
 }
 
 // RouterConfig contains router/network configuration
@@ -278,21 +308,6 @@ type SecurityRateLimitConfig struct {
 	Enabled           bool `mapstructure:"enabled"`
 	RequestsPerMinute int  `mapstructure:"requests_per_minute"`
 	BurstSize         int  `mapstructure:"burst_size"`
-}
-
-// ShellyMockDevice contains mock Shelly device configuration
-type ShellyMockDevice struct {
-	IP    string `mapstructure:"ip"`
-	MAC   string `mapstructure:"mac"`
-	Model string `mapstructure:"model"`
-	Name  string `mapstructure:"name"`
-	Type  string `mapstructure:"type"`
-}
-
-// ShellyMockConfig contains Shelly mock device configuration
-type ShellyMockConfig struct {
-	Enabled bool               `mapstructure:"enabled"`
-	Devices []ShellyMockDevice `mapstructure:"devices"`
 }
 
 // MonitoringConfig contains monitoring and metrics configuration
@@ -436,10 +451,8 @@ func Load() (*Config, error) {
 	viper.BindEnv("database.path", "DATABASE_PATH")
 	viper.BindEnv("logging.level", "LOG_LEVEL")
 
-	// AI environment bindings
-	viper.BindEnv("ai.providers.0.api_key", "OPENAI_API_KEY")
-	viper.BindEnv("ai.providers.1.api_key", "CLAUDE_API_KEY")
-	viper.BindEnv("ai.providers.2.api_key", "GEMINI_API_KEY")
+	// AI environment bindings - removed array index bindings to fix YAML parsing
+	// Individual provider API keys can be set via environment if needed
 
 	// Router configuration bindings
 	viper.BindEnv("router.base_url", "PMA_ROUTER_BASE_URL")
@@ -450,9 +463,10 @@ func Load() (*Config, error) {
 	viper.BindEnv("devices.ring.email", "RING_EMAIL")
 	viper.BindEnv("devices.ring.password", "RING_PASSWORD")
 	viper.BindEnv("devices.ring.enabled", "RING_ENABLED")
-	viper.BindEnv("devices.shelly.password", "SHELLY_PASSWORD")
+	viper.BindEnv("devices.shelly.default_password", "SHELLY_DEFAULT_PASSWORD")
 	viper.BindEnv("devices.shelly.enabled", "SHELLY_ENABLED")
-	viper.BindEnv("devices.shelly.mock_devices.enabled", "SHELLY_MOCK_ENABLED")
+	viper.BindEnv("devices.shelly.network_scan_enabled", "SHELLY_NETWORK_SCAN_ENABLED")
+	viper.BindEnv("devices.shelly.auto_wifi_setup", "SHELLY_AUTO_WIFI_SETUP")
 	viper.BindEnv("devices.ups.enabled", "UPS_ENABLED")
 	viper.BindEnv("devices.ups.nut_host", "UPS_NUT_HOST")
 	viper.BindEnv("devices.ups.nut_port", "UPS_NUT_PORT")
@@ -568,8 +582,8 @@ func (c *Config) Validate() error {
 
 	// Validate Shelly configuration if enabled
 	if c.Devices.Shelly.Enabled {
-		if c.Devices.Shelly.Username == "" {
-			errors = append(errors, "devices.shelly.username is required when Shelly is enabled")
+		if c.Devices.Shelly.DefaultUsername == "" {
+			errors = append(errors, "devices.shelly.default_username is required when Shelly is enabled")
 		}
 	}
 
@@ -669,42 +683,8 @@ func setDefaults() {
 	viper.SetDefault("ai.max_retries", 3)
 	viper.SetDefault("ai.timeout", "30s")
 
-	// Default AI providers
-	viper.SetDefault("ai.providers", []map[string]interface{}{
-		{
-			"type":          "ollama",
-			"enabled":       true,
-			"url":           "http://localhost:11434",
-			"default_model": "llama2",
-			"auto_start":    true,
-			"priority":      1,
-			"resource_limits": map[string]interface{}{
-				"max_memory": "4GB",
-				"max_cpu":    80,
-			},
-		},
-		{
-			"type":          "openai",
-			"enabled":       false,
-			"default_model": "gpt-3.5-turbo",
-			"max_tokens":    4096,
-			"priority":      2,
-		},
-		{
-			"type":          "claude",
-			"enabled":       false,
-			"default_model": "claude-3-haiku-20240307",
-			"max_tokens":    4096,
-			"priority":      3,
-		},
-		{
-			"type":          "gemini",
-			"enabled":       false,
-			"default_model": "gemini-pro",
-			"max_tokens":    4096,
-			"priority":      4,
-		},
-	})
+	// Default AI providers - REMOVED to allow YAML config to work properly
+	// The YAML file will define the providers instead of having conflicting defaults
 
 	// Device defaults
 	viper.SetDefault("devices.health_check_interval", "30s")
@@ -716,30 +696,31 @@ func setDefaults() {
 	viper.SetDefault("devices.ring.event_limit", 20)
 	viper.SetDefault("devices.ring.auto_reconnect", true)
 
-	// Shelly defaults
-	viper.SetDefault("devices.shelly.enabled", false)
+	// Shelly defaults - enabled by default unless explicitly disabled
+	// Shelly defaults - enabled by default with automatic discovery
+	viper.SetDefault("devices.shelly.enabled", true)
 	viper.SetDefault("devices.shelly.discovery_interval", "5m")
-	viper.SetDefault("devices.shelly.username", "admin")
 	viper.SetDefault("devices.shelly.discovery_timeout", "30s")
+	viper.SetDefault("devices.shelly.network_scan_enabled", true)
+	viper.SetDefault("devices.shelly.network_scan_ranges", []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"})
+	viper.SetDefault("devices.shelly.auto_wifi_setup", false)
+	viper.SetDefault("devices.shelly.default_username", "admin")
+	viper.SetDefault("devices.shelly.default_password", "")
+	viper.SetDefault("devices.shelly.poll_interval", "30s")
+	viper.SetDefault("devices.shelly.max_devices", 100)
+	viper.SetDefault("devices.shelly.health_check_interval", "60s")
+	viper.SetDefault("devices.shelly.retry_attempts", 3)
+	viper.SetDefault("devices.shelly.retry_backoff", "10s")
+	viper.SetDefault("devices.shelly.enable_gen1_support", true)
+	viper.SetDefault("devices.shelly.enable_gen2_support", true)
+	viper.SetDefault("devices.shelly.discovery_broadcast_addr", "255.255.255.255:5353")
 
-	// Enhanced Shelly defaults with mock devices
-	viper.SetDefault("devices.shelly.mock_devices.enabled", false)
-	viper.SetDefault("devices.shelly.mock_devices.devices", []map[string]interface{}{
-		{
-			"ip":    "192.168.100.50",
-			"mac":   "AA:BB:CC:DD:EE:01",
-			"model": "SHSW-1PM",
-			"name":  "shelly1pm-DDEE01",
-			"type":  "switch_pm",
-		},
-		{
-			"ip":    "192.168.100.51",
-			"mac":   "AA:BB:CC:DD:EE:02",
-			"model": "SHSW-25",
-			"name":  "shelly25-DDEE02",
-			"type":  "roller",
-		},
-	})
+	// Auto-detection defaults
+	viper.SetDefault("devices.shelly.auto_detect_subnets", true)
+	viper.SetDefault("devices.shelly.auto_detect_interface_filter", []string{})
+	viper.SetDefault("devices.shelly.exclude_loopback", true)
+	viper.SetDefault("devices.shelly.exclude_docker_interfaces", true)
+	viper.SetDefault("devices.shelly.min_subnet_size", 16)
 
 	// Enhanced UPS defaults (replacing previous simple ones)
 	viper.SetDefault("devices.ups.enabled", false)

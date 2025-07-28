@@ -166,7 +166,7 @@ func (h *Handlers) GetAdapterMetrics(c *gin.Context) {
 	// Get detailed metrics from the adapter
 	if adapterMetrics := adapter.GetMetrics(); adapterMetrics != nil {
 		metrics["detailed_metrics"] = adapterMetrics
-		
+
 		// Extract key metrics for easier access
 		metrics["entities_managed"] = adapterMetrics.EntitiesManaged
 		metrics["rooms_managed"] = adapterMetrics.RoomsManaged
@@ -176,11 +176,11 @@ func (h *Handlers) GetAdapterMetrics(c *gin.Context) {
 		metrics["average_response_time"] = adapterMetrics.AverageResponseTime.String()
 		metrics["sync_errors"] = adapterMetrics.SyncErrors
 		metrics["uptime"] = adapterMetrics.Uptime.String()
-		
+
 		if adapterMetrics.LastSync != nil {
 			metrics["last_sync"] = adapterMetrics.LastSync.Format(time.RFC3339)
 		}
-		
+
 		// Calculate additional derived metrics
 		totalActions := adapterMetrics.ActionsExecuted
 		if totalActions > 0 {
@@ -195,7 +195,7 @@ func (h *Handlers) GetAdapterMetrics(c *gin.Context) {
 	// Get supported capabilities
 	supportedEntityTypes := adapter.GetSupportedEntityTypes()
 	supportedCapabilities := adapter.GetSupportedCapabilities()
-	
+
 	metrics["supported_entity_types"] = supportedEntityTypes
 	metrics["supported_capabilities"] = supportedCapabilities
 	metrics["entity_type_count"] = len(supportedEntityTypes)

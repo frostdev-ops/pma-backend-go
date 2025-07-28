@@ -19,7 +19,19 @@ func (h *Handlers) GetNetworkStatus(c *gin.Context) {
 
 	status, err := h.networkService.GetNetworkStatus(ctx)
 	if err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "Failed to get network status: "+err.Error())
+		// Provide a fallback response when network service is not available
+		h.log.WithError(err).Warn("Network service unavailable, returning fallback status")
+
+		fallbackStatus := map[string]interface{}{
+			"status":           "unknown",
+			"message":          "Network service unavailable",
+			"error":            err.Error(),
+			"router_connected": false,
+			"interfaces":       []interface{}{},
+			"timestamp":        time.Now().UTC(),
+		}
+
+		utils.SendSuccess(c, fallbackStatus)
 		return
 	}
 

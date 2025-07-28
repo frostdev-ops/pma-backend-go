@@ -87,28 +87,41 @@ func (s *Service) CheckAvailability(ctx context.Context) (*BluetoothAvailability
 		return availability, nil
 	}
 
-	// Check if bluetooth service is running
-	cmd := exec.CommandContext(ctx, "systemctl", "is-active", "bluetooth")
+	// Check if bluetooth service is running with timeout
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "systemctl", "is-active", "bluetooth")
 	output, err := cmd.Output()
 	if err == nil && strings.TrimSpace(string(output)) == "active" {
 		availability.ServiceActive = true
 	}
 
-	// Check for Bluetooth adapter
-	cmd = exec.CommandContext(ctx, "bluetoothctl", "list")
+	// Check for Bluetooth adapter with timeout
+	cmdCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel2()
+
+	cmd = exec.CommandContext(cmdCtx2, "bluetoothctl", "list")
 	output, err = cmd.Output()
 	if err != nil {
-		availability.Error = "Failed to communicate with Bluetooth adapter"
+		availability.Error = fmt.Sprintf("Failed to list Bluetooth adapters: %v", err)
 		return availability, nil
 	}
 
-	if strings.TrimSpace(string(output)) == "" {
+	// Parse adapter info
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Controller") {
+			availability.AdapterFound = true
+			break
+		}
+	}
+
+	if availability.AdapterFound {
+		availability.Available = true
+	} else {
 		availability.Error = "No Bluetooth adapter found"
-		return availability, nil
 	}
-
-	availability.AdapterFound = true
-	availability.Available = true
 
 	// Get BlueZ version
 	cmd = exec.CommandContext(ctx, "bluetoothctl", "--version")
@@ -121,58 +134,70 @@ func (s *Service) CheckAvailability(ctx context.Context) (*BluetoothAvailability
 
 // GetAdapterInfo retrieves information about the Bluetooth adapter
 func (s *Service) GetAdapterInfo(ctx context.Context) (*BluetoothAdapter, error) {
-	cmd := exec.CommandContext(ctx, "bluetoothctl", "show")
-	output, err := cmd.Output()
+	// Check availability first
+	availability, err := s.CheckAvailability(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get adapter info: %w", err)
+		return nil, err
 	}
 
+	if !availability.Available {
+		return nil, fmt.Errorf("bluetooth not available: %s", availability.Error)
+	}
+
+	// Get adapter info with timeout
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "bluetoothctl", "show")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get adapter info: %v", err)
+	}
+
+	// Parse adapter information
 	adapter := &BluetoothAdapter{}
 	lines := strings.Split(string(output), "\n")
-
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-
-		if strings.HasPrefix(line, "Controller ") {
-			// Extract address from "Controller XX:XX:XX:XX:XX:XX"
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				adapter.Address = parts[1]
-			}
-		} else if strings.HasPrefix(line, "Name: ") {
-			adapter.Name = strings.TrimPrefix(line, "Name: ")
-		} else if strings.HasPrefix(line, "Alias: ") {
-			adapter.Alias = strings.TrimPrefix(line, "Alias: ")
-		} else if strings.HasPrefix(line, "Class: ") {
-			adapter.Class = strings.TrimPrefix(line, "Class: ")
-		} else if strings.HasPrefix(line, "Powered: ") {
-			adapter.Powered = strings.Contains(line, "yes")
-		} else if strings.HasPrefix(line, "Discoverable: ") {
-			adapter.Discoverable = strings.Contains(line, "yes")
-		} else if strings.HasPrefix(line, "Pairable: ") {
-			adapter.Pairable = strings.Contains(line, "yes")
-		} else if strings.HasPrefix(line, "Discovering: ") {
-			adapter.Discovering = strings.Contains(line, "yes")
+		if strings.HasPrefix(line, "Name:") {
+			adapter.Name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		} else if strings.HasPrefix(line, "Alias:") {
+			adapter.Alias = strings.TrimSpace(strings.TrimPrefix(line, "Alias:"))
+		} else if strings.HasPrefix(line, "Class:") {
+			adapter.Class = strings.TrimSpace(strings.TrimPrefix(line, "Class:"))
+		} else if strings.HasPrefix(line, "Powered:") {
+			powered := strings.TrimSpace(strings.TrimPrefix(line, "Powered:"))
+			adapter.Powered = powered == "yes"
+		} else if strings.HasPrefix(line, "Discoverable:") {
+			discoverable := strings.TrimSpace(strings.TrimPrefix(line, "Discoverable:"))
+			adapter.Discoverable = discoverable == "yes"
+		} else if strings.HasPrefix(line, "Pairable:") {
+			pairable := strings.TrimSpace(strings.TrimPrefix(line, "Pairable:"))
+			adapter.Pairable = pairable == "yes"
 		}
 	}
 
 	return adapter, nil
 }
 
-// SetPowerState enables or disables the Bluetooth adapter
-func (s *Service) SetPowerState(ctx context.Context, enabled bool) error {
+// SetPower turns the Bluetooth adapter on or off
+func (s *Service) SetPower(ctx context.Context, powered bool) error {
 	var cmd *exec.Cmd
-	if enabled {
-		cmd = exec.CommandContext(ctx, "bluetoothctl", "power", "on")
+
+	// Use timeout context
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if powered {
+		cmd = exec.CommandContext(cmdCtx, "bluetoothctl", "power", "on")
 	} else {
-		cmd = exec.CommandContext(ctx, "bluetoothctl", "power", "off")
+		cmd = exec.CommandContext(cmdCtx, "bluetoothctl", "power", "off")
 	}
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to set power state: %w", err)
+		return fmt.Errorf("failed to set bluetooth power: %w", err)
 	}
 
-	s.log.Infof("Bluetooth adapter power set to: %t", enabled)
 	return nil
 }
 
@@ -230,7 +255,7 @@ func (s *Service) ScanForDevices(ctx context.Context, duration int) ([]*Device, 
 	s.log.Infof("Starting Bluetooth device scan for %d seconds", duration)
 
 	// Ensure adapter is powered on
-	if err := s.SetPowerState(ctx, true); err != nil {
+	if err := s.SetPower(ctx, true); err != nil {
 		s.stopScan(ctx)
 		return nil, fmt.Errorf("failed to power on adapter: %w", err)
 	}
@@ -465,7 +490,7 @@ func (s *Service) PairDevice(ctx context.Context, request *PairRequest) (*PairRe
 	s.log.Infof("Starting pairing with device %s (%s)", device.Name, request.Address)
 
 	// Ensure adapter is powered on
-	if err := s.SetPowerState(ctx, true); err != nil {
+	if err := s.SetPower(ctx, true); err != nil {
 		session.Status = PairingStatusFailed
 		session.ErrorMessage = fmt.Sprintf("Failed to power on adapter: %v", err)
 		return &PairResponse{

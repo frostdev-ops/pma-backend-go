@@ -24,7 +24,7 @@ type Manager struct {
 // NewManager creates a new device manager
 func NewManager(repository Repository, logger *logrus.Logger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	return &Manager{
 		adapters:      make(map[string]DeviceAdapter),
 		devices:       make(map[string]Device),
@@ -40,17 +40,17 @@ func NewManager(repository Repository, logger *logrus.Logger) *Manager {
 func (m *Manager) RegisterAdapter(name string, adapter DeviceAdapter) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if _, exists := m.adapters[name]; exists {
 		return fmt.Errorf("adapter %s already registered", name)
 	}
-	
+
 	m.adapters[name] = adapter
 	m.logger.WithField("adapter", name).Info("Registered device adapter")
-	
+
 	// Subscribe to adapter events
 	adapter.Subscribe(m.handleAdapterEvent)
-	
+
 	return nil
 }
 
@@ -59,22 +59,22 @@ func (m *Manager) ConnectAdapter(name string) error {
 	m.mu.RLock()
 	adapter, exists := m.adapters[name]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return NewAdapterError(name, "connect", ErrAdapterNotFound)
 	}
-	
+
 	if err := adapter.Connect(); err != nil {
 		return NewAdapterError(name, "connect", err)
 	}
-	
+
 	// Discover devices after connection
 	devices, err := adapter.Discover()
 	if err != nil {
 		m.logger.WithError(err).WithField("adapter", name).Warn("Failed to discover devices")
 		return nil // Don't fail connection if discovery fails
 	}
-	
+
 	// Register discovered devices
 	m.mu.Lock()
 	for _, device := range devices {
@@ -85,12 +85,12 @@ func (m *Manager) ConnectAdapter(name string) error {
 		}
 	}
 	m.mu.Unlock()
-	
+
 	m.logger.WithFields(logrus.Fields{
 		"adapter": name,
 		"devices": len(devices),
 	}).Info("Adapter connected and devices discovered")
-	
+
 	return nil
 }
 
@@ -99,11 +99,11 @@ func (m *Manager) DisconnectAdapter(name string) error {
 	m.mu.RLock()
 	adapter, exists := m.adapters[name]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return NewAdapterError(name, "disconnect", ErrAdapterNotFound)
 	}
-	
+
 	return adapter.Disconnect()
 }
 
@@ -115,18 +115,18 @@ func (m *Manager) ConnectAll() error {
 		adapterNames = append(adapterNames, name)
 	}
 	m.mu.RUnlock()
-	
+
 	var connectErrors []error
 	for _, name := range adapterNames {
 		if err := m.ConnectAdapter(name); err != nil {
 			connectErrors = append(connectErrors, err)
 		}
 	}
-	
+
 	if len(connectErrors) > 0 {
 		return fmt.Errorf("failed to connect %d adapters", len(connectErrors))
 	}
-	
+
 	return nil
 }
 
@@ -138,18 +138,18 @@ func (m *Manager) DisconnectAll() error {
 		adapterNames = append(adapterNames, name)
 	}
 	m.mu.RUnlock()
-	
+
 	var disconnectErrors []error
 	for _, name := range adapterNames {
 		if err := m.DisconnectAdapter(name); err != nil {
 			disconnectErrors = append(disconnectErrors, err)
 		}
 	}
-	
+
 	if len(disconnectErrors) > 0 {
 		return fmt.Errorf("failed to disconnect %d adapters", len(disconnectErrors))
 	}
-	
+
 	return nil
 }
 
@@ -161,7 +161,7 @@ func (m *Manager) DiscoverDevices() ([]Device, error) {
 		adaptersCopy[name] = adapter
 	}
 	m.mu.RUnlock()
-	
+
 	allDevices := make([]Device, 0)
 	for name, adapter := range adaptersCopy {
 		devices, err := adapter.Discover()
@@ -171,7 +171,7 @@ func (m *Manager) DiscoverDevices() ([]Device, error) {
 		}
 		allDevices = append(allDevices, devices...)
 	}
-	
+
 	// Update internal device map
 	m.mu.Lock()
 	for _, device := range allDevices {
@@ -182,7 +182,7 @@ func (m *Manager) DiscoverDevices() ([]Device, error) {
 		}
 	}
 	m.mu.Unlock()
-	
+
 	return allDevices, nil
 }
 
@@ -191,22 +191,22 @@ func (m *Manager) GetDevice(id string) (Device, error) {
 	m.mu.RLock()
 	device, exists := m.devices[id]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		// Try to load from repository
 		device, err := m.repository.GetDevice(id)
 		if err != nil {
 			return nil, ErrDeviceNotFound
 		}
-		
+
 		// Cache the device
 		m.mu.Lock()
 		m.devices[id] = device
 		m.mu.Unlock()
-		
+
 		return device, nil
 	}
-	
+
 	return device, nil
 }
 
@@ -214,12 +214,12 @@ func (m *Manager) GetDevice(id string) (Device, error) {
 func (m *Manager) GetAllDevices() []Device {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	devices := make([]Device, 0, len(m.devices))
 	for _, device := range m.devices {
 		devices = append(devices, device)
 	}
-	
+
 	return devices
 }
 
@@ -227,14 +227,14 @@ func (m *Manager) GetAllDevices() []Device {
 func (m *Manager) GetDevicesByType(deviceType DeviceType) []Device {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	devices := make([]Device, 0)
 	for _, device := range m.devices {
 		if device.GetType() == deviceType {
 			devices = append(devices, device)
 		}
 	}
-	
+
 	return devices
 }
 
@@ -244,16 +244,16 @@ func (m *Manager) UpdateDeviceState(id string, key string, value interface{}) er
 	if err != nil {
 		return err
 	}
-	
+
 	if err := device.SetState(key, value); err != nil {
 		return NewDeviceError(id, device.GetType(), "set_state", err)
 	}
-	
+
 	// Save state to repository
 	if err := m.repository.SaveDeviceState(id, device.GetState()); err != nil {
 		m.logger.WithError(err).WithField("device_id", id).Warn("Failed to save device state")
 	}
-	
+
 	// Emit state change event
 	m.emitEvent(DeviceEvent{
 		DeviceID:  id,
@@ -264,7 +264,7 @@ func (m *Manager) UpdateDeviceState(id string, key string, value interface{}) er
 		},
 		Timestamp: time.Now(),
 	})
-	
+
 	return nil
 }
 
@@ -274,17 +274,17 @@ func (m *Manager) ExecuteCommand(id string, command string, params map[string]in
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Check if device is online
 	if device.GetStatus() != DeviceStatusOnline {
 		return nil, NewDeviceError(id, device.GetType(), "execute", ErrDeviceOffline)
 	}
-	
+
 	result, err := device.Execute(command, params)
 	if err != nil {
 		return nil, NewDeviceError(id, device.GetType(), "execute", err)
 	}
-	
+
 	return result, nil
 }
 
@@ -292,15 +292,15 @@ func (m *Manager) ExecuteCommand(id string, command string, params map[string]in
 func (m *Manager) RemoveDevice(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	delete(m.devices, id)
-	
+
 	if err := m.repository.DeleteDevice(id); err != nil {
 		return err
 	}
-	
+
 	m.logger.WithField("device_id", id).Info("Device removed")
-	
+
 	return nil
 }
 
@@ -308,12 +308,12 @@ func (m *Manager) RemoveDevice(id string) error {
 func (m *Manager) GetAdapterStatus() map[string]AdapterStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	status := make(map[string]AdapterStatus)
 	for name, adapter := range m.adapters {
 		status[name] = adapter.GetStatus()
 	}
-	
+
 	return status
 }
 
@@ -321,7 +321,7 @@ func (m *Manager) GetAdapterStatus() map[string]AdapterStatus {
 func (m *Manager) Subscribe(handler func(DeviceEvent)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.eventHandlers = append(m.eventHandlers, handler)
 }
 
@@ -332,18 +332,18 @@ func (m *Manager) Start() error {
 	if err != nil {
 		return err
 	}
-	
+
 	m.mu.Lock()
 	for _, device := range devices {
 		m.devices[device.GetID()] = device
 	}
 	m.mu.Unlock()
-	
+
 	m.logger.WithField("devices", len(devices)).Info("Device manager started")
-	
+
 	// Start health check routine
 	go m.healthCheckLoop()
-	
+
 	return nil
 }
 
@@ -367,12 +367,12 @@ func (m *Manager) handleAdapterEvent(event DeviceEvent) {
 			}
 		}
 	}
-	
+
 	// Save event to repository
 	if err := m.repository.SaveDeviceEvent(event); err != nil {
 		m.logger.WithError(err).WithField("device_id", event.DeviceID).Warn("Failed to save device event")
 	}
-	
+
 	// Forward event to handlers
 	m.emitEvent(event)
 }
@@ -383,7 +383,7 @@ func (m *Manager) emitEvent(event DeviceEvent) {
 	handlers := make([]func(DeviceEvent), len(m.eventHandlers))
 	copy(handlers, m.eventHandlers)
 	m.mu.RUnlock()
-	
+
 	for _, handler := range handlers {
 		go handler(event)
 	}
@@ -393,7 +393,7 @@ func (m *Manager) emitEvent(event DeviceEvent) {
 func (m *Manager) healthCheckLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -412,7 +412,7 @@ func (m *Manager) performHealthCheck() {
 		adaptersCopy[name] = adapter
 	}
 	m.mu.RUnlock()
-	
+
 	for name, adapter := range adaptersCopy {
 		status := adapter.GetStatus()
 		if !status.Connected {

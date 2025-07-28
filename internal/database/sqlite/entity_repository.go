@@ -219,17 +219,17 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
-	
+
 	attributes, err := json.Marshal(entity.GetAttributes())
 	if err != nil {
 		return fmt.Errorf("failed to marshal attributes: %w", err)
 	}
-	
+
 	capabilities, err := json.Marshal(entity.GetCapabilities())
 	if err != nil {
 		return fmt.Errorf("failed to marshal capabilities: %w", err)
 	}
-	
+
 	// Extract room ID as integer if possible
 	var roomID sql.NullInt64
 	if entity.GetRoomID() != nil {
@@ -238,7 +238,7 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 			roomID = sql.NullInt64{Int64: id, Valid: true}
 		}
 	}
-	
+
 	// Insert/update main entity record
 	query := `
 		INSERT INTO entities (entity_id, friendly_name, domain, state, attributes, last_updated, room_id, pma_capabilities, available)
@@ -253,7 +253,7 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 			pma_capabilities = excluded.pma_capabilities,
 			available = excluded.available
 	`
-	
+
 	_, err = r.db.Exec(
 		query,
 		entity.GetID(),
@@ -266,11 +266,11 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 		capabilities,
 		entity.IsAvailable(),
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to create/update PMA entity: %w", err)
 	}
-	
+
 	// Store metadata separately in metadata table
 	metaQuery := `
 		INSERT INTO entity_metadata (entity_id, source, source_entity_id, metadata, quality_score, last_synced, is_virtual, virtual_sources)
@@ -284,7 +284,7 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 			is_virtual = excluded.is_virtual,
 			virtual_sources = excluded.virtual_sources
 	`
-	
+
 	meta := entity.GetMetadata()
 	if meta != nil {
 		var virtualSources string
@@ -292,7 +292,7 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 			virtualSourcesBytes, _ := json.Marshal(meta.VirtualSources)
 			virtualSources = string(virtualSourcesBytes)
 		}
-		
+
 		_, err = r.db.Exec(
 			metaQuery,
 			entity.GetID(),
@@ -308,7 +308,7 @@ func (r *EntityRepository) CreateOrUpdatePMAEntity(entity types.PMAEntity) error
 			return fmt.Errorf("failed to store entity metadata: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -325,7 +325,7 @@ func (r *EntityRepository) GetPMAEntity(entityID string) (types.PMAEntity, error
 		LEFT JOIN entity_metadata em ON e.entity_id = em.entity_id
 		WHERE e.entity_id = ?
 	`
-	
+
 	var entity models.Entity
 	var capabilitiesJSON string
 	var available bool
@@ -336,7 +336,7 @@ func (r *EntityRepository) GetPMAEntity(entityID string) (types.PMAEntity, error
 	var lastSynced sql.NullTime
 	var isVirtual sql.NullBool
 	var virtualSources sql.NullString
-	
+
 	err := r.db.QueryRow(query, entityID).Scan(
 		&entity.EntityID,
 		&entity.FriendlyName,
@@ -355,11 +355,11 @@ func (r *EntityRepository) GetPMAEntity(entityID string) (types.PMAEntity, error
 		&isVirtual,
 		&virtualSources,
 	)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PMA entity: %w", err)
 	}
-	
+
 	// Convert to PMA entity
 	return r.convertToPMAEntity(entity, capabilitiesJSON, available, metadata, source, sourceEntityID, qualityScore, lastSynced, isVirtual, virtualSources)
 }
@@ -377,13 +377,13 @@ func (r *EntityRepository) GetPMAEntitiesBySource(source types.PMASourceType) ([
 		WHERE em.source = ?
 		ORDER BY e.entity_id
 	`
-	
+
 	rows, err := r.db.Query(query, string(source))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query PMA entities by source: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var entities []types.PMAEntity
 	for rows.Next() {
 		var entity models.Entity
@@ -396,7 +396,7 @@ func (r *EntityRepository) GetPMAEntitiesBySource(source types.PMASourceType) ([
 		var lastSynced sql.NullTime
 		var isVirtual sql.NullBool
 		var virtualSources sql.NullString
-		
+
 		err := rows.Scan(
 			&entity.EntityID,
 			&entity.FriendlyName,
@@ -418,15 +418,15 @@ func (r *EntityRepository) GetPMAEntitiesBySource(source types.PMASourceType) ([
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan PMA entity: %w", err)
 		}
-		
+
 		pmaEntity, err := r.convertToPMAEntity(entity, capabilitiesJSON, available, metadata, entitySource, sourceEntityID, qualityScore, lastSynced, isVirtual, virtualSources)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		entities = append(entities, pmaEntity)
 	}
-	
+
 	return entities, rows.Err()
 }
 
@@ -438,28 +438,28 @@ func (r *EntityRepository) DeletePMAEntity(entityID string) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	// Delete metadata first (due to foreign key constraint)
 	_, err = tx.Exec("DELETE FROM entity_metadata WHERE entity_id = ?", entityID)
 	if err != nil {
 		return fmt.Errorf("failed to delete entity metadata: %w", err)
 	}
-	
+
 	// Delete entity
 	result, err := tx.Exec("DELETE FROM entities WHERE entity_id = ?", entityID)
 	if err != nil {
 		return fmt.Errorf("failed to delete entity: %w", err)
 	}
-	
+
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
-	
+
 	if rowsAffected == 0 {
 		return fmt.Errorf("entity not found with ID: %s", entityID)
 	}
-	
+
 	return tx.Commit()
 }
 
@@ -469,20 +469,20 @@ func (r *EntityRepository) UpdatePMAEntityMetadata(entityID string, metadata *ty
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
-	
+
 	var virtualSources string
 	if metadata.VirtualSources != nil {
 		virtualSourcesBytes, _ := json.Marshal(metadata.VirtualSources)
 		virtualSources = string(virtualSourcesBytes)
 	}
-	
+
 	query := `
 		UPDATE entity_metadata 
 		SET source = ?, source_entity_id = ?, metadata = ?, quality_score = ?, 
 		    last_synced = ?, is_virtual = ?, virtual_sources = ?
 		WHERE entity_id = ?
 	`
-	
+
 	result, err := r.db.Exec(
 		query,
 		string(metadata.Source),
@@ -497,16 +497,16 @@ func (r *EntityRepository) UpdatePMAEntityMetadata(entityID string, metadata *ty
 	if err != nil {
 		return fmt.Errorf("failed to update entity metadata: %w", err)
 	}
-	
+
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
-	
+
 	if rowsAffected == 0 {
 		return fmt.Errorf("metadata not found for entity ID: %s", entityID)
 	}
-	
+
 	return nil
 }
 
@@ -530,7 +530,7 @@ func (r *EntityRepository) convertToPMAEntity(
 			capabilities = []types.PMACapability{} // Default to empty if parsing fails
 		}
 	}
-	
+
 	// Parse attributes
 	var attributes map[string]interface{}
 	if len(entity.Attributes) > 0 {
@@ -540,7 +540,7 @@ func (r *EntityRepository) convertToPMAEntity(
 	} else {
 		attributes = make(map[string]interface{})
 	}
-	
+
 	// Build metadata
 	var pmaMetadata *types.PMAMetadata
 	if source.Valid && sourceEntityID.Valid {
@@ -550,7 +550,7 @@ func (r *EntityRepository) convertToPMAEntity(
 			LastSynced:     time.Now(),
 			QualityScore:   1.0,
 		}
-		
+
 		if qualityScore.Valid {
 			pmaMetadata.QualityScore = qualityScore.Float64
 		}
@@ -566,7 +566,7 @@ func (r *EntityRepository) convertToPMAEntity(
 				pmaMetadata.VirtualSources = sources
 			}
 		}
-		
+
 		// Parse source data from metadata field
 		if metadata.Valid && metadata.String != "" {
 			var sourceData map[string]interface{}
@@ -575,14 +575,14 @@ func (r *EntityRepository) convertToPMAEntity(
 			}
 		}
 	}
-	
+
 	// Convert room ID
 	var roomID *string
 	if entity.RoomID.Valid {
 		roomIDStr := strconv.FormatInt(entity.RoomID.Int64, 10)
 		roomID = &roomIDStr
 	}
-	
+
 	// Create base PMA entity
 	baseEntity := &types.PMABaseEntity{
 		ID:           entity.EntityID,
@@ -596,6 +596,6 @@ func (r *EntityRepository) convertToPMAEntity(
 		Metadata:     pmaMetadata,
 		Available:    available,
 	}
-	
+
 	return baseEntity, nil
 }

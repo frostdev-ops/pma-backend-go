@@ -152,15 +152,235 @@ type LogsRequest struct {
 
 // SystemConfig represents system configuration
 type SystemConfig struct {
-	Environment     string                 `json:"environment"`
-	Debug           bool                   `json:"debug"`
-	LogLevel        string                 `json:"log_level"`
-	MaxLogEntries   int                    `json:"max_log_entries"`
-	Services        map[string]interface{} `json:"services"`
-	Features        map[string]bool        `json:"features"`
-	UpdateChannel   string                 `json:"update_channel"`
-	AutoUpdate      bool                   `json:"auto_update"`
-	MaintenanceMode bool                   `json:"maintenance_mode"`
+	// Core system configuration
+	System SystemSectionConfig `json:"system"`
+
+	// Server configuration
+	Server ServerSectionConfig `json:"server"`
+
+	// Database configuration
+	Database DatabaseSectionConfig `json:"database"`
+
+	// Authentication configuration
+	Auth AuthSectionConfig `json:"auth"`
+
+	// WebSocket configuration
+	WebSocket WebSocketSectionConfig `json:"websocket"`
+
+	// External service configurations
+	Services ServicesSectionConfig `json:"services"`
+
+	// Monitoring and alerting
+	Monitoring MonitoringSectionConfig `json:"monitoring"`
+
+	// Security settings
+	Security SecuritySectionConfig `json:"security"`
+
+	// Metadata
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Version   int    `json:"version"`
+	Checksum  string `json:"checksum,omitempty"`
+}
+
+// SystemSectionConfig represents core system settings
+type SystemSectionConfig struct {
+	Name                string  `json:"name"`
+	Description         string  `json:"description,omitempty"`
+	Timezone            string  `json:"timezone"`
+	Locale              string  `json:"locale"`
+	LogLevel            string  `json:"log_level"`
+	DebugMode           bool    `json:"debug_mode"`
+	MaintenanceMode     bool    `json:"maintenance_mode"`
+	AutoBackup          bool    `json:"auto_backup"`
+	BackupRetentionDays int     `json:"backup_retention_days"`
+	HubUser             HubUser `json:"hub_user"`
+}
+
+// HubUser represents the local hub user configuration
+type HubUser struct {
+	Name    string `json:"name"`
+	Email   string `json:"email,omitempty"`
+	Avatar  string `json:"avatar,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+
+// ServerSectionConfig represents server configuration
+type ServerSectionConfig struct {
+	Host           string   `json:"host"`
+	Port           int      `json:"port"`
+	HTTPSEnabled   bool     `json:"https_enabled"`
+	CORSEnabled    bool     `json:"cors_enabled"`
+	CORSOrigins    []string `json:"cors_origins"`
+	RateLimiting   bool     `json:"rate_limiting"`
+	MaxRequestSize int64    `json:"max_request_size"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
+
+// DatabaseSectionConfig represents database configuration
+type DatabaseSectionConfig struct {
+	Type               string `json:"type"`
+	Host               string `json:"host,omitempty"`
+	Port               int    `json:"port,omitempty"`
+	Name               string `json:"name"`
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
+	SSLEnabled         bool   `json:"ssl_enabled,omitempty"`
+	ConnectionPoolSize int    `json:"connection_pool_size"`
+	MaxIdleConnections int    `json:"max_idle_connections"`
+	ConnectionTimeout  int    `json:"connection_timeout"`
+}
+
+// AuthSectionConfig represents authentication configuration
+type AuthSectionConfig struct {
+	Enabled             bool   `json:"enabled"`
+	Method              string `json:"method"`
+	PinLength           int    `json:"pin_length,omitempty"`
+	PasswordMinLength   int    `json:"password_min_length,omitempty"`
+	SessionTimeout      int    `json:"session_timeout"`
+	JWTSecret           string `json:"jwt_secret"`
+	RefreshTokenEnabled bool   `json:"refresh_token_enabled"`
+	MaxSessionsPerUser  int    `json:"max_sessions_per_user"`
+	LockoutThreshold    int    `json:"lockout_threshold"`
+	LockoutDuration     int    `json:"lockout_duration"`
+}
+
+// WebSocketSectionConfig represents WebSocket configuration
+type WebSocketSectionConfig struct {
+	Enabled            bool `json:"enabled"`
+	Port               int  `json:"port,omitempty"`
+	MaxConnections     int  `json:"max_connections"`
+	HeartbeatInterval  int  `json:"heartbeat_interval"`
+	MessageBufferSize  int  `json:"message_buffer_size"`
+	CompressionEnabled bool `json:"compression_enabled"`
+}
+
+// ServicesSectionConfig represents external service configurations
+type ServicesSectionConfig struct {
+	HomeAssistant *HomeAssistantConfig `json:"homeassistant,omitempty"`
+	AI            *AIConfig            `json:"ai,omitempty"`
+	Energy        *EnergyConfig        `json:"energy,omitempty"`
+	Network       *NetworkConfig       `json:"network,omitempty"`
+}
+
+// HomeAssistantConfig represents Home Assistant configuration
+type HomeAssistantConfig struct {
+	Enabled           bool     `json:"enabled"`
+	URL               string   `json:"url"`
+	Token             string   `json:"token"`
+	VerifySSL         bool     `json:"verify_ssl"`
+	Timeout           int      `json:"timeout"`
+	ReconnectInterval int      `json:"reconnect_interval"`
+	SyncInterval      int      `json:"sync_interval"`
+	IncludedDomains   []string `json:"included_domains"`
+	ExcludedDomains   []string `json:"excluded_domains"`
+}
+
+// AIConfig represents AI service configuration
+type AIConfig struct {
+	Enabled         string            `json:"enabled"`
+	DefaultProvider string            `json:"default_provider"`
+	Providers       AIProvidersConfig `json:"providers"`
+}
+
+// AIProvidersConfig represents AI provider configurations
+type AIProvidersConfig struct {
+	Ollama *OllamaConfig `json:"ollama,omitempty"`
+	OpenAI *OpenAIConfig `json:"openai,omitempty"`
+	Claude *ClaudeConfig `json:"claude,omitempty"`
+	Gemini *GeminiConfig `json:"gemini,omitempty"`
+}
+
+// OllamaConfig represents Ollama configuration
+type OllamaConfig struct {
+	Enabled bool     `json:"enabled"`
+	URL     string   `json:"url"`
+	Models  []string `json:"models"`
+	Timeout int      `json:"timeout"`
+}
+
+// OpenAIConfig represents OpenAI configuration
+type OpenAIConfig struct {
+	Enabled     bool    `json:"enabled"`
+	APIKey      string  `json:"api_key"`
+	Model       string  `json:"model"`
+	MaxTokens   int     `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+}
+
+// ClaudeConfig represents Claude configuration
+type ClaudeConfig struct {
+	Enabled   bool   `json:"enabled"`
+	APIKey    string `json:"api_key"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+}
+
+// GeminiConfig represents Gemini configuration
+type GeminiConfig struct {
+	Enabled        bool              `json:"enabled"`
+	APIKey         string            `json:"api_key"`
+	Model          string            `json:"model"`
+	SafetySettings map[string]string `json:"safety_settings"`
+}
+
+// EnergyConfig represents energy monitoring configuration
+type EnergyConfig struct {
+	Enabled                bool    `json:"enabled"`
+	UpdateInterval         int     `json:"update_interval"`
+	CostPerKWH             float64 `json:"cost_per_kwh"`
+	Currency               string  `json:"currency"`
+	RetentionDays          int     `json:"retention_days"`
+	TrackIndividualDevices bool    `json:"track_individual_devices"`
+}
+
+// NetworkConfig represents network monitoring configuration
+type NetworkConfig struct {
+	Enabled            bool     `json:"enabled"`
+	MonitorInterfaces  []string `json:"monitor_interfaces"`
+	ScanInterval       int      `json:"scan_interval"`
+	PortScanEnabled    bool     `json:"port_scan_enabled"`
+	IntrusionDetection bool     `json:"intrusion_detection"`
+}
+
+// MonitoringSectionConfig represents monitoring and alerting configuration
+type MonitoringSectionConfig struct {
+	Enabled              bool               `json:"enabled"`
+	MetricsRetentionDays int                `json:"metrics_retention_days"`
+	HealthCheckInterval  int                `json:"health_check_interval"`
+	AlertThresholds      AlertThresholds    `json:"alert_thresholds"`
+	Notifications        NotificationConfig `json:"notifications"`
+}
+
+// AlertThresholds represents alert threshold configuration
+type AlertThresholds struct {
+	CPUUsage     float64 `json:"cpu_usage"`
+	MemoryUsage  float64 `json:"memory_usage"`
+	DiskUsage    float64 `json:"disk_usage"`
+	ResponseTime int     `json:"response_time"`
+	ErrorRate    float64 `json:"error_rate"`
+}
+
+// NotificationConfig represents notification configuration
+type NotificationConfig struct {
+	EmailEnabled    bool     `json:"email_enabled"`
+	EmailRecipients []string `json:"email_recipients"`
+	WebhookEnabled  bool     `json:"webhook_enabled"`
+	WebhookURL      string   `json:"webhook_url,omitempty"`
+	SlackEnabled    bool     `json:"slack_enabled"`
+	SlackWebhook    string   `json:"slack_webhook,omitempty"`
+}
+
+// SecuritySectionConfig represents security configuration
+type SecuritySectionConfig struct {
+	EncryptionEnabled     bool     `json:"encryption_enabled"`
+	AuditLogging          bool     `json:"audit_logging"`
+	FailedLoginTracking   bool     `json:"failed_login_tracking"`
+	IPWhitelist           []string `json:"ip_whitelist"`
+	IPBlacklist           []string `json:"ip_blacklist"`
+	APIKeyRequired        bool     `json:"api_key_required"`
+	CSRFProtection        bool     `json:"csrf_protection"`
+	ContentSecurityPolicy bool     `json:"content_security_policy"`
 }
 
 // PowerAction represents a power management action

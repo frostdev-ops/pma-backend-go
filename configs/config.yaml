@@ -10,6 +10,17 @@ database:
   backup_path: "./data/backups"
   max_connections: 25
 
+redis:
+  enabled: true
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+  min_idle_conns: 5
+  key_prefix: "pma:"
+  entity_cache_ttl: "24h"
+
 # Performance optimization configuration
 performance:
   database:
@@ -34,9 +45,11 @@ performance:
     compression_enabled: true
 
 auth:
-  enabled: true  # Enable authentication by default
+  enabled: true  # Enable authentication with remote auth logic
   jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI=" # Override with environment variable
   token_expiry: 1800 # 30 minutes in seconds (to match frontend expectations)
+  api_secret: "pma-shared-secret-2024-api-auth-key" # API secret for server-to-server communication
+  allow_localhost_bypass: true # Allow localhost connections to bypass authentication
 
 home_assistant:
   url: "http://192.168.100.2:8123"
@@ -55,6 +68,24 @@ home_assistant:
 logging:
   level: "info" # debug, info, warn, error
   format: "json" # json, text
+  debug:
+    enabled: true # Enable comprehensive debug logging
+    level: "debug" # debug, info, warn, error
+    file_enabled: true # Enable debug logging to file
+    file_path: "./logs/debug.log" # Debug log file path
+    max_file_size: 10485760 # 10MB max file size
+    max_files: 5 # Number of rotated files to keep
+    console: false # Enable debug output to console
+    components: [] # Specific components to debug (empty = all components)
+      # Example components:
+      # - "handlers"
+      # - "adapters"
+      # - "database"
+      # - "websocket"
+      # - "ai"
+      # - "entities"
+      # - "automation"
+      # - "monitoring"
 
 websocket:
   ping_interval: 30 # seconds
@@ -64,16 +95,16 @@ websocket:
 ai:
   fallback_enabled: true
   fallback_delay: "2s"
-  default_provider: "ollama"
+  default_provider: "gemini"
   max_retries: 3
-  timeout: "30s"
+  timeout: "60s"
   providers:
     - type: "ollama"
       enabled: true
       url: "http://localhost:11434"
-      default_model: "llama2"
+      default_model: "qwen3:0.6b"
       auto_start: true
-      priority: 1
+      priority: 2
       resource_limits:
         max_memory: "4GB"
         max_cpu: 80
@@ -92,9 +123,9 @@ ai:
     - type: "gemini"
       enabled: true
       api_key: "AIzaSyArZr6EQ2atRvilgk7T7aSEhZkYmQhdPo4" # Override with GEMINI_API_KEY environment variable
-      default_model: "gemini-pro"
+      default_model: "gemini-2.5-flash"
       max_tokens: 4096
-      priority: 4
+      priority: 1
 
 # Router/Network Configuration
 router:
@@ -119,27 +150,29 @@ devices:
     event_limit: 20
     auto_reconnect: true
   shelly:
-    enabled: false
+    enabled: true
     discovery_interval: "5m"
-    poll_interval: "30s"
-    username: "admin"
-    password: "" # Override with SHELLY_PASSWORD environment variable
     discovery_timeout: "30s"
-    auto_reconnect: true
-    devices: [] # List of specific Shelly devices to manage
-    mock_devices: # For testing/demo purposes
-      enabled: false
-      devices:
-        - ip: "192.168.100.50"
-          name: "shelly1pm-DDEE01"
-          model: "SHSW-1PM"
-          type: "switch_pm"
-          enabled: true
-        - ip: "192.168.100.51"
-          name: "shelly25-DDEE02"
-          model: "SHSW-25"
-          type: "roller"
-          enabled: true
+    network_scan_enabled: true
+    network_scan_ranges: ["192.168.1.0/24", "192.168.100.0/24", "10.0.0.0/24"]
+    auto_wifi_setup: false # Enable to help configure devices in AP mode
+    default_username: "admin"
+    default_password: "" # Override with SHELLY_DEFAULT_PASSWORD environment variable
+    poll_interval: "30s"
+    max_devices: 100
+    health_check_interval: "60s"
+    retry_attempts: 3
+    retry_backoff: "10s"
+    enable_gen1_support: true
+    enable_gen2_support: true
+    # discovery_broadcast_addr: "192.168.1.255" # Optional: specific broadcast address
+    
+    # Automatic subnet detection configuration
+    auto_detect_subnets: true # Automatically detect local network interfaces
+    auto_detect_interface_filter: [] # Optional: only scan specific interfaces (e.g., ["eth0", "wlan0"])
+    exclude_loopback: true # Exclude loopback interfaces from scanning
+    exclude_docker_interfaces: true # Exclude Docker and other virtual interfaces
+    min_subnet_size: 16 # Don't scan subnets smaller than /16 (larger numbers = smaller subnets)
   ups:
     enabled: false
     nut_host: "localhost"
@@ -232,8 +265,8 @@ security:
   allowed_origins: ["*"] # Override with PMA_ALLOWED_ORIGINS environment variable
   rate_limiting:
     enabled: true
-    requests_per_minute: 60
-    burst_size: 10
+    requests_per_minute: 600
+    burst_size: 1000
   
 # Test and development configuration
 test:

@@ -440,3 +440,60 @@ func (s *Service) GetConnectionInfo(ctx context.Context) (map[string]interface{}
 func (s *Service) IsMonitoring() bool {
 	return s.monitoring
 }
+
+// GetAlertThresholds returns the current alert thresholds
+func (s *Service) GetAlertThresholds(ctx context.Context) (*AlertThresholds, error) {
+	return &s.config.AlertThresholds, nil
+}
+
+// UpdateAlertThresholds updates the UPS alert thresholds and persists them
+func (s *Service) UpdateAlertThresholds(ctx context.Context, thresholds *AlertThresholds) error {
+	// Validate thresholds
+	if thresholds.LowBattery < 0 || thresholds.LowBattery > 100 {
+		return fmt.Errorf("low battery threshold must be between 0 and 100")
+	}
+	if thresholds.CriticalBattery < 0 || thresholds.CriticalBattery > 100 {
+		return fmt.Errorf("critical battery threshold must be between 0 and 100")
+	}
+	if thresholds.HighTemperature < -20 || thresholds.HighTemperature > 100 {
+		return fmt.Errorf("high temperature threshold must be between -20 and 100")
+	}
+	if thresholds.HighLoad < 0 || thresholds.HighLoad > 100 {
+		return fmt.Errorf("high load threshold must be between 0 and 100")
+	}
+
+	// Update the in-memory config
+	s.config.AlertThresholds = *thresholds
+
+	s.logger.WithFields(map[string]interface{}{
+		"low_battery":      thresholds.LowBattery,
+		"critical_battery": thresholds.CriticalBattery,
+		"high_temperature": thresholds.HighTemperature,
+		"high_load":        thresholds.HighLoad,
+	}).Info("UPS alert thresholds updated")
+
+	return nil
+}
+
+// CheckAlerts checks current UPS status against configured thresholds
+func (s *Service) CheckAlerts(ctx context.Context, status *UPSStatus) []string {
+	var alerts []string
+	thresholds := s.config.AlertThresholds
+
+	if status.BatteryCharge <= thresholds.CriticalBattery {
+		alerts = append(alerts, fmt.Sprintf("CRITICAL: Battery charge is %.1f%%, below critical threshold of %.1f%%", status.BatteryCharge, thresholds.CriticalBattery))
+	} else if status.BatteryCharge <= thresholds.LowBattery {
+		alerts = append(alerts, fmt.Sprintf("WARNING: Battery charge is %.1f%%, below low threshold of %.1f%%", status.BatteryCharge, thresholds.LowBattery))
+	}
+
+	if status.Load >= thresholds.HighLoad {
+		alerts = append(alerts, fmt.Sprintf("WARNING: UPS load is %.1f%%, above high load threshold of %.1f%%", status.Load, thresholds.HighLoad))
+	}
+
+	// Temperature alert (if temperature data is available)
+	if status.Temperature > 0 && float64(status.Temperature) >= thresholds.HighTemperature {
+		alerts = append(alerts, fmt.Sprintf("WARNING: UPS temperature is %.1f°C, above high temperature threshold of %.1f°C", status.Temperature, thresholds.HighTemperature))
+	}
+
+	return alerts
+}

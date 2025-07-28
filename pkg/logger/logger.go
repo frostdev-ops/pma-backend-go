@@ -10,20 +10,20 @@ import (
 
 // RequestMetrics holds metrics for a specific endpoint
 type RequestMetrics struct {
-	Count       int           `json:"count"`
-	TotalTime   time.Duration `json:"total_time"`
-	MinLatency  time.Duration `json:"min_latency"`
-	MaxLatency  time.Duration `json:"max_latency"`
-	AvgLatency  time.Duration `json:"avg_latency"`
+	Count      int           `json:"count"`
+	TotalTime  time.Duration `json:"total_time"`
+	MinLatency time.Duration `json:"min_latency"`
+	MaxLatency time.Duration `json:"max_latency"`
+	AvgLatency time.Duration `json:"avg_latency"`
 }
 
 // BatchLogger wraps logrus.Logger with batching capabilities for 200 status codes
 type BatchLogger struct {
 	*logrus.Logger
-	metrics     map[string]*RequestMetrics
-	batchCount  int
-	mutex       sync.RWMutex
-	batchSize   int
+	metrics    map[string]*RequestMetrics
+	batchCount int
+	mutex      sync.RWMutex
+	batchSize  int
 }
 
 // New creates a new logger instance with batching for 200 status codes
@@ -88,7 +88,7 @@ func (bl *BatchLogger) batchSuccess(method, endpoint string, latency time.Durati
 	defer bl.mutex.Unlock()
 
 	key := method + " " + endpoint
-	
+
 	if bl.metrics[key] == nil {
 		bl.metrics[key] = &RequestMetrics{
 			MinLatency: latency,

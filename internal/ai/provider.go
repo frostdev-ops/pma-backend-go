@@ -38,6 +38,13 @@ type CompletionOptions struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
+// LLMTool represents a tool/function available to the LLM for function calling
+type LLMTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"` // JSON schema for parameters
+}
+
 // ChatOptions holds options for chat completion requests
 type ChatOptions struct {
 	Model        string            `json:"model,omitempty"`
@@ -49,15 +56,19 @@ type ChatOptions struct {
 	SystemPrompt string            `json:"system_prompt,omitempty"`
 	Provider     string            `json:"provider,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
+	Tools        []LLMTool         `json:"tools,omitempty"`       // MCP tools converted to LLM format
+	ToolChoice   string            `json:"tool_choice,omitempty"` // "auto", "none", or specific tool name
 }
 
 // ChatMessage represents a single message in a chat conversation
 type ChatMessage struct {
-	Role      string            `json:"role"` // "system", "user", "assistant"
-	Content   string            `json:"content"`
-	Name      string            `json:"name,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	Timestamp time.Time         `json:"timestamp"`
+	Role       string            `json:"role"` // "system", "user", "assistant", "tool"
+	Content    string            `json:"content"`
+	Name       string            `json:"name,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Timestamp  time.Time         `json:"timestamp"`
+	ToolCalls  []ToolCall        `json:"tool_calls,omitempty"`   // For assistant messages with tool calls
+	ToolCallID string            `json:"tool_call_id,omitempty"` // For tool response messages
 }
 
 // CompletionResponse represents the response from a completion request

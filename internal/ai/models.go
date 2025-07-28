@@ -1,8 +1,8 @@
 package ai
 
 import (
-	"time"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"time"
 )
 
 // ChatRequest represents an incoming chat request

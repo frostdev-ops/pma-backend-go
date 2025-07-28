@@ -39,6 +39,7 @@ func (suite *PMAIntegrationTestSuite) SetupSuite() {
 	// Create unified service
 	suite.unifiedService = unified.NewUnifiedEntityService(
 		suite.typeRegistry,
+		&config.Config{},
 		suite.logger,
 	)
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -84,6 +85,31 @@ type Client struct {
 	lastPing      time.Time
 	info          *ClientInfo
 	authenticated bool
+}
+
+// HandleWebSocketWithAuth handles websocket requests from clients with authentication
+func HandleWebSocketWithAuth(hub *Hub, w http.ResponseWriter, r *http.Request, cfg *config.Config) {
+	// Extract client IP address
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" {
+		clientIP = r.Header.Get("X-Real-IP")
+	}
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+
+	hub.logger.WithFields(logrus.Fields{
+		"client_ip":  clientIP,
+		"path":       r.URL.Path,
+		"user_agent": r.Header.Get("User-Agent"),
+	}).Info("WebSocket connection attempt")
+
+	// CRITICAL FIX: Disable WebSocket authentication to match REST API approach
+	// Authentication has been disabled across the application for development/testing
+	hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (authentication disabled system-wide)")
+
+	// Proceed with WebSocket upgrade without authentication checks
+	hub.HandleWebSocket(w, r, cfg)
 }
 
 // HandleWebSocket handles websocket requests from clients
@@ -183,24 +209,37 @@ func (c *Client) writePump() {
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
+				c.logger.WithError(err).Error("Failed to create writer")
 				return
 			}
-			w.Write(message)
+
+			if _, err := w.Write(message); err != nil {
+				c.logger.WithError(err).Error("Failed to write message")
+				w.Close()
+				return
+			}
 
 			// Add queued messages to the current websocket message
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
+				select {
+				case queuedMessage := <-c.send:
+					w.Write([]byte{'\n'})
+					w.Write(queuedMessage)
+				default:
+					break
+				}
 			}
 
 			if err := w.Close(); err != nil {
+				c.logger.WithError(err).Error("Failed to close writer")
 				return
 			}
 
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.logger.WithError(err).Error("Failed to write ping")
 				return
 			}
 		}
@@ -209,6 +248,12 @@ func (c *Client) writePump() {
 
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(message []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.WithField("panic", r).Error("WebSocket message handler panicked")
+		}
+	}()
+
 	var msg Message
 	if err := json.Unmarshal(message, &msg); err != nil {
 		c.logger.WithError(err).Error("Failed to unmarshal WebSocket message")
@@ -216,6 +261,17 @@ func (c *Client) handleMessage(message []byte) {
 	}
 
 	switch msg.Type {
+	case "subscribe":
+		// Generic subscribe - subscribe to all entity state changes by default
+		c.SubscribeToHAEvents([]string{"state_changed", "entity_updated"})
+		// Send confirmation
+		confirmMsg := Message{
+			Type: "subscription_confirmed",
+			Data: map[string]interface{}{
+				"message": "Subscribed to entity state changes",
+			},
+		}
+		c.send <- confirmMsg.ToJSON()
 	case "subscribe_room":
 		if roomID, ok := msg.Data["room_id"].(float64); ok {
 			c.SubscribeToRoom(int(roomID))

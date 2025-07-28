@@ -162,8 +162,11 @@ func (s *Service) startTracking() {
 		for {
 			select {
 			case <-s.updateTicker.C:
+				s.logger.Debug("Energy tracking tick - starting update")
 				if err := s.updateEnergyData(); err != nil {
 					s.logger.WithError(err).Error("Failed to update energy data")
+				} else {
+					s.logger.Debug("Energy tracking tick - update completed successfully")
 				}
 			case <-s.stopChan:
 				s.logger.Info("Stopping energy tracking")
@@ -238,6 +241,7 @@ func (s *Service) getEntities() (map[string]interface{}, error) {
 	s.cacheMutex.RLock()
 	if time.Now().Before(s.cacheExpiry) && len(s.entityCache) > 0 {
 		defer s.cacheMutex.RUnlock()
+		s.logger.Debug("Using cached entities")
 		return s.entityCache, nil
 	}
 	s.cacheMutex.RUnlock()
@@ -246,11 +250,15 @@ func (s *Service) getEntities() (map[string]interface{}, error) {
 	s.cacheMutex.Lock()
 	defer s.cacheMutex.Unlock()
 
+	s.logger.Debug("Cache expired, refreshing entities from database")
 	ctx := context.Background()
 	entities, err := s.entityRepo.GetAll(ctx)
 	if err != nil {
+		s.logger.WithError(err).Error("Failed to get entities from database")
 		return nil, fmt.Errorf("failed to get entities: %w", err)
 	}
+
+	s.logger.WithField("entity_count", len(entities)).Debug("Retrieved entities from database")
 
 	// Convert to map and parse attributes
 	entityMap := make(map[string]interface{})

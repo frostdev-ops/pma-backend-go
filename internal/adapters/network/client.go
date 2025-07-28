@@ -64,7 +64,7 @@ type SystemStatus struct {
 	Service   string `json:"service"`
 	Version   string `json:"version"`
 	Timestamp string `json:"timestamp"`
-	Uptime    string `json:"uptime"`
+	Uptime    int64  `json:"uptime"`
 }
 
 // GetSystemStatus retrieves the system status

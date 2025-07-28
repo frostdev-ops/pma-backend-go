@@ -1,0 +1,1 @@
+{"success":false,"error":"Endpoint not found: GET /debug/pprof/goroutine","code":404,"timestamp":"2025-07-26T17:58:04Z","request":{"method":"GET","path":"/debug/pprof/goroutine"}}

@@ -31,7 +31,12 @@ type BuildInfo struct {
 // GetVersion returns the current version
 func GetVersion() string {
 	if Version == "dev" {
-		return fmt.Sprintf("dev-%s", GitCommit[:8])
+		if len(GitCommit) >= 8 {
+			return fmt.Sprintf("dev-%s", GitCommit[:8])
+		} else if len(GitCommit) > 0 {
+			return fmt.Sprintf("dev-%s", GitCommit)
+		}
+		return "dev-unknown"
 	}
 	return Version
 }

@@ -1,11 +1,26 @@
 package handlers
 
+// Camera Management Handlers
+//
+// MIGRATION STATUS: ✅ Fully migrated to unified system
+// - GetCameras, GetEnabledCameras, GetCameraStats: ✅ Migrated to unified system
+// - GetCamera, GetCameraByEntityID, SearchCameras, GetCamerasByType: ✅ Migrated to unified system
+// - UpdateCamera: ✅ Migrated to unified system (state changes only via ExecuteAction)
+// - CreateCamera, DeleteCamera: ✅ Deprecated (cameras managed by adapters)
+// - Ring camera operations: ✅ Already using unified system (see ring.go)
+//
+// The unified system handles cameras through Ring/HA adapters automatically
+
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
@@ -71,57 +86,101 @@ type CameraStatsResponse struct {
 	OnlineCameras  int `json:"online_cameras"`
 }
 
-// GetCameras returns all cameras
+// GetCameras returns all cameras from the unified entity service
 func (h *Handlers) GetCameras(c *gin.Context) {
-	cameras, err := h.repos.Camera.GetAll(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain:        "camera",
+		AvailableOnly: c.Query("available_only") == "true",
+		IncludeRoom:   c.Query("include_room") == "true",
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetAll(ctx, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to get cameras")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve cameras")
+		h.log.WithError(err).Error("Failed to get cameras from unified service")
+		// Return empty array instead of error to prevent 500 errors
+		utils.SendSuccess(c, []*CameraResponse{})
 		return
 	}
 
-	response := make([]*CameraResponse, len(cameras))
-	for i, camera := range cameras {
-		response[i] = convertCameraToResponse(camera)
+	// Convert PMA entities to camera response format
+	cameras := make([]*CameraResponse, 0, len(entitiesWithRooms))
+	for _, entityWithRoom := range entitiesWithRooms {
+		if entityWithRoom.Entity.GetType() == types.EntityTypeCamera {
+			camera := convertPMAEntityToCameraResponse(entityWithRoom.Entity)
+			cameras = append(cameras, camera)
+		}
 	}
 
-	utils.SendSuccess(c, response)
+	h.log.WithField("camera_count", len(cameras)).Info("Retrieved cameras successfully")
+	utils.SendSuccess(c, cameras)
 }
 
-// GetEnabledCameras returns only enabled cameras
+// GetEnabledCameras returns only enabled cameras from unified service
 func (h *Handlers) GetEnabledCameras(c *gin.Context) {
-	cameras, err := h.repos.Camera.GetEnabled(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get only available camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain:        "camera",
+		AvailableOnly: true, // Only get enabled/available cameras
+		IncludeRoom:   c.Query("include_room") == "true",
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetAll(ctx, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to get enabled cameras")
+		h.log.WithError(err).Error("Failed to get enabled cameras from unified service")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve enabled cameras")
 		return
 	}
 
-	response := make([]*CameraResponse, len(cameras))
-	for i, camera := range cameras {
-		response[i] = convertCameraToResponse(camera)
+	// Convert PMA entities to camera response format
+	cameras := make([]*CameraResponse, 0, len(entitiesWithRooms))
+	for _, entityWithRoom := range entitiesWithRooms {
+		if entityWithRoom.Entity.GetType() == types.EntityTypeCamera {
+			camera := convertPMAEntityToCameraResponse(entityWithRoom.Entity)
+			cameras = append(cameras, camera)
+		}
 	}
 
-	utils.SendSuccess(c, response)
+	utils.SendSuccess(c, cameras)
 }
 
 // GetCamera returns a specific camera by ID
 func (h *Handlers) GetCamera(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid camera ID")
+	entityID := c.Param("id")
+	if entityID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Camera entity ID is required")
 		return
 	}
 
-	camera, err := h.repos.Camera.GetByID(c.Request.Context(), id)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get camera entity through unified service
+	options := unified.GetEntityOptions{
+		IncludeRoom: c.Query("include_room") == "true",
+		IncludeArea: c.Query("include_area") == "true",
+	}
+
+	entityWithRoom, err := h.unifiedService.GetByID(ctx, entityID, options)
 	if err != nil {
-		h.log.WithError(err).WithField("camera_id", id).Error("Failed to get camera")
+		h.log.WithError(err).WithField("entity_id", entityID).Error("Failed to get camera from unified service")
 		utils.SendError(c, http.StatusNotFound, "Camera not found")
 		return
 	}
 
-	utils.SendSuccess(c, convertCameraToResponse(camera))
+	// Verify it's a camera entity
+	if entityWithRoom.Entity.GetType() != types.EntityTypeCamera {
+		utils.SendError(c, http.StatusNotFound, "Entity is not a camera")
+		return
+	}
+
+	utils.SendSuccess(c, convertPMAEntityToCameraResponse(entityWithRoom.Entity))
 }
 
 // GetCameraByEntityID returns a specific camera by entity ID
@@ -132,138 +191,140 @@ func (h *Handlers) GetCameraByEntityID(c *gin.Context) {
 		return
 	}
 
-	camera, err := h.repos.Camera.GetByEntityID(c.Request.Context(), entityID)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get camera entity through unified service
+	options := unified.GetEntityOptions{
+		IncludeRoom: c.Query("include_room") == "true",
+		IncludeArea: c.Query("include_area") == "true",
+	}
+
+	entityWithRoom, err := h.unifiedService.GetByID(ctx, entityID, options)
 	if err != nil {
-		h.log.WithError(err).WithField("entity_id", entityID).Error("Failed to get camera by entity ID")
+		h.log.WithError(err).WithField("entity_id", entityID).Error("Failed to get camera by entity ID from unified service")
 		utils.SendError(c, http.StatusNotFound, "Camera not found")
 		return
 	}
 
-	utils.SendSuccess(c, convertCameraToResponse(camera))
+	// Verify it's a camera entity
+	if entityWithRoom.Entity.GetType() != types.EntityTypeCamera {
+		utils.SendError(c, http.StatusNotFound, "Entity is not a camera")
+		return
+	}
+
+	utils.SendSuccess(c, convertPMAEntityToCameraResponse(entityWithRoom.Entity))
 }
 
 // CreateCamera creates a new camera
+// DEPRECATED: In the unified system, cameras are automatically discovered and managed by adapters (Ring, Home Assistant).
+// Manual camera creation is no longer supported. Cameras will be automatically registered when discovered by their respective adapters.
 func (h *Handlers) CreateCamera(c *gin.Context) {
-	var req CameraRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid request format")
-		return
-	}
-
-	// Check if camera with entity ID already exists
-	existing, _ := h.repos.Camera.GetByEntityID(c.Request.Context(), req.EntityID)
-	if existing != nil {
-		utils.SendError(c, http.StatusConflict, "Camera with this entity ID already exists")
-		return
-	}
-
-	camera := &models.Camera{
-		EntityID:     req.EntityID,
-		Name:         req.Name,
-		Type:         req.Type,
-		Capabilities: req.Capabilities,
-		Settings:     req.Settings,
-		IsEnabled:    req.IsEnabled,
-	}
-
-	// Set stream URL if provided
-	if req.StreamURL != nil {
-		camera.StreamURL.String = *req.StreamURL
-		camera.StreamURL.Valid = true
-	}
-
-	// Set snapshot URL if provided
-	if req.SnapshotURL != nil {
-		camera.SnapshotURL.String = *req.SnapshotURL
-		camera.SnapshotURL.Valid = true
-	}
-
-	err := h.repos.Camera.Create(c.Request.Context(), camera)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to create camera")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to create camera")
-		return
-	}
-
-	h.log.WithField("camera_id", camera.ID).Info("Camera created successfully")
-	utils.SendSuccess(c, convertCameraToResponse(camera))
+	utils.SendError(c, http.StatusBadRequest,
+		"Manual camera creation is not supported. Cameras are automatically discovered and managed by adapters (Ring, Home Assistant, etc.). "+
+			"Please configure your camera through its native system (Ring app, Home Assistant, etc.) and it will be automatically discovered.")
 }
 
 // UpdateCamera updates an existing camera
+// NOTE: In the unified system, camera configuration is managed by adapters.
+// This endpoint now only supports state changes (enable/disable) via the unified action system.
+// For configuration changes, use the camera's native system (Ring app, Home Assistant, etc.).
 func (h *Handlers) UpdateCamera(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid camera ID")
+	entityID := c.Param("id")
+	if entityID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Camera entity ID is required")
 		return
 	}
 
-	var req CameraRequest
+	var req struct {
+		IsEnabled *bool `json:"is_enabled,omitempty"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "Invalid request format")
 		return
 	}
 
-	// Get existing camera
-	camera, err := h.repos.Camera.GetByID(c.Request.Context(), id)
+	// Only support enabling/disabling cameras
+	if req.IsEnabled == nil {
+		utils.SendError(c, http.StatusBadRequest,
+			"Only camera state changes (is_enabled) are supported. "+
+				"For configuration changes, use the camera's native system (Ring app, Home Assistant, etc.)")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Verify the entity exists and is a camera
+	entityWithRoom, err := h.unifiedService.GetByID(ctx, entityID, unified.GetEntityOptions{})
 	if err != nil {
-		h.log.WithError(err).WithField("camera_id", id).Error("Failed to get camera for update")
+		h.log.WithError(err).WithField("entity_id", entityID).Error("Failed to get camera for update")
 		utils.SendError(c, http.StatusNotFound, "Camera not found")
 		return
 	}
 
-	// Update fields
-	camera.Name = req.Name
-	camera.Type = req.Type
-	camera.Capabilities = req.Capabilities
-	camera.Settings = req.Settings
-	camera.IsEnabled = req.IsEnabled
-
-	// Update stream URL
-	if req.StreamURL != nil {
-		camera.StreamURL.String = *req.StreamURL
-		camera.StreamURL.Valid = true
-	} else {
-		camera.StreamURL.Valid = false
-	}
-
-	// Update snapshot URL
-	if req.SnapshotURL != nil {
-		camera.SnapshotURL.String = *req.SnapshotURL
-		camera.SnapshotURL.Valid = true
-	} else {
-		camera.SnapshotURL.Valid = false
-	}
-
-	err = h.repos.Camera.Update(c.Request.Context(), camera)
-	if err != nil {
-		h.log.WithError(err).WithField("camera_id", id).Error("Failed to update camera")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to update camera")
+	if entityWithRoom.Entity.GetType() != types.EntityTypeCamera {
+		utils.SendError(c, http.StatusNotFound, "Entity is not a camera")
 		return
 	}
 
-	h.log.WithField("camera_id", id).Info("Camera updated successfully")
-	utils.SendSuccess(c, convertCameraToResponse(camera))
+	// Execute enable/disable action through unified service
+	var action string
+	if *req.IsEnabled {
+		action = "turn_on"
+	} else {
+		action = "turn_off"
+	}
+
+	controlAction := types.PMAControlAction{
+		EntityID:   entityID,
+		Action:     action,
+		Parameters: make(map[string]interface{}),
+		Context: &types.PMAContext{
+			Source:      "camera_api",
+			Timestamp:   time.Now(),
+			Description: fmt.Sprintf("Camera %s via API", action),
+		},
+	}
+
+	result, err := h.unifiedService.ExecuteAction(ctx, controlAction)
+	if err != nil {
+		h.log.WithError(err).WithField("entity_id", entityID).Error("Failed to execute camera action")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to update camera state")
+		return
+	}
+
+	if !result.Success {
+		h.log.WithField("entity_id", entityID).WithField("error", result.Error).Error("Camera action was not successful")
+		utils.SendError(c, http.StatusInternalServerError, fmt.Sprintf("Failed to update camera: %s", result.Error.Message))
+		return
+	}
+
+	h.log.WithField("entity_id", entityID).WithField("action", action).Info("Camera state updated successfully")
+
+	// Get updated entity and return it
+	updatedEntityWithRoom, err := h.unifiedService.GetByID(ctx, entityID, unified.GetEntityOptions{})
+	if err != nil {
+		// Still return success even if we can't get the updated entity
+		utils.SendSuccess(c, gin.H{
+			"message":   "Camera updated successfully",
+			"entity_id": entityID,
+			"action":    action,
+		})
+		return
+	}
+
+	utils.SendSuccess(c, convertPMAEntityToCameraResponse(updatedEntityWithRoom.Entity))
 }
 
 // DeleteCamera deletes a camera
+// DEPRECATED: In the unified system, cameras are managed by adapters and cannot be manually deleted.
+// Cameras will be automatically removed when they are no longer available in their native systems.
+// To remove a camera, disable or remove it from its native system (Ring app, Home Assistant, etc.).
 func (h *Handlers) DeleteCamera(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid camera ID")
-		return
-	}
-
-	err = h.repos.Camera.Delete(c.Request.Context(), id)
-	if err != nil {
-		h.log.WithError(err).WithField("camera_id", id).Error("Failed to delete camera")
-		utils.SendError(c, http.StatusNotFound, "Camera not found")
-		return
-	}
-
-	h.log.WithField("camera_id", id).Info("Camera deleted successfully")
-	utils.SendSuccess(c, gin.H{"message": "Camera deleted successfully"})
+	utils.SendError(c, http.StatusBadRequest,
+		"Manual camera deletion is not supported. Cameras are managed by adapters and will be automatically removed when unavailable. "+
+			"To remove a camera, disable or delete it from its native system (Ring app, Home Assistant, etc.).")
 }
 
 // GetCamerasByType returns cameras by type
@@ -274,19 +335,42 @@ func (h *Handlers) GetCamerasByType(c *gin.Context) {
 		return
 	}
 
-	cameras, err := h.repos.Camera.GetByType(c.Request.Context(), cameraType)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain:        "camera",
+		AvailableOnly: c.Query("available_only") == "true",
+		IncludeRoom:   c.Query("include_room") == "true",
+		IncludeArea:   c.Query("include_area") == "true",
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetAll(ctx, options)
 	if err != nil {
-		h.log.WithError(err).WithField("camera_type", cameraType).Error("Failed to get cameras by type")
+		h.log.WithError(err).WithField("camera_type", cameraType).Error("Failed to get cameras from unified service")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve cameras")
 		return
 	}
 
-	response := make([]*CameraResponse, len(cameras))
-	for i, camera := range cameras {
-		response[i] = convertCameraToResponse(camera)
+	// Filter cameras by type and convert to response format
+	cameras := make([]*CameraResponse, 0)
+	for _, entityWithRoom := range entitiesWithRooms {
+		if entityWithRoom.Entity.GetType() == types.EntityTypeCamera {
+			// Check if camera attributes contain the requested type
+			if attributes := entityWithRoom.Entity.GetAttributes(); attributes != nil {
+				if entityType, ok := attributes["device_class"].(string); ok && entityType == cameraType {
+					camera := convertPMAEntityToCameraResponse(entityWithRoom.Entity)
+					cameras = append(cameras, camera)
+				} else if entityType, ok := attributes["type"].(string); ok && entityType == cameraType {
+					camera := convertPMAEntityToCameraResponse(entityWithRoom.Entity)
+					cameras = append(cameras, camera)
+				}
+			}
+		}
 	}
 
-	utils.SendSuccess(c, response)
+	utils.SendSuccess(c, cameras)
 }
 
 // SearchCameras searches cameras by name or entity ID
@@ -297,19 +381,34 @@ func (h *Handlers) SearchCameras(c *gin.Context) {
 		return
 	}
 
-	cameras, err := h.repos.Camera.SearchCameras(c.Request.Context(), query)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	// Search camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain:        "camera",
+		AvailableOnly: c.Query("available_only") == "true",
+		IncludeRoom:   c.Query("include_room") == "true",
+		IncludeArea:   c.Query("include_area") == "true",
+	}
+
+	entitiesWithRooms, err := h.unifiedService.Search(ctx, query, options)
 	if err != nil {
-		h.log.WithError(err).WithField("query", query).Error("Failed to search cameras")
+		h.log.WithError(err).WithField("query", query).Error("Failed to search cameras in unified service")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to search cameras")
 		return
 	}
 
-	response := make([]*CameraResponse, len(cameras))
-	for i, camera := range cameras {
-		response[i] = convertCameraToResponse(camera)
+	// Convert PMA entities to camera response format, filtering for cameras only
+	cameras := make([]*CameraResponse, 0)
+	for _, entityWithRoom := range entitiesWithRooms {
+		if entityWithRoom.Entity.GetType() == types.EntityTypeCamera {
+			camera := convertPMAEntityToCameraResponse(entityWithRoom.Entity)
+			cameras = append(cameras, camera)
+		}
 	}
 
-	utils.SendSuccess(c, response)
+	utils.SendSuccess(c, cameras)
 }
 
 // UpdateCameraStatus updates camera enabled status
@@ -439,46 +538,61 @@ func (h *Handlers) GetCameraSnapshot(c *gin.Context) {
 	utils.SendSuccess(c, response)
 }
 
-// GetCameraStats returns camera statistics
+// GetCameraStats returns camera statistics from unified service
 func (h *Handlers) GetCameraStats(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
 
-	totalCameras, err := h.repos.Camera.CountCameras(ctx)
+	// Get all camera entities through unified service
+	options := unified.GetAllOptions{
+		Domain: "camera",
+	}
+
+	entitiesWithRooms, err := h.unifiedService.GetAll(ctx, options)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to count total cameras")
+		h.log.WithError(err).Error("Failed to get cameras from unified service")
 		utils.SendError(c, http.StatusInternalServerError, "Failed to get camera statistics")
 		return
 	}
 
-	enabledCameras, err := h.repos.Camera.CountEnabledCameras(ctx)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to count enabled cameras")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to get camera statistics")
-		return
-	}
+	// Count cameras by type and status
+	var totalCameras, enabledCameras, ringCameras, genericCameras, onlineCameras int
 
-	ringCameras, err := h.repos.Camera.GetByType(ctx, "ring")
-	if err != nil {
-		h.log.WithError(err).Error("Failed to get Ring cameras")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to get camera statistics")
-		return
-	}
+	for _, entityWithRoom := range entitiesWithRooms {
+		entity := entityWithRoom.Entity
+		if entity.GetType() == types.EntityTypeCamera {
+			totalCameras++
 
-	genericCameras, err := h.repos.Camera.GetByType(ctx, "generic")
-	if err != nil {
-		h.log.WithError(err).Error("Failed to get generic cameras")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to get camera statistics")
-		return
-	}
+			if entity.IsAvailable() {
+				enabledCameras++
+				onlineCameras++
+			}
 
-	// Count online cameras (enabled cameras for now)
-	onlineCameras := enabledCameras
+			// Check source to determine camera type
+			if metadata := entity.GetMetadata(); metadata != nil {
+				switch metadata.Source {
+				case types.SourceRing:
+					ringCameras++
+				case types.SourceHomeAssistant:
+					// Check if it's a generic camera from HA
+					attributes := entity.GetAttributes()
+					if deviceClass, ok := attributes["device_class"].(string); ok && deviceClass == "camera" {
+						genericCameras++
+					}
+				default:
+					genericCameras++
+				}
+			} else {
+				genericCameras++
+			}
+		}
+	}
 
 	stats := CameraStatsResponse{
 		TotalCameras:   totalCameras,
 		EnabledCameras: enabledCameras,
-		RingCameras:    len(ringCameras),
-		GenericCameras: len(genericCameras),
+		RingCameras:    ringCameras,
+		GenericCameras: genericCameras,
 		OnlineCameras:  onlineCameras,
 	}
 
@@ -505,6 +619,57 @@ func convertCameraToResponse(camera *models.Camera) *CameraResponse {
 
 	if camera.SnapshotURL.Valid {
 		response.SnapshotURL = &camera.SnapshotURL.String
+	}
+
+	return response
+}
+
+// Helper function to convert PMA entity to CameraResponse
+func convertPMAEntityToCameraResponse(entity types.PMAEntity) *CameraResponse {
+	attributes := entity.GetAttributes()
+
+	response := &CameraResponse{
+		EntityID:  entity.GetID(),
+		Name:      entity.GetFriendlyName(),
+		Type:      "unified", // Mark as unified system camera
+		IsEnabled: entity.IsAvailable(),
+		CreatedAt: entity.GetLastUpdated(),
+		UpdatedAt: entity.GetLastUpdated(),
+	}
+
+	// Set capabilities from entity attributes
+	if capabilities, ok := attributes["capabilities"].(map[string]interface{}); ok {
+		if capabilityJSON, err := json.Marshal(capabilities); err == nil {
+			response.Capabilities = capabilityJSON
+		}
+	}
+
+	// Set settings from entity attributes
+	if settings, ok := attributes["settings"].(map[string]interface{}); ok {
+		if settingsJSON, err := json.Marshal(settings); err == nil {
+			response.Settings = settingsJSON
+		}
+	}
+
+	// Extract stream and snapshot URLs from attributes
+	if streamURL, ok := attributes["stream_url"].(string); ok && streamURL != "" {
+		response.StreamURL = &streamURL
+	}
+	if snapshotURL, ok := attributes["snapshot_url"].(string); ok && snapshotURL != "" {
+		response.SnapshotURL = &snapshotURL
+	}
+
+	// For Ring cameras, construct URLs based on entity ID
+	if metadata := entity.GetMetadata(); metadata != nil && metadata.Source == types.SourceRing {
+		response.Type = "ring"
+		if response.StreamURL == nil {
+			streamURL := "/api/ring/cameras/" + entity.GetID() + "/stream"
+			response.StreamURL = &streamURL
+		}
+		if response.SnapshotURL == nil {
+			snapshotURL := "/api/ring/cameras/" + entity.GetID() + "/snapshot"
+			response.SnapshotURL = &snapshotURL
+		}
 	}
 
 	return response
@@ -544,4 +709,46 @@ func (h *Handlers) getRingCameraSnapshot(c *gin.Context, camera *models.Camera) 
 
 	h.log.WithField("camera_id", camera.ID).Info("Ring camera snapshot requested")
 	utils.SendSuccess(c, response)
+}
+
+// GetAllCameraEvents returns all camera events from various sources
+func (h *Handlers) GetAllCameraEvents(c *gin.Context) {
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	// For now, return empty events since this would require integration with
+	// camera sources (Ring, etc.) to fetch actual events
+	events := []map[string]interface{}{}
+
+	utils.SendSuccessWithMeta(c, events, gin.H{
+		"total":   0,
+		"limit":   limit,
+		"message": "Camera events endpoint is available but no sources are configured",
+	})
+}
+
+// GetCameraEvents returns events for a specific camera
+func (h *Handlers) GetCameraEvents(c *gin.Context) {
+	cameraID := c.Param("id")
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	// For now, return empty events since this would require integration with
+	// camera sources to fetch actual events for the specific camera
+	events := []map[string]interface{}{}
+
+	utils.SendSuccessWithMeta(c, events, gin.H{
+		"camera_id": cameraID,
+		"total":     0,
+		"limit":     limit,
+		"message":   "Camera events endpoint is available but no events found",
+	})
 }

@@ -235,6 +235,14 @@ func (m *LLMManager) GetProviders(ctx context.Context) []ProviderStatus {
 	return statuses
 }
 
+// GetProvider returns a specific provider by name
+func (m *LLMManager) GetProvider(name string) LLMProvider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.providersByName[name]
+}
+
 // GetModels returns all available models from all providers
 func (m *LLMManager) GetModels(ctx context.Context) ([]ModelInfo, error) {
 	m.mu.RLock()
@@ -310,15 +318,43 @@ func (m *LLMManager) RegisterProviderFactory(providerType string, factory Provid
 	m.providerFactories[providerType] = factory
 }
 
+// ReinitializeProviders re-initializes providers from config using registered factories
+func (m *LLMManager) ReinitializeProviders(cfg *config.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Clear existing providers
+	m.providers = make([]LLMProvider, 0)
+	m.providersByName = make(map[string]LLMProvider)
+	m.circuitBreaker = make(map[string]*CircuitBreaker)
+
+	// Re-run provider initialization with current factories
+	return m.initializeProviders(cfg.AI.Providers, m.logger)
+}
+
 // Private methods
 
 func (m *LLMManager) initializeProviders(providerConfigs []config.AIProviderConfig, logger *logrus.Logger) error {
+	logger.WithField("count", len(providerConfigs)).Info("DEBUG: Starting provider initialization")
+	logger.WithField("factories", len(m.providerFactories)).Info("DEBUG: Available factories")
+
 	// Sort providers by priority
 	sort.Slice(providerConfigs, func(i, j int) bool {
 		return providerConfigs[i].Priority < providerConfigs[j].Priority
 	})
 
-	for _, cfg := range providerConfigs {
+	for i, cfg := range providerConfigs {
+		logger.WithFields(logrus.Fields{
+			"index":         i,
+			"type":          cfg.Type,
+			"enabled":       cfg.Enabled,
+			"url":           cfg.URL,
+			"api_key":       cfg.APIKey,
+			"default_model": cfg.DefaultModel,
+			"priority":      cfg.Priority,
+			"auto_start":    cfg.AutoStart,
+		}).Info("DEBUG: Processing provider config")
+
 		if !cfg.Enabled {
 			logger.WithField("provider", cfg.Type).Debug("Provider disabled, skipping")
 			continue
@@ -328,15 +364,16 @@ func (m *LLMManager) initializeProviders(providerConfigs []config.AIProviderConf
 
 		// Use factory if available
 		if factory, exists := m.providerFactories[cfg.Type]; exists {
+			logger.WithField("type", cfg.Type).Info("DEBUG: Creating provider with factory")
 			provider = factory(cfg, logger)
 		} else {
 			// For now, we'll skip unknown providers until we register the factories
-			logger.WithField("type", cfg.Type).Info("Provider factory not registered, will be registered later")
+			logger.WithField("type", cfg.Type).Warn("DEBUG: Provider factory not registered")
 			continue
 		}
 
 		if provider == nil {
-			logger.WithField("provider", cfg.Type).Warn("Failed to create provider")
+			logger.WithField("provider", cfg.Type).Error("DEBUG: Failed to create provider - provider is nil")
 			continue
 		}
 
@@ -346,9 +383,10 @@ func (m *LLMManager) initializeProviders(providerConfigs []config.AIProviderConf
 			state: CircuitClosed,
 		}
 
-		logger.WithField("provider", provider.GetName()).Info("Provider registered")
+		logger.WithField("provider", provider.GetName()).Info("DEBUG: Provider registered successfully")
 	}
 
+	logger.WithField("total_providers", len(m.providers)).Info("DEBUG: Provider initialization complete")
 	// We'll allow empty providers for now since factories will be registered later
 	return nil
 }

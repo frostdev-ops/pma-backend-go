@@ -4,8 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/adapters/homeassistant"
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/gin-gonic/gin"
@@ -14,10 +19,12 @@ import (
 
 // Service provides area management business logic
 type Service struct {
-	areaRepo   repositories.AreaRepository
-	roomRepo   repositories.RoomRepository
-	entityRepo repositories.EntityRepository
-	logger     *logrus.Logger
+	areaRepo       repositories.AreaRepository
+	roomRepo       repositories.RoomRepository
+	entityRepo     repositories.EntityRepository
+	unifiedService *unified.UnifiedEntityService
+	logger         *logrus.Logger
+	config         *config.Config // Added for Home Assistant configuration
 }
 
 // NewService creates a new area management service
@@ -25,13 +32,17 @@ func NewService(
 	areaRepo repositories.AreaRepository,
 	roomRepo repositories.RoomRepository,
 	entityRepo repositories.EntityRepository,
+	unifiedService *unified.UnifiedEntityService,
 	logger *logrus.Logger,
+	config *config.Config,
 ) *Service {
 	return &Service{
-		areaRepo:   areaRepo,
-		roomRepo:   roomRepo,
-		entityRepo: entityRepo,
-		logger:     logger,
+		areaRepo:       areaRepo,
+		roomRepo:       roomRepo,
+		entityRepo:     entityRepo,
+		unifiedService: unifiedService,
+		logger:         logger,
+		config:         config,
 	}
 }
 
@@ -178,7 +189,8 @@ func (s *Service) GetAllAreas(ctx context.Context, includeInactive bool, buildHi
 	roomCounts, _ := s.areaRepo.GetRoomCountsByArea(ctx)
 
 	// Convert to AreaWithChildren for consistency
-	var result []*models.AreaWithChildren
+	// Initialize as empty slice to ensure JSON returns [] instead of null
+	result := make([]*models.AreaWithChildren, 0)
 	for _, area := range areas {
 		areaWithChildren := &models.AreaWithChildren{
 			Area:        *area,
@@ -795,78 +807,215 @@ func (s *Service) syncWithHomeAssistant(ctx context.Context, syncLog *models.Are
 
 	startTime := time.Now()
 	var processedAreas []string
-
-	// Note: This is a simplified implementation that demonstrates the synchronization flow
-	// A full implementation would require deeper integration with the unified entity service
-	
-	s.logger.Info("Performing Home Assistant area synchronization")
-	
-	// Simulate processing common areas that might exist in Home Assistant
-	commonAreas := []string{"living_room", "kitchen", "bedroom", "bathroom", "office"}
 	areasCreated := 0
 	areasUpdated := 0
 	areasDeleted := 0
-	
-	// Process areas based on sync type
-	for _, areaName := range commonAreas {
-		processedAreas = append(processedAreas, areaName)
-		s.logger.WithField("area_name", areaName).Debug("Processing area from Home Assistant")
-		
-		// Simulate different outcomes based on sync type and force sync
-		if req.SyncType == "full" {
-			if req.ForceSync {
-				areasUpdated++
-			} else {
-				// Some areas might be new, some updated
-				if len(processedAreas)%3 == 0 {
-					areasCreated++
-				} else {
+
+	// Check if we have Home Assistant configuration
+	if s.config == nil || s.config.HomeAssistant.URL == "" || s.config.HomeAssistant.Token == "" {
+		return fmt.Errorf("Home Assistant not configured - missing URL or token")
+	}
+
+	// Create Home Assistant client for area synchronization
+	haClient := homeassistant.NewHAClientWrapper(s.config, s.logger)
+
+	s.logger.Info("Connecting to Home Assistant and fetching areas")
+
+	// Fetch areas from Home Assistant (this will test the connection)
+	haAreas, err := haClient.GetAllAreas(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch areas from Home Assistant: %w", err)
+	}
+
+	s.logger.WithField("ha_areas_count", len(haAreas)).Info("Retrieved areas from Home Assistant")
+
+	// Get existing area mappings for Home Assistant
+	existingMappings, err := s.areaRepo.GetAreaMappingsBySystem(ctx, models.ExternalSystemHomeAssistant)
+	if err != nil {
+		return fmt.Errorf("failed to get existing HA area mappings: %w", err)
+	}
+
+	// Create lookup map for existing mappings
+	mappingLookup := make(map[string]*models.AreaMapping)
+	for _, mapping := range existingMappings {
+		mappingLookup[mapping.ExternalAreaID] = mapping
+	}
+
+	// Process each Home Assistant area
+	for _, haArea := range haAreas {
+		processedAreas = append(processedAreas, haArea.ID)
+
+		existingMapping, hasMapping := mappingLookup[haArea.ID]
+
+		if hasMapping {
+			// Update existing area
+			pmaArea, err := s.areaRepo.GetAreaByID(ctx, existingMapping.PMAAreaID)
+			if err != nil {
+				s.logger.WithError(err).WithField("ha_area_id", haArea.ID).Warn("Failed to get existing PMA area")
+				continue
+			}
+
+			if pmaArea != nil {
+				updated := false
+
+				// Check if name changed
+				if pmaArea.Name != haArea.Name {
+					pmaArea.Name = haArea.Name
+					updated = true
+				}
+
+				// Update icon if provided
+				if haArea.Icon != "" && (!pmaArea.Icon.Valid || pmaArea.Icon.String != haArea.Icon) {
+					pmaArea.Icon = sql.NullString{String: haArea.Icon, Valid: true}
+					updated = true
+				}
+
+				// Update aliases as description if provided
+				if len(haArea.Aliases) > 0 {
+					aliasDesc := strings.Join(haArea.Aliases, ", ")
+					if !pmaArea.Description.Valid || pmaArea.Description.String != aliasDesc {
+						pmaArea.Description = sql.NullString{String: aliasDesc, Valid: true}
+						updated = true
+					}
+				}
+
+				if updated || req.ForceSync {
+					if err := s.areaRepo.UpdateArea(ctx, pmaArea); err != nil {
+						s.logger.WithError(err).WithField("ha_area_id", haArea.ID).Warn("Failed to update area")
+						continue
+					}
 					areasUpdated++
+					s.logger.WithFields(logrus.Fields{
+						"ha_area_id":  haArea.ID,
+						"pma_area_id": pmaArea.ID,
+						"area_name":   pmaArea.Name,
+					}).Debug("Updated area from Home Assistant")
 				}
 			}
 		} else {
-			// Incremental sync - mostly updates
-			areasUpdated++
+			// Create new area and mapping
+			newArea := &models.Area{
+				Name:     haArea.Name,
+				AreaType: models.AreaTypeRoom, // Default to room type
+				IsActive: true,
+				AreaID:   sql.NullString{String: fmt.Sprintf("ha_%s", haArea.ID), Valid: true},
+			}
+
+			// Set icon if provided
+			if haArea.Icon != "" {
+				newArea.Icon = sql.NullString{String: haArea.Icon, Valid: true}
+			}
+
+			// Set description from aliases if provided
+			if len(haArea.Aliases) > 0 {
+				aliasDesc := strings.Join(haArea.Aliases, ", ")
+				newArea.Description = sql.NullString{String: aliasDesc, Valid: true}
+			}
+
+			// Set metadata with HA source information
+			metadata := map[string]interface{}{
+				"source":     "homeassistant",
+				"ha_area_id": haArea.ID,
+				"aliases":    haArea.Aliases,
+				"synced_at":  time.Now().Format(time.RFC3339),
+			}
+			if err := newArea.SetMetadataFromMap(metadata); err != nil {
+				s.logger.WithError(err).WithField("ha_area_id", haArea.ID).Warn("Failed to set area metadata")
+			}
+
+			// Create the area
+			if err := s.areaRepo.CreateArea(ctx, newArea); err != nil {
+				s.logger.WithError(err).WithField("ha_area_id", haArea.ID).Warn("Failed to create area")
+				continue
+			}
+
+			// Create area mapping
+			mapping := &models.AreaMapping{
+				PMAAreaID:      newArea.ID,
+				ExternalAreaID: haArea.ID,
+				ExternalSystem: models.ExternalSystemHomeAssistant,
+				MappingType:    models.MappingTypeDirect,
+				AutoSync:       true,
+				SyncPriority:   1,
+			}
+
+			if err := s.areaRepo.CreateAreaMapping(ctx, mapping); err != nil {
+				s.logger.WithError(err).WithField("ha_area_id", haArea.ID).Warn("Failed to create area mapping")
+				// Don't continue - we still created the area successfully
+			}
+
+			areasCreated++
+			s.logger.WithFields(logrus.Fields{
+				"ha_area_id":  haArea.ID,
+				"pma_area_id": newArea.ID,
+				"area_name":   newArea.Name,
+			}).Debug("Created new area from Home Assistant")
 		}
 	}
 
-	// Handle cleanup for full sync
-	if req.SyncType == "full" && !req.ForceSync {
-		// Simulate cleanup of areas that no longer exist
-		// In a real implementation, this would compare with actual HA areas
-		areasDeleted = 0 // No deletions in this simulation
+	// Handle cleanup for full sync - remove areas that no longer exist in HA
+	if req.SyncType == "full" {
+		haAreaIDs := make(map[string]bool)
+		for _, haArea := range haAreas {
+			haAreaIDs[haArea.ID] = true
+		}
+
+		for _, mapping := range existingMappings {
+			if !haAreaIDs[mapping.ExternalAreaID] {
+				// This area no longer exists in Home Assistant
+				if !req.ForceSync {
+					// Only delete if it's not force sync (safety measure)
+					s.logger.WithFields(logrus.Fields{
+						"ha_area_id":  mapping.ExternalAreaID,
+						"pma_area_id": mapping.PMAAreaID,
+					}).Info("Area no longer exists in Home Assistant - would be deleted in force sync")
+					continue
+				}
+
+				// Delete the area mapping and optionally the area
+				if err := s.areaRepo.DeleteAreaMapping(ctx, mapping.ID); err != nil {
+					s.logger.WithError(err).WithField("mapping_id", mapping.ID).Warn("Failed to delete area mapping")
+					continue
+				}
+
+				// Check if we should delete the area itself
+				// Only delete if it has no entities or child areas
+				entityCounts, _ := s.areaRepo.GetEntityCountsByArea(ctx)
+				roomCounts, _ := s.areaRepo.GetRoomCountsByArea(ctx)
+
+				if entityCounts[mapping.PMAAreaID] == 0 && roomCounts[mapping.PMAAreaID] == 0 {
+					if err := s.areaRepo.DeleteArea(ctx, mapping.PMAAreaID); err != nil {
+						s.logger.WithError(err).WithField("pma_area_id", mapping.PMAAreaID).Warn("Failed to delete orphaned area")
+					} else {
+						areasDeleted++
+						s.logger.WithField("pma_area_id", mapping.PMAAreaID).Debug("Deleted orphaned area")
+					}
+				}
+			}
+		}
 	}
 
 	duration := time.Since(startTime)
 
 	// Update sync log with results
-	syncLog.AreasProcessed = len(commonAreas)
+	syncLog.AreasProcessed = len(haAreas)
 	syncLog.AreasCreated = areasCreated
-	syncLog.AreasUpdated = areasUpdated  
+	syncLog.AreasUpdated = areasUpdated
 	syncLog.AreasDeleted = areasDeleted
 
 	// Clear any previous error message on successful sync
 	syncLog.ErrorMessage = sql.NullString{String: "", Valid: false}
 
-	s.logger.WithFields(map[string]interface{}{
-		"areas_processed": len(commonAreas),
-		"areas_created":   areasCreated,
-		"areas_updated":   areasUpdated,
-		"areas_deleted":   areasDeleted,
-		"duration":        duration.String(),
-		"sync_type":       req.SyncType,
-		"force_sync":      req.ForceSync,
-	}).Info("Home Assistant area synchronization completed")
-
 	// Set sync details
 	details := map[string]interface{}{
-		"sync_type":         req.SyncType,
-		"force_sync":        req.ForceSync,
-		"areas_synced":      processedAreas,
-		"duration":          duration.String(),
-		"sync_source":       "homeassistant",
-		"implementation":    "simplified",
-		"note":              "Full integration requires unified entity service connectivity",
+		"sync_type":      req.SyncType,
+		"force_sync":     req.ForceSync,
+		"areas_synced":   processedAreas,
+		"duration":       duration.String(),
+		"sync_source":    "homeassistant",
+		"ha_url":         s.config.HomeAssistant.URL,
+		"implementation": "full",
+		"ha_areas_found": len(haAreas),
 	}
 
 	if err := syncLog.SetSyncDetailsFromMap(details); err != nil {
@@ -877,7 +1026,9 @@ func (s *Service) syncWithHomeAssistant(ctx context.Context, syncLog *models.Are
 		"areas_processed": syncLog.AreasProcessed,
 		"areas_updated":   syncLog.AreasUpdated,
 		"areas_created":   syncLog.AreasCreated,
-	}).Info("Home Assistant synchronization completed")
+		"areas_deleted":   syncLog.AreasDeleted,
+		"duration":        duration.String(),
+	}).Info("Home Assistant area synchronization completed successfully")
 
 	return nil
 }
@@ -988,4 +1139,140 @@ func (s *Service) RemoveEntityFromArea(ctx context.Context, areaID int, entityID
 	}).Info("Entity removed from area")
 
 	return nil
+}
+
+// GetAreaWithFullHierarchy retrieves a complete area with all rooms and entities
+func (s *Service) GetAreaWithFullHierarchy(ctx context.Context, areaID int, includeEntities bool) (*models.AreaWithRoomsAndEntities, error) {
+	// Get the area
+	area, err := s.areaRepo.GetAreaByID(ctx, areaID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get area: %w", err)
+	}
+
+	// Get rooms in this area
+	var rooms []models.RoomWithEntities
+	if includeEntities {
+		rooms, err = s.roomRepo.GetRoomsWithEntities(ctx, &areaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get rooms with entities: %w", err)
+		}
+
+		// For each room, populate the entities
+		for i := range rooms {
+			entities, err := s.entityRepo.GetByRoom(ctx, rooms[i].ID)
+			if err != nil {
+				s.logger.WithError(err).WithField("room_id", rooms[i].ID).Warn("Failed to get entities for room")
+				continue
+			}
+
+			// Convert to SimpleEntity format
+			for _, entity := range entities {
+				simpleEntity := models.SimpleEntity{
+					EntityID:     entity.EntityID,
+					FriendlyName: entity.FriendlyName.String,
+					Domain:       entity.Domain,
+					State:        entity.State.String,
+				}
+				if entity.RoomID.Valid {
+					roomID := int(entity.RoomID.Int64)
+					simpleEntity.RoomID = &roomID
+				}
+				rooms[i].Entities = append(rooms[i].Entities, simpleEntity)
+			}
+		}
+	} else {
+		rooms, err = s.roomRepo.GetRoomsWithEntities(ctx, &areaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get rooms: %w", err)
+		}
+	}
+
+	result := &models.AreaWithRoomsAndEntities{
+		Area:  *area,
+		Rooms: rooms,
+	}
+
+	return result, nil
+}
+
+// ExecuteBulkAction performs a bulk action on all entities within an area
+func (s *Service) ExecuteBulkAction(ctx context.Context, req *models.BulkAreaAction) (*models.BulkAreaActionResult, error) {
+	startTime := time.Now()
+
+	// Get entities that match the filters
+	entities, err := s.areaRepo.GetAreaEntitiesForBulkAction(ctx, req.AreaID, req.Filters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get entities for bulk action: %w", err)
+	}
+
+	result := &models.BulkAreaActionResult{
+		AreaID:        req.AreaID,
+		TotalEntities: len(entities),
+		Results:       make([]models.EntityActionResult, 0, len(entities)),
+	}
+
+	// Execute action on each entity
+	for _, entity := range entities {
+		entityResult := models.EntityActionResult{
+			EntityID: entity.EntityID,
+			Success:  false,
+		}
+
+		// Execute the action on this entity through the unified service
+		if s.unifiedService != nil {
+			// Create PMA control action
+			action := types.PMAControlAction{
+				Action:     req.Action,
+				Parameters: req.Parameters,
+				EntityID:   entity.EntityID,
+				Context: &types.PMAContext{
+					Source:      "bulk_action",
+					Timestamp:   time.Now(),
+					Description: fmt.Sprintf("Bulk action %s on area %d", req.Action, req.AreaID),
+				},
+			}
+
+			// Execute action through unified service
+			controlResult, err := s.unifiedService.ExecuteAction(ctx, action)
+			if err != nil {
+				entityResult.Error = err.Error()
+				s.logger.WithError(err).WithFields(logrus.Fields{
+					"entity_id": entity.EntityID,
+					"action":    req.Action,
+					"area_id":   req.AreaID,
+				}).Warn("Failed to execute bulk action on entity")
+			} else if controlResult != nil && controlResult.Success {
+				entityResult.Success = true
+				s.logger.WithFields(logrus.Fields{
+					"entity_id": entity.EntityID,
+					"action":    req.Action,
+					"area_id":   req.AreaID,
+				}).Info("Successfully executed bulk action on entity")
+			} else {
+				if controlResult != nil && controlResult.Error != nil {
+					entityResult.Error = controlResult.Error.Message
+				} else {
+					entityResult.Error = "Unknown error during action execution"
+				}
+			}
+		} else {
+			entityResult.Error = "Unified entity service not available"
+		}
+
+		result.Results = append(result.Results, entityResult)
+
+		if entityResult.Success {
+			result.SuccessCount++
+		} else {
+			result.FailureCount++
+		}
+	}
+
+	result.ExecutionTimeMs = time.Since(startTime).Milliseconds()
+
+	// Record analytics
+	s.recordAreaMetric(ctx, req.AreaID, "bulk_action_executed", float64(result.TotalEntities), "count", "snapshot")
+	s.recordAreaMetric(ctx, req.AreaID, "bulk_action_success_rate", float64(result.SuccessCount)/float64(result.TotalEntities)*100, "percentage", "snapshot")
+
+	return result, nil
 }

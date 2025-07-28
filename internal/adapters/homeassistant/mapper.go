@@ -492,4 +492,4 @@ func (m *StateMapper) ValidateAction(action types.PMAControlAction) error {
 	}
 
 	return fmt.Errorf("action '%s' is not supported for domain '%s'", action.Action, domain)
-} 
+}

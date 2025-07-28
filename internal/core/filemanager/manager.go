@@ -58,14 +58,14 @@ type FileFilter struct {
 
 // StorageStats contains storage usage statistics
 type StorageStats struct {
-	TotalFiles     int64              `json:"total_files"`
-	TotalSize      int64              `json:"total_size"`
-	UsedQuota      int64              `json:"used_quota"`
-	TotalQuota     int64              `json:"total_quota"`
-	AvailableSpace int64              `json:"available_space"`
-	FilesByType    map[string]int64   `json:"files_by_type"`
-	SizesByType    map[string]int64   `json:"sizes_by_type"`
-	FilesByCategory map[string]int64  `json:"files_by_category"`
+	TotalFiles      int64            `json:"total_files"`
+	TotalSize       int64            `json:"total_size"`
+	UsedQuota       int64            `json:"used_quota"`
+	TotalQuota      int64            `json:"total_quota"`
+	AvailableSpace  int64            `json:"available_space"`
+	FilesByType     map[string]int64 `json:"files_by_type"`
+	SizesByType     map[string]int64 `json:"sizes_by_type"`
+	FilesByCategory map[string]int64 `json:"files_by_category"`
 }
 
 // FilePermission represents access control for files
@@ -79,9 +79,9 @@ type FilePermission struct {
 
 // UploadResult contains the result of a file upload operation
 type UploadResult struct {
-	File     *File  `json:"file"`
-	Success  bool   `json:"success"`
-	Message  string `json:"message,omitempty"`
+	File     *File    `json:"file"`
+	Success  bool     `json:"success"`
+	Message  string   `json:"message,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -111,4 +111,4 @@ const (
 	PermissionWrite  = "write"
 	PermissionDelete = "delete"
 	PermissionAdmin  = "admin"
-) 
+)

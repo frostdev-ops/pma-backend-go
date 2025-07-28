@@ -243,9 +243,25 @@ func (h *Handlers) Complete2FA(c *gin.Context) {
 
 // GetRingCameras returns all Ring cameras using the unified PMA service
 func (h *Handlers) GetRingCameras(c *gin.Context) {
+	// Check if Ring is enabled in configuration
+	if !h.cfg.Devices.Ring.Enabled {
+		utils.SendSuccess(c, gin.H{
+			"cameras": []RingCameraResponse{},
+			"count":   0,
+			"status":  "disabled",
+			"message": "Ring integration is disabled in configuration",
+		})
+		return
+	}
+
 	// Check authentication
 	if !h.isRingAuthenticated(c.Request.Context()) {
-		utils.SendError(c, http.StatusUnauthorized, "Ring not authenticated")
+		utils.SendSuccess(c, gin.H{
+			"cameras": []RingCameraResponse{},
+			"count":   0,
+			"status":  "not_configured",
+			"message": "Ring is not configured. Please set up Ring authentication first.",
+		})
 		return
 	}
 
@@ -590,20 +606,35 @@ func (h *Handlers) GetRingCameraEvents(c *gin.Context) {
 
 // GetRingStatus returns Ring service status
 func (h *Handlers) GetRingStatus(c *gin.Context) {
-	authenticated := h.isRingAuthenticated(c.Request.Context())
-
-	status := map[string]interface{}{
-		"service_name":  "Ring Integration",
-		"version":       "1.0.0",
-		"authenticated": authenticated,
-		"cameras":       0,
-		"last_update":   time.Now(),
-		"status":        "disconnected",
+	// Check if Ring is enabled in configuration
+	if !h.cfg.Devices.Ring.Enabled {
+		utils.SendSuccess(c, gin.H{
+			"status":        "disabled",
+			"enabled":       false,
+			"message":       "Ring integration is disabled in configuration",
+			"authenticated": false,
+			"cameras":       0,
+		})
+		return
 	}
 
-	if authenticated {
-		status["status"] = "connected"
-		status["cameras"] = 2 // Mock camera count
+	// Check authentication status
+	authenticated := h.isRingAuthenticated(c.Request.Context())
+
+	status := gin.H{
+		"enabled":       true,
+		"authenticated": authenticated,
+	}
+
+	if !authenticated {
+		status["status"] = "not_configured"
+		status["message"] = "Ring is enabled but not configured. Please set up Ring authentication."
+		status["cameras"] = 0
+	} else {
+		status["status"] = "active"
+		status["message"] = "Ring is configured and authenticated"
+		// You could add camera count here if needed
+		status["cameras"] = 0 // Placeholder - could be populated with actual count
 	}
 
 	utils.SendSuccess(c, status)

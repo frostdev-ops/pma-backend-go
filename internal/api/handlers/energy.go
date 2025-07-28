@@ -6,51 +6,133 @@ import (
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/energy"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
 
 // GetEnergySettings retrieves energy settings
 func (h *Handlers) GetEnergySettings(c *gin.Context) {
 	if h.energyService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Energy service not available"})
+		utils.SendError(c, http.StatusServiceUnavailable, "Energy service not available")
 		return
 	}
 
 	settings := h.energyService.GetSettings()
 	if settings == nil {
 		h.log.Error("Failed to get energy settings")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get energy settings"})
+		utils.SendError(c, http.StatusInternalServerError, "Failed to get energy settings")
 		return
+	}
+
+	// Get current energy data if available
+	energyData, err := h.energyService.GetCurrentEnergyData()
+	if err != nil {
+		h.log.WithError(err).Warn("Failed to get current energy data")
+	}
+
+	// Create comprehensive settings response
+	response := map[string]interface{}{
+		"enabled":                  settings.TrackingEnabled,
+		"cost_per_kwh":             settings.EnergyRate,
+		"currency":                 settings.Currency,
+		"update_interval":          settings.UpdateInterval,
+		"retention_days":           settings.HistoricalPeriod,
+		"track_individual_devices": true, // Always enabled in our implementation
+
+		// Current energy status
+		"current_data": map[string]interface{}{
+			"total_power_consumption": 0.0,
+			"total_energy_usage":      0.0,
+			"total_cost":              0.0,
+			"device_count":            0,
+		},
+
+		// Service status
+		"service_status": map[string]interface{}{
+			"initialized": h.energyService != nil,
+			"tracking":    settings.TrackingEnabled,
+			"last_update": settings.UpdatedAt,
+		},
+	}
+
+	// Add current energy data if available
+	if energyData != nil {
+		response["current_data"] = map[string]interface{}{
+			"total_power_consumption": energyData.TotalPowerConsumption,
+			"total_energy_usage":      energyData.TotalEnergyUsage,
+			"total_cost":              energyData.TotalCost,
+			"device_count":            len(energyData.DeviceBreakdown),
+			"last_updated":            energyData.Timestamp,
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    settings,
+		"data":    response,
 	})
 }
 
 // UpdateEnergySettings updates energy settings
 func (h *Handlers) UpdateEnergySettings(c *gin.Context) {
 	if h.energyService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Energy service not available"})
+		utils.SendError(c, http.StatusServiceUnavailable, "Energy service not available")
 		return
 	}
 
-	var request energy.EnergySettingsRequest
+	var request map[string]interface{}
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request data"})
+		utils.SendError(c, http.StatusBadRequest, "Invalid request data")
 		return
 	}
 
-	if err := h.energyService.UpdateSettings(&request); err != nil {
-		h.log.WithError(err).Error("Failed to update energy settings")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update energy settings"})
+	// Get current settings
+	currentSettings := h.energyService.GetSettings()
+	if currentSettings == nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to get current energy settings")
 		return
 	}
+
+	// Create updated settings from request
+	updatedSettings := &energy.EnergySettingsRequest{
+		EnergyRate:       &currentSettings.EnergyRate,
+		Currency:         &currentSettings.Currency,
+		TrackingEnabled:  &currentSettings.TrackingEnabled,
+		UpdateInterval:   &currentSettings.UpdateInterval,
+		HistoricalPeriod: &currentSettings.HistoricalPeriod,
+	}
+
+	// Update fields from request
+	if enabled, ok := request["enabled"].(bool); ok {
+		updatedSettings.TrackingEnabled = &enabled
+	}
+	if rate, ok := request["cost_per_kwh"].(float64); ok && rate > 0 {
+		updatedSettings.EnergyRate = &rate
+	}
+	if currency, ok := request["currency"].(string); ok && currency != "" {
+		updatedSettings.Currency = &currency
+	}
+	if interval, ok := request["update_interval"].(float64); ok && interval > 0 {
+		intervalInt := int(interval)
+		updatedSettings.UpdateInterval = &intervalInt
+	}
+	if retention, ok := request["retention_days"].(float64); ok && retention > 0 {
+		retentionInt := int(retention)
+		updatedSettings.HistoricalPeriod = &retentionInt
+	}
+
+	// Update settings through service
+	if err := h.energyService.UpdateSettings(updatedSettings); err != nil {
+		h.log.WithError(err).Error("Failed to update energy settings")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to update energy settings")
+		return
+	}
+
+	h.log.Info("Energy settings updated successfully")
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Energy settings updated successfully",
+		"data":    updatedSettings,
 	})
 }
 

@@ -12,6 +12,36 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 )
 
+// retryableDatabaseOperation retries database operations that fail with SQLITE_BUSY
+func retryableDatabaseOperation(ctx context.Context, operation func() error, maxRetries int) error {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := operation()
+		if err == nil {
+			return nil
+		}
+
+		// Check if this is a database busy error
+		if strings.Contains(err.Error(), "database is locked") ||
+			strings.Contains(err.Error(), "SQLITE_BUSY") {
+			if attempt < maxRetries {
+				// Wait before retrying, with exponential backoff
+				waitTime := time.Duration(attempt+1) * 10 * time.Millisecond
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(waitTime):
+					continue
+				}
+			}
+		}
+
+		// Return the error if it's not retryable or we've exhausted retries
+		return err
+	}
+
+	return fmt.Errorf("operation failed after %d retries", maxRetries)
+}
+
 // ConversationRepository implements repositories.ConversationRepository
 type ConversationRepository struct {
 	db *sql.DB
@@ -443,8 +473,15 @@ func (r *ConversationRepository) UnarchiveConversation(ctx context.Context, id s
 	return nil
 }
 
-// CreateMessage creates a new message
+// CreateMessage creates a new message with retry logic for database busy errors
 func (r *ConversationRepository) CreateMessage(ctx context.Context, msg *ai.ConversationMessage) error {
+	return retryableDatabaseOperation(ctx, func() error {
+		return r.createMessageInternal(ctx, msg)
+	}, 3) // Retry up to 3 times
+}
+
+// createMessageInternal performs the actual message creation
+func (r *ConversationRepository) createMessageInternal(ctx context.Context, msg *ai.ConversationMessage) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)

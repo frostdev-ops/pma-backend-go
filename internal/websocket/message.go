@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
@@ -41,6 +42,93 @@ type Message struct {
 	Type      string                 `json:"type"`
 	Data      map[string]interface{} `json:"data"`
 	Timestamp time.Time              `json:"timestamp"`
+}
+
+// UnmarshalJSON provides custom JSON unmarshaling for Message to handle different timestamp formats
+func (m *Message) UnmarshalJSON(data []byte) error {
+	// Define a temporary struct with Timestamp as interface{} to handle multiple formats
+	type TempMessage struct {
+		Type      string                 `json:"type"`
+		Data      map[string]interface{} `json:"data"`
+		Timestamp interface{}            `json:"timestamp"`
+	}
+
+	var temp TempMessage
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	// Copy basic fields
+	m.Type = temp.Type
+	m.Data = temp.Data
+
+	// Handle timestamp parsing with multiple format support
+	m.Timestamp = parseTimestamp(temp.Timestamp)
+
+	return nil
+}
+
+// parseTimestamp handles various timestamp formats and converts them to time.Time
+func parseTimestamp(ts interface{}) time.Time {
+	if ts == nil {
+		return time.Now().UTC()
+	}
+
+	switch v := ts.(type) {
+	case string:
+		// Try parsing as Unix timestamp string first
+		if unixTime, err := strconv.ParseInt(v, 10, 64); err == nil {
+			// Handle both seconds and milliseconds
+			if unixTime > 1e12 { // Milliseconds (13+ digits)
+				return time.Unix(0, unixTime*int64(time.Millisecond)).UTC()
+			} else { // Seconds (10 digits or less)
+				return time.Unix(unixTime, 0).UTC()
+			}
+		}
+
+		// Try parsing as RFC3339 format
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t.UTC()
+		}
+
+		// Try parsing as RFC3339Nano format
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return t.UTC()
+		}
+
+		// Fallback to current time if parsing fails
+		return time.Now().UTC()
+
+	case float64:
+		// Handle numeric timestamp (JavaScript often sends as float64)
+		unixTime := int64(v)
+		if unixTime > 1e12 { // Milliseconds
+			return time.Unix(0, unixTime*int64(time.Millisecond)).UTC()
+		} else { // Seconds
+			return time.Unix(unixTime, 0).UTC()
+		}
+
+	case int64:
+		// Handle int64 timestamp
+		if v > 1e12 { // Milliseconds
+			return time.Unix(0, v*int64(time.Millisecond)).UTC()
+		} else { // Seconds
+			return time.Unix(v, 0).UTC()
+		}
+
+	case int:
+		// Handle int timestamp
+		unixTime := int64(v)
+		if unixTime > 1e12 { // Milliseconds
+			return time.Unix(0, unixTime*int64(time.Millisecond)).UTC()
+		} else { // Seconds
+			return time.Unix(unixTime, 0).UTC()
+		}
+
+	default:
+		// Fallback to current time for unknown formats
+		return time.Now().UTC()
+	}
 }
 
 // ToJSON converts the message to JSON bytes

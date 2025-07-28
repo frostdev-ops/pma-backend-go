@@ -137,6 +137,16 @@ func (ah *AutomationHandler) CreateAutomation(c *gin.Context) {
 		return
 	}
 
+	// Additional safety check to prevent nil rule
+	if rule == nil {
+		ah.logger.Error("Parsed rule is nil")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Failed to parse rule: parsed rule is nil",
+		})
+		return
+	}
+
 	// Add rule to engine
 	if err := ah.engine.AddRule(rule); err != nil {
 		ah.logger.WithError(err).Error("Failed to add automation rule")
@@ -512,6 +522,16 @@ func (ah *AutomationHandler) ImportAutomation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to parse rule: %v", err),
+		})
+		return
+	}
+
+	// Additional safety check to prevent nil rule
+	if rule == nil {
+		ah.logger.Error("Parsed imported rule is nil")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Failed to parse rule: parsed rule is nil",
 		})
 		return
 	}

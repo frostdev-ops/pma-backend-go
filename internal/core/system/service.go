@@ -103,8 +103,10 @@ func NewService(cfg *config.Config, logger *logrus.Logger) *Service {
 		}
 	}
 
+	deviceID := generateDeviceID()
+
 	s := &Service{
-		deviceID:        generateDeviceID(),
+		deviceID:        deviceID,
 		startTime:       time.Now(),
 		logger:          logger,
 		maxLogEntries:   maxLogEntries,
@@ -112,18 +114,8 @@ func NewService(cfg *config.Config, logger *logrus.Logger) *Service {
 		trackedServices: trackedServices,
 		maxErrorHistory: 100,
 		errorHistory:    make([]ErrorRecord, 0, 100),
-		config: SystemConfig{
-			Environment:     getEnvironment(),
-			Debug:           false,
-			LogLevel:        "info",
-			MaxLogEntries:   maxLogEntries,
-			UpdateChannel:   "stable",
-			AutoUpdate:      false,
-			MaintenanceMode: false,
-			Services:        make(map[string]interface{}),
-			Features:        make(map[string]bool),
-		},
-		fullConfig: cfg,
+		config:          SystemConfig{}, // Will be populated with defaults on first access
+		fullConfig:      cfg,
 	}
 
 	s.logger.Info("System management service initialized", "device_id", s.deviceID)
@@ -170,14 +162,14 @@ func (s *Service) GetDeviceInfo(ctx context.Context) (*DeviceInfo, error) {
 	return &DeviceInfo{
 		DeviceID:    s.deviceID,
 		Name:        hostInfo.Hostname,
-		Version:     version.GetVersion(),
-		OS:          fmt.Sprintf("%s %s", hostInfo.OS, hostInfo.PlatformVersion),
+		Version:     version.GetVersion(), // Use GetVersion() instead
+		OS:          hostInfo.OS,
 		Arch:        runtime.GOARCH,
 		Platform:    hostInfo.Platform,
 		Hostname:    hostInfo.Hostname,
 		LastSeen:    time.Now(),
 		Uptime:      int64(hostInfo.Uptime),
-		Environment: s.config.Environment,
+		Environment: getEnvironment(), // Use the function instead of config field
 		Metadata:    metadata,
 	}, nil
 }
@@ -479,17 +471,26 @@ func (s *Service) getNetworkConnectivity(ctx context.Context) NetworkConnectivit
 
 // getDefaultGateway returns the default gateway IP
 func (s *Service) getDefaultGateway() string {
-	if runtime.GOOS == "linux" {
-		cmd := exec.Command("ip", "route", "show", "default")
-		if output, err := cmd.Output(); err == nil {
-			fields := strings.Fields(string(output))
-			for i, field := range fields {
-				if field == "via" && i+1 < len(fields) {
-					return fields[i+1]
+	s.logger.Debug("Getting default gateway using 'ip route show default'")
+
+	// Use timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ip", "route", "show", "default")
+	if output, err := cmd.Output(); err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "default") {
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					s.logger.Debug("Default gateway found:", fields[2])
+					return fields[2]
 				}
 			}
 		}
 	}
+	s.logger.Debug("No default gateway found")
 	return ""
 }
 
@@ -606,20 +607,22 @@ func (s *Service) checkFileService(ctx context.Context, service ServiceConfig, d
 
 // checkSystemdService checks if a systemd service is healthy
 func (s *Service) checkSystemdService(ctx context.Context, service ServiceConfig, details map[string]interface{}) (bool, int64) {
+	s.logger.Debug("Checking systemd service:", service.ServiceName)
 	if service.ServiceName == "" {
 		details["error"] = "No service name specified"
 		return false, 0
 	}
 
 	cmd := exec.CommandContext(ctx, "systemctl", "show", service.ServiceName,
-		"--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp,LoadState,UnitFileState")
+		"--property=ActiveState,LoadState,SubState,MainPID")
 
 	output, err := cmd.Output()
 	if err != nil {
-		details["error"] = err.Error()
-		details["service_name"] = service.ServiceName
+		s.logger.Debug("Failed to check systemd service:", service.ServiceName, "error:", err)
 		return false, 0
 	}
+
+	s.logger.Debug("Systemd service check output for", service.ServiceName, ":", string(output))
 
 	properties := make(map[string]string)
 	for _, line := range strings.Split(string(output), "\n") {
@@ -807,6 +810,12 @@ func (s *Service) ShutdownSystem(ctx context.Context, action PowerAction) error 
 func (s *Service) GetConfig() SystemConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// If config is empty, return defaults
+	if s.config.System.Name == "" {
+		return s.getDefaultConfig()
+	}
+
 	return s.config
 }
 
@@ -815,10 +824,177 @@ func (s *Service) UpdateConfig(config SystemConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Validate required fields
+	if config.System.Name == "" {
+		config.System.Name = "PMA System"
+	}
+	if config.System.Timezone == "" {
+		config.System.Timezone = "UTC"
+	}
+	if config.System.Locale == "" {
+		config.System.Locale = "en"
+	}
+
+	// Set metadata
+	config.UpdatedAt = time.Now().Format(time.RFC3339)
+	if config.CreatedAt == "" {
+		config.CreatedAt = time.Now().Format(time.RFC3339)
+	}
+	config.Version++
+
 	s.config = config
 	s.logger.Info("System configuration updated")
 
 	return nil
+}
+
+// getDefaultConfig returns a default configuration that matches frontend expectations
+func (s *Service) getDefaultConfig() SystemConfig {
+	now := time.Now().Format(time.RFC3339)
+
+	return SystemConfig{
+		System: SystemSectionConfig{
+			Name:                "PMA System",
+			Description:         "Personal Management Assistant Home Control System",
+			Timezone:            "UTC",
+			Locale:              "en",
+			LogLevel:            "info",
+			DebugMode:           false,
+			MaintenanceMode:     false,
+			AutoBackup:          true,
+			BackupRetentionDays: 30,
+			HubUser: HubUser{
+				Name:    "Hub",
+				Email:   "hub@pma.local",
+				Enabled: true,
+			},
+		},
+		Server: ServerSectionConfig{
+			Host:           "0.0.0.0",
+			Port:           3001,
+			HTTPSEnabled:   false,
+			CORSEnabled:    true,
+			CORSOrigins:    []string{"*"},
+			RateLimiting:   false,
+			MaxRequestSize: 10485760, // 10MB
+			TimeoutSeconds: 30,
+		},
+		Database: DatabaseSectionConfig{
+			Type:               "sqlite",
+			Name:               "./data/pma.db",
+			ConnectionPoolSize: 10,
+			MaxIdleConnections: 5,
+			ConnectionTimeout:  30,
+		},
+		Auth: AuthSectionConfig{
+			Enabled:             true,
+			Method:              "pin",
+			PinLength:           4,
+			SessionTimeout:      1800, // 30 minutes
+			JWTSecret:           "pma-jwt-secret-change-in-production",
+			RefreshTokenEnabled: true,
+			MaxSessionsPerUser:  5,
+			LockoutThreshold:    5,
+			LockoutDuration:     300, // 5 minutes
+		},
+		WebSocket: WebSocketSectionConfig{
+			Enabled:            true,
+			MaxConnections:     100,
+			HeartbeatInterval:  30,
+			MessageBufferSize:  1000,
+			CompressionEnabled: true,
+		},
+		Services: ServicesSectionConfig{
+			HomeAssistant: &HomeAssistantConfig{
+				Enabled:           false,
+				URL:               "http://192.168.100.2:8123",
+				Token:             "",
+				VerifySSL:         false,
+				Timeout:           30,
+				ReconnectInterval: 60,
+				SyncInterval:      300,
+				IncludedDomains:   []string{},
+				ExcludedDomains:   []string{},
+			},
+			AI: &AIConfig{
+				Enabled:         "false",
+				DefaultProvider: "ollama",
+				Providers: AIProvidersConfig{
+					Ollama: &OllamaConfig{
+						Enabled: false,
+						URL:     "http://localhost:11434",
+						Models:  []string{},
+						Timeout: 30,
+					},
+					OpenAI: &OpenAIConfig{
+						Enabled:     false,
+						APIKey:      "",
+						Model:       "gpt-3.5-turbo",
+						MaxTokens:   2048,
+						Temperature: 0.7,
+					},
+					Claude: &ClaudeConfig{
+						Enabled:   false,
+						APIKey:    "",
+						Model:     "claude-3-sonnet-20240229",
+						MaxTokens: 2048,
+					},
+					Gemini: &GeminiConfig{
+						Enabled:        false,
+						APIKey:         "",
+						Model:          "gemini-pro",
+						SafetySettings: make(map[string]string),
+					},
+				},
+			},
+			Energy: &EnergyConfig{
+				Enabled:                false,
+				UpdateInterval:         60,
+				CostPerKWH:             0.12,
+				Currency:               "USD",
+				RetentionDays:          365,
+				TrackIndividualDevices: true,
+			},
+			Network: &NetworkConfig{
+				Enabled:            false,
+				MonitorInterfaces:  []string{"eth0", "wlan0"},
+				ScanInterval:       300,
+				PortScanEnabled:    false,
+				IntrusionDetection: false,
+			},
+		},
+		Monitoring: MonitoringSectionConfig{
+			Enabled:              true,
+			MetricsRetentionDays: 30,
+			HealthCheckInterval:  60,
+			AlertThresholds: AlertThresholds{
+				CPUUsage:     80.0,
+				MemoryUsage:  90.0,
+				DiskUsage:    85.0,
+				ResponseTime: 5000,
+				ErrorRate:    5.0,
+			},
+			Notifications: NotificationConfig{
+				EmailEnabled:    false,
+				EmailRecipients: []string{},
+				WebhookEnabled:  false,
+				SlackEnabled:    false,
+			},
+		},
+		Security: SecuritySectionConfig{
+			EncryptionEnabled:     false,
+			AuditLogging:          true,
+			FailedLoginTracking:   true,
+			IPWhitelist:           []string{},
+			IPBlacklist:           []string{},
+			APIKeyRequired:        false,
+			CSRFProtection:        true,
+			ContentSecurityPolicy: false,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+		Version:   1,
+	}
 }
 
 // generateDeviceID generates a unique device ID

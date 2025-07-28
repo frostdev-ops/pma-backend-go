@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
@@ -48,7 +47,7 @@ func (suite *APIIntegrationTestSuite) SetupSuite() {
 
 	// Create type registry and unified service
 	typeRegistry := types.NewPMATypeRegistry(suite.logger)
-	suite.unifiedService = unified.NewUnifiedEntityService(typeRegistry, suite.logger)
+	suite.unifiedService = unified.NewUnifiedEntityService(typeRegistry, config, suite.logger)
 
 	// Create and register mock adapter
 	suite.testAdapter = NewMockPMAAdapter()
@@ -80,20 +79,20 @@ func setupTestRouter(config *config.Config, unifiedService *unified.UnifiedEntit
 
 	// Setup API routes
 	api := r.Group("/api/v1")
-	
+
 	// Mock entity routes that use unified service directly
 	api.GET("/entities", func(c *gin.Context) {
 		options := unified.GetAllOptions{
 			IncludeRoom: c.Query("include_room") == "true",
 			IncludeArea: c.Query("include_area") == "true",
 		}
-		
+
 		entities, err := unifiedService.GetAll(c.Request.Context(), options)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": entities})
 	})
 
@@ -103,41 +102,41 @@ func setupTestRouter(config *config.Config, unifiedService *unified.UnifiedEntit
 			IncludeRoom: c.Query("include_room") == "true",
 			IncludeArea: c.Query("include_area") == "true",
 		}
-		
+
 		entity, err := unifiedService.GetByID(c.Request.Context(), entityID, options)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": entity})
 	})
 
 	api.POST("/entities/:id/action", func(c *gin.Context) {
 		entityID := c.Param("id")
-		
+
 		var actionPayload struct {
 			Action     string                 `json:"action"`
 			Parameters map[string]interface{} `json:"parameters"`
 		}
-		
+
 		if err := c.ShouldBindJSON(&actionPayload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 			return
 		}
-		
+
 		action := types.PMAControlAction{
 			EntityID:   entityID,
 			Action:     actionPayload.Action,
 			Parameters: actionPayload.Parameters,
 		}
-		
+
 		result, err := unifiedService.ExecuteAction(c.Request.Context(), action)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 	})
 

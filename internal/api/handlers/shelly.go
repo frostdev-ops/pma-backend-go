@@ -455,44 +455,28 @@ func (h *Handlers) GetDiscoveredShellyDevices(c *gin.Context) {
 	// Mock discovered devices - in real implementation, perform network scan
 	discovered := []ShellyDiscoveredDevice{}
 
-	// Use mock devices from configuration if enabled
-	if h.cfg.Devices.Shelly.MockDevices.Enabled {
-		for _, mockDevice := range h.cfg.Devices.Shelly.MockDevices.Devices {
-			discovered = append(discovered, ShellyDiscoveredDevice{
-				IP:         mockDevice.IP,
-				MAC:        mockDevice.MAC,
-				Model:      mockDevice.Model,
-				Name:       mockDevice.Name,
-				DeviceType: mockDevice.Type,
-				Firmware:   "20230913-114340/v1.14.0-gcb84623",
-				Online:     true,
-				Discovered: time.Now().Add(-5 * time.Minute),
-			})
-		}
-	} else {
-		// Default mock devices for demo (when config mock is disabled)
-		discovered = []ShellyDiscoveredDevice{
-			{
-				IP:         "192.168.100.50",
-				MAC:        "AA:BB:CC:DD:EE:01",
-				Model:      "SHSW-1PM",
-				Name:       "shelly1pm-DDEE01",
-				DeviceType: "switch_pm",
-				Firmware:   "20230913-114340/v1.14.0-gcb84623",
-				Online:     true,
-				Discovered: time.Now().Add(-5 * time.Minute),
-			},
-			{
-				IP:         "192.168.100.51",
-				MAC:        "AA:BB:CC:DD:EE:02",
-				Model:      "SHSW-25",
-				Name:       "shelly25-DDEE02",
-				DeviceType: "roller",
-				Firmware:   "20230913-114340/v1.14.0-gcb84623",
-				Online:     true,
-				Discovered: time.Now().Add(-10 * time.Minute),
-			},
-		}
+	// Demo devices for discovery endpoint (real discovery now handled by adapter)
+	discovered = []ShellyDiscoveredDevice{
+		{
+			IP:         "192.168.100.50",
+			MAC:        "AA:BB:CC:DD:EE:01",
+			Model:      "SHSW-1PM",
+			Name:       "shelly1pm-DDEE01",
+			DeviceType: "switch_pm",
+			Firmware:   "20230913-114340/v1.14.0-gcb84623",
+			Online:     true,
+			Discovered: time.Now().Add(-5 * time.Minute),
+		},
+		{
+			IP:         "192.168.100.51",
+			MAC:        "AA:BB:CC:DD:EE:02",
+			Model:      "SHSW-25",
+			Name:       "shelly25-DDEE02",
+			DeviceType: "roller",
+			Firmware:   "20230913-114340/v1.14.0-gcb84623",
+			Online:     true,
+			Discovered: time.Now().Add(-10 * time.Minute),
+		},
 	}
 
 	utils.SendSuccess(c, gin.H{

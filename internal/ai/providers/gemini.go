@@ -306,6 +306,22 @@ func (g *GeminiProvider) Chat(ctx context.Context, messages []ai.ChatMessage, op
 		request["generationConfig"] = genConfig
 	}
 
+	// Add function calling tools if provided
+	if len(opts.Tools) > 0 {
+		geminiTools := g.convertToolsToGeminiFormat(opts.Tools)
+		request["tools"] = geminiTools
+
+		// Add tool config for function calling mode
+		if opts.ToolChoice != "" {
+			toolConfig := map[string]interface{}{
+				"functionCallingConfig": map[string]interface{}{
+					"mode": g.convertToolChoiceToGeminiMode(opts.ToolChoice),
+				},
+			}
+			request["toolConfig"] = toolConfig
+		}
+	}
+
 	url := fmt.Sprintf("/models/%s:generateContent", model)
 	resp, err := g.makeRequest(ctx, "POST", url, request)
 	if err != nil {
@@ -324,7 +340,8 @@ func (g *GeminiProvider) Chat(ctx context.Context, messages []ai.ChatMessage, op
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text string `json:"text"`
+					Text         string                 `json:"text,omitempty"`
+					FunctionCall map[string]interface{} `json:"functionCall,omitempty"`
 				} `json:"parts"`
 				Role string `json:"role"`
 			} `json:"content"`
@@ -365,9 +382,29 @@ func (g *GeminiProvider) Chat(ctx context.Context, messages []ai.ChatMessage, op
 		}
 	}
 
+	// Extract content and function calls from response
+	var content string
+	var toolCalls []ai.ToolCall
+
+	for i, part := range candidate.Content.Parts {
+		if part.Text != "" {
+			content += part.Text
+		}
+
+		if part.FunctionCall != nil {
+			toolCall, err := g.convertGeminiFunctionCallToToolCall(part.FunctionCall, i)
+			if err != nil {
+				g.logger.WithError(err).Warn("Failed to convert Gemini function call")
+				continue
+			}
+			toolCalls = append(toolCalls, toolCall)
+		}
+	}
+
 	responseMessage := ai.ChatMessage{
 		Role:      "assistant",
-		Content:   candidate.Content.Parts[0].Text,
+		Content:   content,
+		ToolCalls: toolCalls,
 		Timestamp: time.Now(),
 		Metadata:  opts.Metadata,
 	}
@@ -617,4 +654,112 @@ func (g *GeminiProvider) makeRequest(ctx context.Context, method, endpoint strin
 	}
 
 	return responseBody, nil
+}
+
+// convertToolsToGeminiFormat converts LLMTool slice to Gemini function calling format
+func (g *GeminiProvider) convertToolsToGeminiFormat(tools []ai.LLMTool) []map[string]interface{} {
+	geminiTools := make([]map[string]interface{}, 0, len(tools))
+
+	for _, tool := range tools {
+		// Fix schema for Gemini compatibility (add missing items fields for arrays)
+		fixedParams := g.fixSchemaForGemini(tool.Parameters)
+
+		geminiTool := map[string]interface{}{
+			"functionDeclarations": []map[string]interface{}{
+				{
+					"name":        tool.Name,
+					"description": tool.Description,
+					"parameters":  fixedParams,
+				},
+			},
+		}
+		geminiTools = append(geminiTools, geminiTool)
+	}
+
+	return geminiTools
+}
+
+// fixSchemaForGemini recursively fixes JSON schema to be Gemini compatible
+func (g *GeminiProvider) fixSchemaForGemini(schema interface{}) interface{} {
+	switch v := schema.(type) {
+	case map[string]interface{}:
+		fixed := make(map[string]interface{})
+		for key, value := range v {
+			if key == "properties" {
+				// Fix properties recursively
+				if props, ok := value.(map[string]interface{}); ok {
+					fixedProps := make(map[string]interface{})
+					for propName, propDef := range props {
+						fixedProps[propName] = g.fixSchemaForGemini(propDef)
+					}
+					fixed[key] = fixedProps
+				} else {
+					fixed[key] = g.fixSchemaForGemini(value)
+				}
+			} else if key == "type" && value == "array" {
+				// This is an array property - ensure it has items
+				fixed[key] = value
+				// Check if items is missing
+				if _, hasItems := v["items"]; !hasItems {
+					// Add default items schema
+					fixed["items"] = map[string]interface{}{
+						"type":        "object",
+						"description": "Array item",
+					}
+				}
+			} else {
+				fixed[key] = g.fixSchemaForGemini(value)
+			}
+		}
+		return fixed
+	case []interface{}:
+		fixed := make([]interface{}, len(v))
+		for i, item := range v {
+			fixed[i] = g.fixSchemaForGemini(item)
+		}
+		return fixed
+	default:
+		return v
+	}
+}
+
+// convertToolChoiceToGeminiMode converts LLM tool choice to Gemini function calling mode
+func (g *GeminiProvider) convertToolChoiceToGeminiMode(toolChoice string) string {
+	switch strings.ToLower(toolChoice) {
+	case "auto":
+		return "AUTO"
+	case "none":
+		return "NONE"
+	case "required", "any":
+		return "ANY"
+	default:
+		return "AUTO" // Default to AUTO mode
+	}
+}
+
+// convertGeminiFunctionCallToToolCall converts Gemini function call response to ToolCall format
+func (g *GeminiProvider) convertGeminiFunctionCallToToolCall(functionCall map[string]interface{}, index int) (ai.ToolCall, error) {
+	// Extract function name
+	name, ok := functionCall["name"].(string)
+	if !ok {
+		return ai.ToolCall{}, fmt.Errorf("function call missing name")
+	}
+
+	// Extract arguments
+	args, ok := functionCall["args"].(map[string]interface{})
+	if !ok {
+		args = make(map[string]interface{})
+	}
+
+	// Generate unique ID for this tool call
+	toolCallID := fmt.Sprintf("call_%s_%d_%d", name, time.Now().UnixNano(), index)
+
+	return ai.ToolCall{
+		ID:   toolCallID,
+		Name: name,
+		Function: ai.ToolFunction{
+			Name:      name,
+			Arguments: args,
+		},
+	}, nil
 }

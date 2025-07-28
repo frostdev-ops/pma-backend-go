@@ -532,8 +532,24 @@ func (ae *AutomationEngine) cleanupTriggers(rule *AutomationRule) {
 func (ae *AutomationEngine) processEvents(ctx context.Context) {
 	// Listen to scheduler events
 	go func() {
-		for event := range ae.scheduler.GetEventChannel() {
-			ae.handleEvent(event)
+		defer func() {
+			if r := recover(); r != nil {
+				ae.logger.WithField("panic", r).Error("Event processor panicked")
+			}
+		}()
+
+		for {
+			select {
+			case event, ok := <-ae.scheduler.GetEventChannel():
+				if !ok {
+					ae.logger.Info("Scheduler event channel closed, stopping event processor")
+					return
+				}
+				ae.handleEvent(event)
+			case <-ctx.Done():
+				ae.logger.Info("Context cancelled, stopping event processor")
+				return
+			}
 		}
 	}()
 
@@ -554,32 +570,18 @@ func (ae *AutomationEngine) handleEvent(event Event) {
 
 		// Check if any trigger matches this event
 		for _, trigger := range rule.Triggers {
-			go func(r *AutomationRule, t Trigger) {
-				ctx := context.Background()
-				matches, _, err := t.Evaluate(ctx, event)
-				if err != nil {
-					ae.logger.WithError(err).WithFields(logrus.Fields{
-						"rule_id":    r.ID,
-						"trigger_id": t.GetID(),
-					}).Error("Trigger evaluation failed")
-					return
-				}
-
-				if matches {
-					request := &ExecutionRequest{
-						RuleID:    r.ID,
-						TriggerID: t.GetID(),
-						Event:     event,
-						Context:   ctx,
-					}
-
-					select {
-					case ae.executionQueue <- request:
-					default:
-						ae.logger.Warn("Execution queue full, dropping request")
-					}
-				}
-			}(rule, trigger)
+			// Use a worker pool instead of creating unlimited goroutines
+			select {
+			case ae.executionQueue <- &ExecutionRequest{
+				RuleID:    rule.ID,
+				TriggerID: trigger.GetID(),
+				Event:     event,
+				Context:   context.Background(),
+			}:
+				// Request queued successfully
+			default:
+				ae.logger.Warn("Execution queue full, dropping request")
+			}
 		}
 	}
 }
@@ -754,6 +756,38 @@ func (w *worker) processRequest(request *ExecutionRequest) {
 
 	if !exists {
 		w.engine.logger.WithField("rule_id", request.RuleID).Warn("Rule not found for execution")
+		return
+	}
+
+	// Find the trigger and evaluate it
+	var trigger Trigger
+	for _, t := range rule.Triggers {
+		if t.GetID() == request.TriggerID {
+			trigger = t
+			break
+		}
+	}
+
+	if trigger == nil {
+		w.engine.logger.WithFields(logrus.Fields{
+			"rule_id":    request.RuleID,
+			"trigger_id": request.TriggerID,
+		}).Warn("Trigger not found for execution")
+		return
+	}
+
+	// Evaluate trigger
+	matches, _, err := trigger.Evaluate(request.Context, request.Event)
+	if err != nil {
+		w.engine.logger.WithError(err).WithFields(logrus.Fields{
+			"rule_id":    request.RuleID,
+			"trigger_id": request.TriggerID,
+		}).Error("Trigger evaluation failed")
+		return
+	}
+
+	if !matches {
+		// Trigger doesn't match, skip execution
 		return
 	}
 

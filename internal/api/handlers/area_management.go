@@ -22,7 +22,7 @@ func (h *Handlers) GetAreas(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	result, err := areaService.GetAllAreas(ctx, includeInactive, buildHierarchy)
 	if err != nil {
@@ -48,7 +48,7 @@ func (h *Handlers) CreateArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	createdArea, err := areaService.CreateArea(ctx, &req)
 	if err != nil {
@@ -74,7 +74,7 @@ func (h *Handlers) GetArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	areaData, err := areaService.GetArea(ctx, areaID, includeChildren)
 	if err != nil {
@@ -109,7 +109,7 @@ func (h *Handlers) UpdateArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	updatedArea, err := areaService.UpdateArea(ctx, areaID, &req)
 	if err != nil {
@@ -133,7 +133,7 @@ func (h *Handlers) DeleteArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	if err := areaService.DeleteArea(ctx, areaID); err != nil {
 		h.log.WithError(err).Error("Failed to delete area")
@@ -153,7 +153,7 @@ func (h *Handlers) GetAreaMappings(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	mappings, err := areaService.GetAreaMappings(ctx, externalSystem)
 	if err != nil {
@@ -184,7 +184,7 @@ func (h *Handlers) CreateAreaMapping(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	mapping, err := areaService.CreateAreaMapping(ctx, &req)
 	if err != nil {
@@ -214,7 +214,7 @@ func (h *Handlers) UpdateAreaMapping(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	mapping, err := areaService.UpdateAreaMapping(ctx, mappingID, &req)
 	if err != nil {
@@ -238,7 +238,7 @@ func (h *Handlers) DeleteAreaMapping(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	if err := areaService.DeleteAreaMapping(ctx, mappingID); err != nil {
 		h.log.WithError(err).Error("Failed to delete area mapping")
@@ -251,80 +251,7 @@ func (h *Handlers) DeleteAreaMapping(c *gin.Context) {
 
 // Enhanced Room Management
 
-// GetAreaRooms retrieves rooms with enhanced area information
-func (h *Handlers) GetAreaRooms(c *gin.Context) {
-	includeEntities := c.Query("include_entities") == "true"
-	areaIDStr := c.Query("area_id")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Get all rooms first
-	rooms, err := h.repos.Room.GetAll(ctx)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to get rooms")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to retrieve rooms")
-		return
-	}
-
-	// Enhance with area information and entity counts
-	var enhancedRooms []gin.H
-	for _, room := range rooms {
-		roomData := gin.H{
-			"id":                     room.ID,
-			"name":                   room.Name,
-			"home_assistant_area_id": room.HomeAssistantAreaID,
-			"icon":                   room.Icon,
-			"description":            room.Description,
-			"created_at":             room.CreatedAt,
-			"updated_at":             room.UpdatedAt,
-		}
-
-		// Get area assignments for this room
-		assignments, err := h.repos.Area.GetRoomAreaAssignments(ctx, room.ID)
-		if err == nil {
-			roomData["area_assignments"] = assignments
-		}
-
-		// Get entity count
-		entities, err := h.repos.Entity.GetByRoom(ctx, room.ID)
-		if err == nil {
-			roomData["entity_count"] = len(entities)
-			if includeEntities {
-				roomData["entities"] = entities
-			}
-		}
-
-		// Filter by area if specified
-		if areaIDStr != "" {
-			areaID, err := strconv.Atoi(areaIDStr)
-			if err == nil {
-				hasArea := false
-				for _, assignment := range assignments {
-					if assignment.AreaID == areaID {
-						hasArea = true
-						break
-					}
-				}
-				if !hasArea {
-					continue
-				}
-			}
-		}
-
-		enhancedRooms = append(enhancedRooms, roomData)
-	}
-
-	utils.SendSuccessWithMeta(c, enhancedRooms, gin.H{
-		"count":            len(enhancedRooms),
-		"include_entities": includeEntities,
-		"area_filter":      areaIDStr,
-	})
-}
-
-// Synchronization Endpoints
-
-// TriggerAreaSync triggers area synchronization
+// TriggerAreaSync triggers synchronization with external systems
 func (h *Handlers) TriggerAreaSync(c *gin.Context) {
 	var req models.SyncRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -343,7 +270,7 @@ func (h *Handlers) TriggerAreaSync(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	syncLog, err := areaService.SyncWithExternalSystem(ctx, &req)
 	if err != nil {
@@ -365,7 +292,7 @@ func (h *Handlers) GetAreaSyncStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	syncStatus, err := areaService.GetSyncStatus(ctx, externalSystem)
 	if err != nil {
@@ -403,7 +330,7 @@ func (h *Handlers) GetAreaSyncHistory(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	history, err := areaService.GetSyncHistory(ctx, externalSystem, limit)
 	if err != nil {
@@ -426,7 +353,7 @@ func (h *Handlers) GetAreaStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	status, err := areaService.GetAreaStatus(ctx)
 	if err != nil {
@@ -474,7 +401,7 @@ func (h *Handlers) GetAreaAnalytics(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	analytics, err := areaService.GetAreaAnalytics(ctx, &req)
 	if err != nil {
@@ -495,7 +422,7 @@ func (h *Handlers) GetAreaAnalyticsSummary(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	req := &models.AreaAnalyticsRequest{}
 	analytics, err := areaService.GetAreaAnalytics(ctx, req)
@@ -529,7 +456,7 @@ func (h *Handlers) GetAreaSettings(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	settings, err := areaService.GetSettings(ctx, areaID)
 	if err != nil {
@@ -561,7 +488,7 @@ func (h *Handlers) UpdateAreaSettings(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	if err := areaService.UpdateSettings(ctx, areaID, &settings); err != nil {
 		h.log.WithError(err).Error("Failed to update area settings")
@@ -573,43 +500,6 @@ func (h *Handlers) UpdateAreaSettings(c *gin.Context) {
 }
 
 // Room-Area Assignment Endpoints
-
-// AssignRoomToArea assigns a room to an area
-func (h *Handlers) AssignRoomToArea(c *gin.Context) {
-	roomIDStr := c.Param("room_id")
-	roomID, err := strconv.Atoi(roomIDStr)
-	if err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid room ID")
-		return
-	}
-
-	var req struct {
-		AreaID         int    `json:"area_id" binding:"required"`
-		AssignmentType string `json:"assignment_type"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.SendError(c, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-
-	if req.AssignmentType == "" {
-		req.AssignmentType = models.AssignmentTypePrimary
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
-
-	assignment, err := areaService.AssignRoomToArea(ctx, roomID, req.AreaID, req.AssignmentType)
-	if err != nil {
-		h.log.WithError(err).Error("Failed to assign room to area")
-		utils.SendError(c, http.StatusInternalServerError, "Failed to assign room to area: "+err.Error())
-		return
-	}
-
-	utils.SendSuccess(c, assignment)
-}
 
 // GetRoomAreaAssignments retrieves area assignments for a room
 func (h *Handlers) GetRoomAreaAssignments(c *gin.Context) {
@@ -675,7 +565,7 @@ func (h *Handlers) GetAreaEntities(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	entities, err := areaService.GetAreaEntities(ctx, areaID)
 	if err != nil {
@@ -710,7 +600,7 @@ func (h *Handlers) AssignEntitiesToArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	result, err := areaService.AssignEntitiesToArea(ctx, areaID, req.EntityIDs)
 	if err != nil {
@@ -720,7 +610,7 @@ func (h *Handlers) AssignEntitiesToArea(c *gin.Context) {
 	}
 
 	utils.SendSuccessWithMeta(c, result, gin.H{
-		"area_id":       areaID,
+		"area_id":        areaID,
 		"assigned_count": len(req.EntityIDs),
 	})
 }
@@ -743,7 +633,7 @@ func (h *Handlers) RemoveEntityFromArea(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.log)
+	areaService := area.NewService(h.repos.Area, h.repos.Room, h.repos.Entity, h.unifiedService, h.log, h.cfg)
 
 	err = areaService.RemoveEntityFromArea(ctx, areaID, entityID)
 	if err != nil {

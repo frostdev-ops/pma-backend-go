@@ -23,6 +23,33 @@ func (h *Handlers) GetConfig(c *gin.Context) {
 
 	config, err := h.repos.Config.Get(ctx, key)
 	if err != nil {
+		// Handle special cases for display_settings and theme_settings
+		if key == "display_settings" {
+			// Return default display settings structure
+			defaultDisplaySettings := models.SystemConfig{
+				Key:         "display_settings",
+				Value:       `{"brightness":80,"timeout":300,"orientation":"landscape","darkMode":"auto","screensaver":true}`,
+				Encrypted:   false,
+				Description: "Default display settings configuration",
+				UpdatedAt:   time.Now(),
+			}
+			utils.SendSuccess(c, defaultDisplaySettings)
+			return
+		}
+
+		if key == "theme_settings" {
+			// Return default theme settings structure
+			defaultThemeSettings := models.SystemConfig{
+				Key:         "theme_settings",
+				Value:       `{"colorScheme":"auto","primaryColor":"#007bff","accentColor":"#28a745","fontSize":"medium","fontFamily":"system"}`,
+				Encrypted:   false,
+				Description: "Default theme settings configuration",
+				UpdatedAt:   time.Now(),
+			}
+			utils.SendSuccess(c, defaultThemeSettings)
+			return
+		}
+
 		h.log.WithError(err).Errorf("Failed to get config key: %s", key)
 		utils.SendError(c, http.StatusNotFound, "Configuration not found")
 		return

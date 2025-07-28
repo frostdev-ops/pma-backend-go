@@ -407,12 +407,12 @@ func (p *QueueProcessor) scheduleRetry(ctx context.Context, action *models.Queue
 		StartedAt:     time.Now(),
 		Success:       false,
 	}
-	
+
 	// Set error message
 	errorMessage := execErr.Error()
 	result.ErrorMessage.String = errorMessage
 	result.ErrorMessage.Valid = true
-	
+
 	// Set worker ID
 	result.WorkerID.String = "manual"
 	result.WorkerID.Valid = true

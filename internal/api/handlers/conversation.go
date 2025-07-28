@@ -506,5 +506,7 @@ func getUserIDFromContext(c *gin.Context) string {
 			return userIDStr
 		}
 	}
-	return ""
+	// Return default user ID when authentication is disabled
+	// This allows conversation functionality to work without authentication
+	return "1"
 }

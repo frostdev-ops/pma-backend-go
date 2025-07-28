@@ -32,140 +32,137 @@ func NewWebSocketOptimizationHandler(
 
 // RegisterRoutes registers WebSocket optimization routes
 func (woh *WebSocketOptimizationHandler) RegisterRoutes(router *gin.RouterGroup) {
-	ws := router.Group("/websocket")
+	// Connection management
+	connections := router.Group("/connections")
 	{
-		// Connection management
-		connections := ws.Group("/connections")
-		{
-			connections.GET("/", woh.GetConnections)
-			connections.GET("/stats", woh.GetConnectionStats)
-			connections.GET("/:id", woh.GetConnection)
-			connections.DELETE("/:id", woh.DisconnectClient)
-			connections.POST("/:id/ping", woh.PingClient)
-			connections.GET("/:id/health", woh.GetClientHealth)
-			connections.GET("/:id/metrics", woh.GetClientMetrics)
-		}
+		connections.GET("/", woh.GetConnections)
+		connections.GET("/stats", woh.GetConnectionStats)
+		connections.GET("/:id", woh.GetConnection)
+		connections.DELETE("/:id", woh.DisconnectClient)
+		connections.POST("/:id/ping", woh.PingClient)
+		connections.GET("/:id/health", woh.GetClientHealth)
+		connections.GET("/:id/metrics", woh.GetClientMetrics)
+	}
 
-		// Connection pooling
-		pools := ws.Group("/pools")
-		{
-			pools.GET("/", woh.GetConnectionPools)
-			pools.POST("/", woh.CreateConnectionPool)
-			pools.GET("/:name", woh.GetConnectionPool)
-			pools.PUT("/:name", woh.UpdateConnectionPool)
-			pools.DELETE("/:name", woh.DeleteConnectionPool)
-			pools.GET("/:name/stats", woh.GetPoolStats)
-			pools.POST("/:name/resize", woh.ResizePool)
-			pools.POST("/:name/cleanup", woh.CleanupPool)
-		}
+	// Connection pooling
+	pools := router.Group("/pools")
+	{
+		pools.GET("/", woh.GetConnectionPools)
+		pools.POST("/", woh.CreateConnectionPool)
+		pools.GET("/:name", woh.GetConnectionPool)
+		pools.PUT("/:name", woh.UpdateConnectionPool)
+		pools.DELETE("/:name", woh.DeleteConnectionPool)
+		pools.GET("/:name/stats", woh.GetPoolStats)
+		pools.POST("/:name/resize", woh.ResizePool)
+		pools.POST("/:name/cleanup", woh.CleanupPool)
+	}
 
-		// Compression management
-		compression := ws.Group("/compression")
-		{
-			compression.GET("/stats", woh.GetCompressionStats)
-			compression.GET("/config", woh.GetCompressionConfig)
-			compression.PUT("/config", woh.UpdateCompressionConfig)
-			compression.POST("/test", woh.TestCompression)
-			compression.GET("/algorithms", woh.GetSupportedAlgorithms)
-			compression.GET("/performance", woh.GetCompressionPerformance)
-		}
+	// Compression management
+	compression := router.Group("/compression")
+	{
+		compression.GET("/stats", woh.GetCompressionStats)
+		compression.GET("/config", woh.GetCompressionConfig)
+		compression.PUT("/config", woh.UpdateCompressionConfig)
+		compression.POST("/test", woh.TestCompression)
+		compression.GET("/algorithms", woh.GetSupportedAlgorithms)
+		compression.GET("/performance", woh.GetCompressionPerformance)
+	}
 
-		// Load balancing
-		loadbalancer := ws.Group("/loadbalancer")
-		{
-			loadbalancer.GET("/stats", woh.GetLoadBalancerStats)
-			loadbalancer.GET("/config", woh.GetLoadBalancerConfig)
-			loadbalancer.PUT("/config", woh.UpdateLoadBalancerConfig)
-			loadbalancer.GET("/workers", woh.GetWorkerPools)
-			loadbalancer.GET("/workers/:id", woh.GetWorkerPool)
-			loadbalancer.POST("/workers/:id/scale", woh.ScaleWorkerPool)
-			loadbalancer.GET("/distribution", woh.GetLoadDistribution)
-		}
+	// Load balancing
+	loadbalancer := router.Group("/loadbalancer")
+	{
+		loadbalancer.GET("/stats", woh.GetLoadBalancerStats)
+		loadbalancer.GET("/config", woh.GetLoadBalancerConfig)
+		loadbalancer.PUT("/config", woh.UpdateLoadBalancerConfig)
+		loadbalancer.GET("/workers", woh.GetWorkerPools)
+		loadbalancer.GET("/workers/:id", woh.GetWorkerPool)
+		loadbalancer.POST("/workers/:id/scale", woh.ScaleWorkerPool)
+		loadbalancer.GET("/distribution", woh.GetLoadDistribution)
+	}
 
-		// Message batching
-		batching := ws.Group("/batching")
-		{
-			batching.GET("/stats", woh.GetBatchingStats)
-			batching.GET("/config", woh.GetBatchingConfig)
-			batching.PUT("/config", woh.UpdateBatchingConfig)
-			batching.POST("/flush", woh.FlushBatches)
-			batching.GET("/performance", woh.GetBatchingPerformance)
-		}
+	// Message batching
+	batching := router.Group("/batching")
+	{
+		batching.GET("/stats", woh.GetBatchingStats)
+		batching.GET("/config", woh.GetBatchingConfig)
+		batching.PUT("/config", woh.UpdateBatchingConfig)
+		batching.POST("/flush", woh.FlushBatches)
+		batching.GET("/performance", woh.GetBatchingPerformance)
+	}
 
-		// Performance monitoring
-		performance := ws.Group("/performance")
-		{
-			performance.GET("/overview", woh.GetPerformanceOverview)
-			performance.GET("/metrics", woh.GetPerformanceMetrics)
-			performance.GET("/history", woh.GetPerformanceHistory)
-			performance.GET("/latency", woh.GetLatencyMetrics)
-			performance.GET("/throughput", woh.GetThroughputMetrics)
-			performance.GET("/resources", woh.GetResourceUsage)
-			performance.POST("/benchmark", woh.RunPerformanceBenchmark)
-		}
+	// Performance monitoring
+	performance := router.Group("/performance")
+	{
+		performance.GET("/overview", woh.GetPerformanceOverview)
+		performance.GET("/metrics", woh.GetPerformanceMetrics)
+		performance.GET("/history", woh.GetPerformanceHistory)
+		performance.GET("/latency", woh.GetLatencyMetrics)
+		performance.GET("/throughput", woh.GetThroughputMetrics)
+		performance.GET("/resources", woh.GetResourceUsage)
+		performance.POST("/benchmark", woh.RunPerformanceBenchmark)
+	}
 
-		// Circuit breaker
-		circuitbreaker := ws.Group("/circuitbreaker")
-		{
-			circuitbreaker.GET("/status", woh.GetCircuitBreakerStatus)
-			circuitbreaker.GET("/stats", woh.GetCircuitBreakerStats)
-			circuitbreaker.POST("/reset", woh.ResetCircuitBreaker)
-			circuitbreaker.PUT("/config", woh.UpdateCircuitBreakerConfig)
-			circuitbreaker.GET("/history", woh.GetCircuitBreakerHistory)
-		}
+	// Circuit breaker
+	circuitbreaker := router.Group("/circuitbreaker")
+	{
+		circuitbreaker.GET("/status", woh.GetCircuitBreakerStatus)
+		circuitbreaker.GET("/stats", woh.GetCircuitBreakerStats)
+		circuitbreaker.POST("/reset", woh.ResetCircuitBreaker)
+		circuitbreaker.PUT("/config", woh.UpdateCircuitBreakerConfig)
+		circuitbreaker.GET("/history", woh.GetCircuitBreakerHistory)
+	}
 
-		// Health monitoring
-		health := ws.Group("/health")
-		{
-			health.GET("/", woh.GetOverallHealth)
-			health.GET("/components", woh.GetComponentHealth)
-			health.GET("/alerts", woh.GetHealthAlerts)
-			health.POST("/check", woh.TriggerHealthCheck)
-			health.GET("/history", woh.GetHealthHistory)
-		}
+	// Health monitoring
+	health := router.Group("/health")
+	{
+		health.GET("/", woh.GetOverallHealth)
+		health.GET("/components", woh.GetComponentHealth)
+		health.GET("/alerts", woh.GetHealthAlerts)
+		health.POST("/check", woh.TriggerHealthCheck)
+		health.GET("/history", woh.GetHealthHistory)
+	}
 
-		// Configuration management
-		config := ws.Group("/config")
-		{
-			config.GET("/", woh.GetOptimizationConfig)
-			config.PUT("/", woh.UpdateOptimizationConfig)
-			config.POST("/reset", woh.ResetToDefaults)
-			config.GET("/presets", woh.GetConfigPresets)
-			config.POST("/presets/:name/apply", woh.ApplyConfigPreset)
-			config.POST("/export", woh.ExportConfig)
-			config.POST("/import", woh.ImportConfig)
-		}
+	// Configuration management
+	config := router.Group("/config")
+	{
+		config.GET("/", woh.GetOptimizationConfig)
+		config.PUT("/", woh.UpdateOptimizationConfig)
+		config.POST("/reset", woh.ResetToDefaults)
+		config.GET("/presets", woh.GetConfigPresets)
+		config.POST("/presets/:name/apply", woh.ApplyConfigPreset)
+		config.POST("/export", woh.ExportConfig)
+		config.POST("/import", woh.ImportConfig)
+	}
 
-		// Diagnostics and troubleshooting
-		diagnostics := ws.Group("/diagnostics")
-		{
-			diagnostics.GET("/", woh.GetDiagnostics)
-			diagnostics.POST("/trace", woh.StartTracing)
-			diagnostics.DELETE("/trace", woh.StopTracing)
-			diagnostics.GET("/trace/results", woh.GetTraceResults)
-			diagnostics.POST("/profile", woh.ProfilePerformance)
-			diagnostics.GET("/logs", woh.GetOptimizationLogs)
-		}
+	// Diagnostics and troubleshooting
+	diagnostics := router.Group("/diagnostics")
+	{
+		diagnostics.GET("/", woh.GetDiagnostics)
+		diagnostics.POST("/trace", woh.StartTracing)
+		diagnostics.DELETE("/trace", woh.StopTracing)
+		diagnostics.GET("/trace/results", woh.GetTraceResults)
+		diagnostics.POST("/profile", woh.ProfilePerformance)
+		diagnostics.GET("/logs", woh.GetOptimizationLogs)
+	}
 
-		// Real-time monitoring
-		realtime := ws.Group("/realtime")
-		{
-			realtime.GET("/stream", woh.StreamMetrics)
-			realtime.GET("/dashboard", woh.GetRealtimeDashboard)
-			realtime.POST("/alerts/subscribe", woh.SubscribeToAlerts)
-			realtime.DELETE("/alerts/unsubscribe", woh.UnsubscribeFromAlerts)
-		}
+	// Real-time monitoring
+	realtime := router.Group("/realtime")
+	{
+		realtime.GET("/stream", woh.StreamMetrics)
+		realtime.GET("/dashboard", woh.GetRealtimeDashboard)
+		realtime.POST("/alerts/subscribe", woh.SubscribeToAlerts)
+		realtime.DELETE("/alerts/unsubscribe", woh.UnsubscribeFromAlerts)
+	}
 
-		// Administrative operations
-		admin := ws.Group("/admin")
-		{
-			admin.POST("/optimize", woh.TriggerOptimization)
-			admin.POST("/maintenance", woh.StartMaintenance)
-			admin.DELETE("/maintenance", woh.StopMaintenance)
-			admin.POST("/backup", woh.BackupConfiguration)
-			admin.POST("/restore", woh.RestoreConfiguration)
-			admin.GET("/system", woh.GetSystemInfo)
-		}
+	// Administrative operations
+	admin := router.Group("/admin")
+	{
+		admin.POST("/optimize", woh.TriggerOptimization)
+		admin.POST("/maintenance", woh.StartMaintenance)
+		admin.DELETE("/maintenance", woh.StopMaintenance)
+		admin.POST("/backup", woh.BackupConfiguration)
+		admin.POST("/restore", woh.RestoreConfiguration)
+		admin.GET("/system", woh.GetSystemInfo)
 	}
 }
 

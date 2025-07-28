@@ -49,8 +49,14 @@ type RoomRepository interface {
 	GetByID(ctx context.Context, id int) (*models.Room, error)
 	GetByName(ctx context.Context, name string) (*models.Room, error)
 	GetAll(ctx context.Context) ([]*models.Room, error)
+	GetByAreaID(ctx context.Context, areaID int) ([]*models.Room, error)
 	Update(ctx context.Context, room *models.Room) error
 	Delete(ctx context.Context, id int) error
+
+	// Hierarchical methods for simplified Area → Room → Entity structure
+	GetRoomsWithEntities(ctx context.Context, areaID *int) ([]models.RoomWithEntities, error)
+	AssignToArea(ctx context.Context, roomID int, areaID *int) error
+	GetUnassignedRooms(ctx context.Context) ([]*models.Room, error)
 }
 
 // AuthRepository defines authentication data access methods
@@ -244,4 +250,55 @@ type AreaRepository interface {
 	GetAreaStatus(ctx context.Context) (*models.AreaStatus, error)
 	GetEntityCountsByArea(ctx context.Context) (map[int]int, error)
 	GetRoomCountsByArea(ctx context.Context) (map[int]int, error)
+
+	// Bulk operations for simplified Area → Room → Entity hierarchy
+	GetAreaWithRoomsAndEntities(ctx context.Context, areaID int) (*models.AreaWithRoomsAndEntities, error)
+	GetAreaSummaries(ctx context.Context) ([]models.AreaSummary, error)
+	GetAreaEntitiesForBulkAction(ctx context.Context, areaID int, filters models.BulkActionFilters) ([]models.SimpleEntity, error)
+}
+
+// ControllerRepository defines controller dashboard data access methods
+type ControllerRepository interface {
+	// Dashboard CRUD operations
+	CreateDashboard(ctx context.Context, dashboard *models.ControllerDashboard) error
+	GetDashboardByID(ctx context.Context, id int) (*models.ControllerDashboard, error)
+	GetDashboardsByUserID(ctx context.Context, userID *int, includeShared bool) ([]*models.ControllerDashboard, error)
+	GetAllDashboards(ctx context.Context, userID *int) ([]*models.ControllerDashboard, error)
+	UpdateDashboard(ctx context.Context, dashboard *models.ControllerDashboard) error
+	DeleteDashboard(ctx context.Context, id int) error
+	DuplicateDashboard(ctx context.Context, id int, userID *int, newName string) (*models.ControllerDashboard, error)
+
+	// Dashboard searching and filtering
+	SearchDashboards(ctx context.Context, userID *int, query string, category string, tags []string) ([]*models.ControllerDashboard, error)
+	GetDashboardsByCategory(ctx context.Context, userID *int, category string) ([]*models.ControllerDashboard, error)
+	GetFavoriteDashboards(ctx context.Context, userID int) ([]*models.ControllerDashboard, error)
+	ToggleFavorite(ctx context.Context, dashboardID int, userID int) error
+	UpdateLastAccessed(ctx context.Context, dashboardID int) error
+
+	// Template operations
+	CreateTemplate(ctx context.Context, template *models.ControllerTemplate) error
+	GetTemplateByID(ctx context.Context, id int) (*models.ControllerTemplate, error)
+	GetTemplatesByUserID(ctx context.Context, userID *int, includePublic bool) ([]*models.ControllerTemplate, error)
+	GetPublicTemplates(ctx context.Context) ([]*models.ControllerTemplate, error)
+	UpdateTemplate(ctx context.Context, template *models.ControllerTemplate) error
+	DeleteTemplate(ctx context.Context, id int) error
+	IncrementTemplateUsage(ctx context.Context, id int) error
+
+	// Sharing operations
+	CreateShare(ctx context.Context, share *models.ControllerShare) error
+	GetSharesByDashboardID(ctx context.Context, dashboardID int) ([]*models.ControllerShare, error)
+	GetSharesByUserID(ctx context.Context, userID int) ([]*models.ControllerShare, error)
+	UpdateSharePermissions(ctx context.Context, id int, permissions string) error
+	DeleteShare(ctx context.Context, id int) error
+	CheckUserAccess(ctx context.Context, dashboardID int, userID int) (string, error) // returns permission level
+
+	// Usage analytics
+	LogUsage(ctx context.Context, log *models.ControllerUsageLog) error
+	GetUsageStats(ctx context.Context, dashboardID int, timeRange string) (map[string]interface{}, error)
+	GetDashboardAnalytics(ctx context.Context, userID *int) (map[string]interface{}, error)
+	CleanupOldLogs(ctx context.Context, retentionDays int) error
+
+	// Import/Export
+	ExportDashboard(ctx context.Context, id int) (map[string]interface{}, error)
+	ImportDashboard(ctx context.Context, data map[string]interface{}, userID *int) (*models.ControllerDashboard, error)
 }

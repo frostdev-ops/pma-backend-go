@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/system"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -818,8 +819,83 @@ func (h *SystemHandler) ClearErrorHistory(c *gin.Context) {
 	h.systemService.ClearErrorHistory()
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Error history cleared successfully",
+		"success":    true,
+		"message":    "Error history cleared successfully",
 		"cleared_at": time.Now(),
 	})
+}
+
+// GetServiceStatus returns comprehensive service status including all services
+func (h *Handlers) GetServiceStatus(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	status := gin.H{
+		"timestamp": time.Now(),
+		"services":  gin.H{},
+	}
+
+	// Ring service status
+	ringStatus := gin.H{
+		"name":    "Ring Integration",
+		"enabled": h.cfg.Devices.Ring.Enabled,
+	}
+	if h.cfg.Devices.Ring.Enabled {
+		ringStatus["authenticated"] = h.isRingAuthenticated(ctx)
+		if h.isRingAuthenticated(ctx) {
+			ringStatus["status"] = "active"
+		} else {
+			ringStatus["status"] = "not_configured"
+		}
+	} else {
+		ringStatus["status"] = "disabled"
+	}
+	status["services"].(gin.H)["ring"] = ringStatus
+
+	// UPS service status
+	upsStatus := gin.H{
+		"name":    "UPS Monitoring",
+		"enabled": h.cfg.Devices.UPS.Enabled,
+	}
+	if h.cfg.Devices.UPS.Enabled {
+		if h.upsService != nil {
+			upsStatus["service_available"] = true
+			// Try to get UPS status to check connectivity
+			if upsCurrentStatus, err := h.upsService.GetCurrentStatus(ctx); err != nil {
+				upsStatus["status"] = "error"
+				upsStatus["error"] = err.Error()
+			} else if upsCurrentStatus != nil {
+				upsStatus["status"] = "active"
+			} else {
+				upsStatus["status"] = "unknown"
+			}
+		} else {
+			upsStatus["service_available"] = false
+			upsStatus["status"] = "unavailable"
+		}
+	} else {
+		upsStatus["status"] = "disabled"
+	}
+	status["services"].(gin.H)["ups"] = upsStatus
+
+	// Kiosk service status (placeholder)
+	kioskStatus := gin.H{
+		"name":    "Kiosk Management",
+		"enabled": true, // Kiosk is generally always enabled
+		"status":  "active",
+	}
+	status["services"].(gin.H)["kiosk"] = kioskStatus
+
+	// Add other key services
+	status["services"].(gin.H)["database"] = gin.H{
+		"name":   "Database",
+		"status": "active",
+	}
+
+	status["services"].(gin.H)["websocket"] = gin.H{
+		"name":   "WebSocket",
+		"status": "active",
+	}
+
+	utils.SendSuccess(c, status)
 }

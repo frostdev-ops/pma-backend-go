@@ -58,7 +58,12 @@ devices:
   ring:
     enabled: false
   shelly:
-    enabled: false
+    enabled: true
+    network_scan_enabled: true
+    auto_wifi_setup: false
+    auto_detect_subnets: true
+    exclude_loopback: true
+    exclude_docker_interfaces: true
   ups:
     enabled: false
 

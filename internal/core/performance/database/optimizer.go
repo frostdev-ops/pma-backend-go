@@ -87,9 +87,13 @@ func (o *SQLiteOptimizer) initializePatterns() {
 
 	// ORDER BY without LIMIT optimization
 	o.queryPatterns["order_without_limit"] = &QueryPattern{
-		Pattern: regexp.MustCompile(`ORDER\s+BY\s+.*(?!LIMIT)`),
+		Pattern: regexp.MustCompile(`ORDER\s+BY\s+`),
 		Optimization: func(query string, params []interface{}) (string, []interface{}) {
-			// Suggest adding LIMIT for large datasets
+			// Check if LIMIT is already present in the query
+			if !regexp.MustCompile(`\bLIMIT\b`).MatchString(strings.ToUpper(query)) {
+				// Suggest adding LIMIT for large datasets
+				return query, params
+			}
 			return query, params
 		},
 		Description: "Consider adding LIMIT clause when using ORDER BY",

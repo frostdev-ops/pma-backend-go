@@ -39,14 +39,14 @@ func TestEnhancedErrorHandling(t *testing.T) {
 	// Create a mock repositories struct
 	repos := &database.Repositories{}
 
-	router := api.NewRouter(cfg, repos, log, wsHub, nil)
+	router := api.NewRouter(cfg, repos, log, wsHub, nil, nil)
 
 	t.Run("404 Not Found with suggestions", func(t *testing.T) {
 		// Test a non-existent endpoint that should trigger suggestions
 		req := httptest.NewRequest("GET", "/api/v1/entitie", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.Router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
 
@@ -89,7 +89,7 @@ func TestEnhancedErrorHandling(t *testing.T) {
 		req := httptest.NewRequest("POST", "/health", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.Router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 
@@ -121,7 +121,7 @@ func TestEnhancedErrorHandling(t *testing.T) {
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.Router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
 
@@ -146,7 +146,7 @@ func TestEnhancedErrorHandling(t *testing.T) {
 		req := httptest.NewRequest("GET", "/completely/random/path", nil)
 		w := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.Router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
 

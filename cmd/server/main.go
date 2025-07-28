@@ -5,18 +5,22 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/api"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/auth"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/monitor"
 	"github.com/frostdev-ops/pma-backend-go/internal/database"
 	"github.com/frostdev-ops/pma-backend-go/internal/git"
 	"github.com/frostdev-ops/pma-backend-go/internal/websocket"
 	"github.com/frostdev-ops/pma-backend-go/pkg/logger"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -38,6 +42,16 @@ var (
 )
 
 func main() {
+	// Start global memory logger before any service initialization
+	go func() {
+		for {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			//fmt.Printf("[GLOBAL_MEM] Alloc: %d MB, HeapObjects: %d, Goroutines: %d\n", m.Alloc/1024/1024, m.HeapObjects, runtime.NumGoroutine())
+			time.Sleep(60 * time.Second)
+		}
+	}()
+
 	// Define flags
 	var (
 		showVersion = flag.Bool("version", false, "Show version information")
@@ -88,12 +102,15 @@ func main() {
 		log.Fatal("Failed to load configuration:", err)
 	}
 
-	// Initialize database
-	db, err := database.Initialize(cfg.Database)
+	// Initialize enhanced database with performance features
+	enhancedDB, err := database.InitializeEnhanced(cfg.Database, log.Logger)
 	if err != nil {
-		log.Fatal("Failed to initialize database:", err)
+		log.Fatal("Failed to initialize enhanced database:", err)
 	}
-	defer db.Close()
+	defer enhancedDB.Close()
+
+	// Get the underlying sql.DB for repositories that need it
+	db := enhancedDB.DB
 
 	// Run migrations
 	if cfg.Database.Migration.Enabled {
@@ -129,17 +146,59 @@ func main() {
 	wsHub := websocket.NewHub(log.Logger)
 	go wsHub.Run()
 
+	// Initialize memory monitor
+	memoryMonitor := monitor.NewMemoryMonitor(log.Logger, nil)
+
+	// Set up memory pressure callbacks
+	memoryMonitor.SetMemoryPressureCallback(func(current, threshold uint64) {
+		log.WithFields(logrus.Fields{
+			"current_memory":   current,
+			"memory_threshold": threshold,
+		}).Warn("Memory pressure detected - forcing garbage collection")
+		runtime.GC()
+	})
+
+	memoryMonitor.SetGoroutineLeakCallback(func(current, threshold int) {
+		log.WithFields(logrus.Fields{
+			"current_goroutines": current,
+			"max_goroutines":     threshold,
+		}).Warn("Goroutine leak detected - consider restarting the service")
+	})
+
+	// Start memory monitor
+	if err := memoryMonitor.Start(context.Background()); err != nil {
+		log.WithError(err).Error("Failed to start memory monitor")
+	}
+
 	// Initialize router with handlers
-	routerWithHandlers := api.NewRouter(cfg, repos, log, wsHub, db)
+	routerWithHandlers := api.NewRouter(cfg, repos, log, wsHub, db, enhancedDB)
+
+	// TEMPORARY: Create minimal router for testing
+	// router := http.NewServeMux()
+	// router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	// 	w.WriteHeader(http.StatusOK)
+	// 	w.Write([]byte("OK"))
+	// })
 
 	// Create HTTP server
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      routerWithHandlers.Router,
+		Handler:      routerWithHandlers.Router, // router, // routerWithHandlers.Router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	// Start debug server for pprof
+	go func() {
+		debugPort := 6060
+		log.Infof("Starting debug server on port %d for pprof", debugPort)
+		debugMux := http.NewServeMux()
+		debugMux.HandleFunc("/debug/", http.DefaultServeMux.ServeHTTP)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", debugPort), debugMux); err != nil {
+			log.WithError(err).Error("Failed to start debug server")
+		}
+	}()
 
 	// Start server
 	go func() {
@@ -167,6 +226,14 @@ func main() {
 		log.Info("Stopping automation engine...")
 		routerWithHandlers.Handlers.GetAutomationEngine().Stop()
 	}
+
+	// Stop memory monitor
+	log.Info("Stopping memory monitor...")
+	memoryMonitor.Stop()
+
+	// Stop WebSocket hub
+	log.Info("Stopping WebSocket hub...")
+	wsHub.Shutdown()
 
 	log.Info("Stopping services...")
 

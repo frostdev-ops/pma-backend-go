@@ -104,7 +104,7 @@ func main() {
 
 	// Update entities table with default values for new columns
 	log.Println("Updating entities table with default PMA values...")
-	
+
 	// Set available = true for all entities by default
 	result, err := db.Exec("UPDATE entities SET available = true WHERE available IS NULL")
 	if err != nil {
@@ -129,7 +129,7 @@ func main() {
 // determineSource determines the source adapter based on entity ID patterns
 func determineSource(entityID string) string {
 	entityID = strings.ToLower(entityID)
-	
+
 	// Check for specific prefixes or patterns
 	switch {
 	case strings.HasPrefix(entityID, "ring"):
@@ -148,4 +148,4 @@ func determineSource(entityID string) string {
 		// Default to homeassistant for standard patterns
 		return "homeassistant"
 	}
-} 
+}

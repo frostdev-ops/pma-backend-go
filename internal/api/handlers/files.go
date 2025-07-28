@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/core/filemanager"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -68,10 +69,11 @@ type FileHandler struct {
 	allowedMimeTypes  map[string]bool
 	allowedExtensions map[string]bool
 	images            []ImageInfo // In-memory storage for demo - use database in production
+	securityManager   *filemanager.SecurityManager
 }
 
 // NewFileHandler creates a new file handler
-func NewFileHandler(logger *log.Logger, uploadsDir string) *FileHandler {
+func NewFileHandler(logger *log.Logger, uploadsDir string, securityManager *filemanager.SecurityManager) *FileHandler {
 	// Create uploads directory if it doesn't exist
 	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
 		logger.Printf("Warning: Could not create uploads directory: %v", err)
@@ -96,7 +98,8 @@ func NewFileHandler(logger *log.Logger, uploadsDir string) *FileHandler {
 			".gif":  true,
 			".webp": true,
 		},
-		images: make([]ImageInfo, 0),
+		images:          make([]ImageInfo, 0),
+		securityManager: securityManager,
 	}
 }
 
@@ -366,6 +369,24 @@ func (h *FileHandler) processUploadedFile(fileHeader *multipart.FileHeader) (*Im
 	mimeType := http.DetectContentType(content)
 	if !h.allowedMimeTypes[mimeType] {
 		return nil, fmt.Errorf("unsupported MIME type: %s", mimeType)
+	}
+
+	// Security validation
+	if h.securityManager != nil {
+		securityConfig := filemanager.SecurityConfig{
+			EncryptionEnabled: false,
+			VirusScanEnabled:  true,
+			AllowedExtensions: []string{".jpg", ".jpeg", ".png", ".gif", ".webp"},
+			BlockedExtensions: []string{".exe", ".bat", ".com", ".scr", ".pif", ".cmd"},
+			MaxFileSize:       h.maxFileSize,
+			ScanOnUpload:      true,
+		}
+
+		contentReader := strings.NewReader(string(content))
+		if err := h.securityManager.ValidateFileUpload(fileHeader.Filename, contentReader, securityConfig); err != nil {
+			h.log.Printf("File upload blocked by security validation: %s - %v", fileHeader.Filename, err)
+			return nil, fmt.Errorf("security validation failed: %v", err)
+		}
 	}
 
 	// Validate that it's actually an image by trying to decode it

@@ -15,6 +15,7 @@ var (
 	ErrEntityNotFound          = fmt.Errorf("entity not found")
 	ErrEntityAlreadyRegistered = fmt.Errorf("entity already registered")
 	ErrInvalidEntity           = fmt.Errorf("invalid entity")
+	ErrRegistryFull            = fmt.Errorf("entity registry is full")
 )
 
 // DefaultEntityRegistry implements the EntityRegistry interface
@@ -23,8 +24,14 @@ type DefaultEntityRegistry struct {
 	entitiesByType   map[types.PMAEntityType][]string // entityType -> []entityID
 	entitiesBySource map[types.PMASourceType][]string // sourceType -> []entityID
 	entitiesByRoom   map[string][]string              // roomID -> []entityID
+	entityTimestamps map[string]time.Time             // entityID -> last access time
 	mutex            sync.RWMutex
 	logger           *logrus.Logger
+
+	// Memory management
+	maxEntities     int           // Maximum number of entities to keep in memory
+	cleanupInterval time.Duration // How often to run cleanup
+	lastCleanup     time.Time     // Last cleanup time
 }
 
 // NewDefaultEntityRegistry creates a new entity registry
@@ -34,7 +41,11 @@ func NewDefaultEntityRegistry(logger *logrus.Logger) *DefaultEntityRegistry {
 		entitiesByType:   make(map[types.PMAEntityType][]string),
 		entitiesBySource: make(map[types.PMASourceType][]string),
 		entitiesByRoom:   make(map[string][]string),
+		entityTimestamps: make(map[string]time.Time),
 		logger:           logger,
+		maxEntities:      500,             // Reduced from 1000 to prevent memory leaks
+		cleanupInterval:  1 * time.Minute, // More frequent cleanup
+		lastCleanup:      time.Now(),
 	}
 }
 
@@ -52,6 +63,12 @@ func (r *DefaultEntityRegistry) RegisterEntity(entity types.PMAEntity) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
+	// Check if we need to cleanup before adding new entities
+	// Trigger cleanup more frequently to prevent memory leaks
+	if len(r.entities) >= r.maxEntities || time.Since(r.lastCleanup) > r.cleanupInterval {
+		r.cleanupOldEntities()
+	}
+
 	// Check if entity already exists
 	if existingEntity, exists := r.entities[entityID]; exists {
 		// If it's the same entity (same source), update it
@@ -61,8 +78,14 @@ func (r *DefaultEntityRegistry) RegisterEntity(entity types.PMAEntity) error {
 		return fmt.Errorf("%w: entity ID '%s'", ErrEntityAlreadyRegistered, entityID)
 	}
 
+	// Check if registry is still full after cleanup
+	if len(r.entities) >= r.maxEntities {
+		return fmt.Errorf("%w: cannot register entity '%s', registry is full", ErrRegistryFull, entityID)
+	}
+
 	// Register the entity
 	r.entities[entityID] = entity
+	r.entityTimestamps[entityID] = time.Now()
 
 	// Add to type index
 	entityType := entity.GetType()
@@ -77,9 +100,7 @@ func (r *DefaultEntityRegistry) RegisterEntity(entity types.PMAEntity) error {
 		r.entitiesByRoom[*roomID] = append(r.entitiesByRoom[*roomID], entityID)
 	}
 
-	r.logger.Debugf("Registered entity: %s (type: %s, source: %s)",
-		entityID, entityType, sourceType)
-
+	r.logger.WithField("entity_id", entityID).Debug("Entity registered successfully")
 	return nil
 }
 
@@ -95,6 +116,7 @@ func (r *DefaultEntityRegistry) UnregisterEntity(entityID string) error {
 
 	// Remove from main map
 	delete(r.entities, entityID)
+	delete(r.entityTimestamps, entityID) // Also delete timestamp
 
 	// Remove from type index
 	entityType := entity.GetType()
@@ -125,13 +147,16 @@ func (r *DefaultEntityRegistry) UnregisterEntity(entityID string) error {
 
 // GetEntity retrieves an entity by its ID
 func (r *DefaultEntityRegistry) GetEntity(entityID string) (types.PMAEntity, error) {
-	r.mutex.RLock()
-	defer r.mutex.RUnlock()
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 
 	entity, exists := r.entities[entityID]
 	if !exists {
 		return nil, fmt.Errorf("%w: entity ID '%s'", ErrEntityNotFound, entityID)
 	}
+
+	// Update timestamp
+	r.entityTimestamps[entityID] = time.Now()
 
 	return entity, nil
 }
@@ -259,6 +284,7 @@ func (r *DefaultEntityRegistry) updateEntityInternal(entity types.PMAEntity) err
 
 	// Update the entity
 	r.entities[entityID] = entity
+	r.entityTimestamps[entityID] = time.Now() // Update timestamp
 
 	r.logger.Debugf("Updated entity: %s", entityID)
 
@@ -337,26 +363,44 @@ func (r *DefaultEntityRegistry) GetAvailableEntities() ([]types.PMAEntity, error
 	return availableEntities, nil
 }
 
-// GetRegistryStats returns statistics about the entity registry
+// GetRegistryStats returns statistics about the registry
 func (r *DefaultEntityRegistry) GetRegistryStats() map[string]interface{} {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	available := 0
-	for _, entity := range r.entities {
-		if entity.IsAvailable() {
-			available++
+	stats := map[string]interface{}{
+		"total_entities":     len(r.entities),
+		"max_entities":       r.maxEntities,
+		"memory_usage_pct":   float64(len(r.entities)) / float64(r.maxEntities) * 100,
+		"last_cleanup":       r.lastCleanup,
+		"cleanup_interval":   r.cleanupInterval.String(),
+		"entities_by_type":   r.GetEntityCountByType(),
+		"entities_by_source": r.GetEntityCountBySource(),
+	}
+
+	return stats
+}
+
+// cleanupOldEntities removes entities that haven't been accessed for a long time
+func (r *DefaultEntityRegistry) cleanupOldEntities() {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	now := time.Now()
+	entitiesToRemove := []string{}
+
+	for entityID, lastAccess := range r.entityTimestamps {
+		if now.Sub(lastAccess) > r.cleanupInterval {
+			entitiesToRemove = append(entitiesToRemove, entityID)
 		}
 	}
 
-	return map[string]interface{}{
-		"total_entities":      len(r.entities),
-		"available_entities":  available,
-		"entity_types":        len(r.entitiesByType),
-		"source_types":        len(r.entitiesBySource),
-		"rooms_with_entities": len(r.entitiesByRoom),
-		"last_updated":        time.Now(),
+	for _, entityID := range entitiesToRemove {
+		r.UnregisterEntity(entityID)
 	}
+
+	r.lastCleanup = now
+	r.logger.Debugf("Cleanup completed. Removed %d entities.", len(entitiesToRemove))
 }
 
 // Helper function to remove a string from a slice

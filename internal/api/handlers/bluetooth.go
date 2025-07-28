@@ -101,7 +101,7 @@ func (h *Handlers) SetBluetoothPower(c *gin.Context) {
 		return
 	}
 
-	if err := h.bluetoothService.SetPowerState(c.Request.Context(), request.Enabled); err != nil {
+	if err := h.bluetoothService.SetPower(c.Request.Context(), request.Enabled); err != nil {
 		h.log.WithError(err).Error("Failed to set Bluetooth power state")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success":   false,

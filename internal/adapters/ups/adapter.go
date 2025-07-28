@@ -505,3 +505,58 @@ func (a *UPSAdapter) convertToSensorEntities(device *UPSDevice) []types.PMAEntit
 
 	return entities
 }
+
+// GetCurrentStatus returns the current status of the UPS.
+func (a *UPSAdapter) GetCurrentStatus(ctx context.Context) (interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// GetStatusHistory returns the status history of the UPS.
+func (a *UPSAdapter) GetStatusHistory(ctx context.Context, startTime, endTime time.Time, limit int) ([]interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// GetBatteryTrends returns the battery trends of the UPS.
+func (a *UPSAdapter) GetBatteryTrends(ctx context.Context, period string) ([]interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// GetConfiguration returns the configuration of the UPS.
+func (a *UPSAdapter) GetConfiguration() interface{} {
+	return nil
+}
+
+// GetUPSInfo returns information about the UPS.
+func (a *UPSAdapter) GetUPSInfo(ctx context.Context) (interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// GetUPSVariables returns the variables of the UPS.
+func (a *UPSAdapter) GetUPSVariables(ctx context.Context) (interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// GetConnectionInfo returns the connection info of the UPS.
+func (a *UPSAdapter) GetConnectionInfo() (interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestConnection tests the connection to the UPS.
+func (a *UPSAdapter) TestConnection(ctx context.Context) (interface{}, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// StartMonitoring starts monitoring the UPS.
+func (a *UPSAdapter) StartMonitoring() error {
+	return fmt.Errorf("not implemented")
+}
+
+// StopMonitoring stops monitoring the UPS.
+func (a *UPSAdapter) StopMonitoring() error {
+	return fmt.Errorf("not implemented")
+}
+
+// UpdateAlertThresholds updates the alert thresholds of the UPS.
+func (a *UPSAdapter) UpdateAlertThresholds(thresholds map[string]interface{}) error {
+	return fmt.Errorf("not implemented")
+}

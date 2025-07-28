@@ -41,8 +41,8 @@ func NewPreferencesHandler(
 func (h *PreferencesHandler) GetUserPreferences(c *gin.Context) {
 	userID := c.GetString("user_id")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
+		// Default to user ID "1" for unauthenticated requests (localhost/API access)
+		userID = "1"
 	}
 
 	prefs, err := h.prefsManager.GetUserPreferences(userID)
@@ -62,8 +62,8 @@ func (h *PreferencesHandler) GetUserPreferences(c *gin.Context) {
 func (h *PreferencesHandler) UpdateUserPreferences(c *gin.Context) {
 	userID := c.GetString("user_id")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
+		// Default to user ID "1" for unauthenticated requests (localhost/API access)
+		userID = "1"
 	}
 
 	var prefs preferences.UserPreferences

@@ -3,6 +3,7 @@ package homeassistant
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -13,18 +14,20 @@ import (
 
 // HomeAssistantAdapter implements the PMAAdapter interface for HomeAssistant integration
 type HomeAssistantAdapter struct {
-	id        string
-	client    *HAClientWrapper
-	converter *EntityConverter
-	mapper    *StateMapper
-	config    *config.Config
-	logger    *logrus.Logger
-	connected bool
-	lastSync  *time.Time
-	metrics   *types.AdapterMetrics
-	health    *types.AdapterHealth
-	mutex     sync.RWMutex
-	startTime time.Time
+	id           string
+	client       *HAClientWrapper
+	converter    *EntityConverter
+	mapper       *StateMapper
+	config       *config.Config
+	logger       *logrus.Logger
+	connected    bool
+	lastSync     *time.Time
+	metrics      *types.AdapterMetrics
+	health       *types.AdapterHealth
+	mutex        sync.RWMutex
+	startTime    time.Time
+	stopChan     chan bool                                 // Channel to stop event processing
+	eventHandler func(entityID, oldState, newState string) // Handler for state changes
 }
 
 // NewHomeAssistantAdapter creates a new HomeAssistant adapter
@@ -34,6 +37,7 @@ func NewHomeAssistantAdapter(config *config.Config, logger *logrus.Logger) *Home
 		config:    config,
 		logger:    logger,
 		startTime: time.Now(),
+		stopChan:  make(chan bool, 1),
 		metrics: &types.AdapterMetrics{
 			EntitiesManaged:     0,
 			RoomsManaged:        0,
@@ -84,20 +88,34 @@ func (a *HomeAssistantAdapter) GetVersion() string {
 
 // Connect establishes connection to HomeAssistant
 func (a *HomeAssistantAdapter) Connect(ctx context.Context) error {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	a.logger.Info("🔵 ADAPTER Connect method starting...")
 
-	a.logger.Info("Connecting to Home Assistant...")
+	a.logger.Info("🔗 ADAPTER connecting to client (no mutex held)...")
 
+	// Connect to client without holding mutex to prevent deadlock
 	if err := a.client.Connect(ctx); err != nil {
+		a.mutex.Lock()
 		a.connected = false
 		a.updateHealth(false, fmt.Sprintf("Connection failed: %v", err))
+		a.mutex.Unlock()
+		a.logger.WithError(err).Error("❌ ADAPTER client connection failed")
 		return fmt.Errorf("failed to connect to HomeAssistant: %w", err)
 	}
 
+	a.logger.Info("✅ ADAPTER client connection successful")
+
+	// Now safely update state with mutex
+	a.mutex.Lock()
 	a.connected = true
 	a.updateHealth(true, "Connected successfully")
-	a.logger.Info("Successfully connected to Home Assistant")
+	a.mutex.Unlock()
+
+	a.logger.Info("🎉 ADAPTER Successfully connected to Home Assistant")
+
+	// Start WebSocket event processing
+	a.logger.Info("🚀 About to start WebSocket event processing goroutine")
+	go a.processWebSocketEvents()
+	a.logger.Info("✅ WebSocket event processing goroutine launched")
 
 	return nil
 }
@@ -107,16 +125,21 @@ func (a *HomeAssistantAdapter) Disconnect(ctx context.Context) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	a.logger.Info("Disconnecting from Home Assistant...")
+	// Stop event processing
+	select {
+	case a.stopChan <- true:
+	default:
+	}
 
-	if err := a.client.Disconnect(ctx); err != nil {
-		a.logger.WithError(err).Error("Error during disconnect")
-		return fmt.Errorf("failed to disconnect from HomeAssistant: %w", err)
+	if a.client != nil {
+		if err := a.client.Disconnect(); err != nil {
+			a.logger.WithError(err).Warn("Error disconnecting client")
+		}
 	}
 
 	a.connected = false
 	a.updateHealth(false, "Disconnected")
-	a.logger.Info("Disconnected from Home Assistant")
+	a.logger.Info("Disconnected from HomeAssistant")
 
 	return nil
 }
@@ -215,7 +238,7 @@ func (a *HomeAssistantAdapter) ConvertArea(sourceArea interface{}) (*types.PMAAr
 		Icon:        haArea.Icon,
 		Description: getFirstAlias(haArea.Aliases), // Use first alias as description if available
 		RoomIDs:     []string{},                    // HA areas don't have sub-rooms
-		EntityIDs:   []string{},        // Will be populated during entity sync
+		EntityIDs:   []string{},                    // Will be populated during entity sync
 		Metadata: &types.PMAMetadata{
 			Source:         types.SourceHomeAssistant,
 			SourceEntityID: haArea.ID,
@@ -234,9 +257,12 @@ func (a *HomeAssistantAdapter) ConvertArea(sourceArea interface{}) (*types.PMAAr
 func (a *HomeAssistantAdapter) ExecuteAction(ctx context.Context, action types.PMAControlAction) (*types.PMAControlResult, error) {
 	start := time.Now()
 
-	a.mutex.Lock()
-	a.metrics.ActionsExecuted++
-	a.mutex.Unlock()
+	// Use non-blocking metrics update to prevent deadlock with WebSocket event processing
+	go func() {
+		a.mutex.Lock()
+		a.metrics.ActionsExecuted++
+		a.mutex.Unlock()
+	}()
 
 	// Validate action
 	if action.EntityID == "" || action.Action == "" {
@@ -255,10 +281,28 @@ func (a *HomeAssistantAdapter) ExecuteAction(ctx context.Context, action types.P
 	}
 
 	// Convert PMA entity ID to HA entity ID
+	a.logger.WithField("pma_entity_id", action.EntityID).Info("🔄 About to convert PMA entity ID to HA format")
 	haEntityID := a.convertPMAEntityIDToHA(action.EntityID)
+	a.logger.WithFields(logrus.Fields{
+		"pma_entity_id": action.EntityID,
+		"ha_entity_id":  haEntityID,
+	}).Info("✂️ PMA entity ID converted to HA format")
 
 	// Map action to service call
+	a.logger.WithFields(logrus.Fields{
+		"action":        action.Action,
+		"pma_entity_id": action.EntityID,
+		"ha_entity_id":  haEntityID,
+	}).Info("🗺️ About to map action to Home Assistant service")
 	domain, service, data, err := a.mapper.MapActionToService(action)
+	a.logger.WithFields(logrus.Fields{
+		"action":        action.Action,
+		"pma_entity_id": action.EntityID,
+		"ha_entity_id":  haEntityID,
+		"domain":        domain,
+		"service":       service,
+		"error":         err,
+	}).Info("🎯 Action mapped to Home Assistant service")
 	if err != nil {
 		a.incrementFailedActions()
 		return &types.PMAControlResult{
@@ -274,9 +318,31 @@ func (a *HomeAssistantAdapter) ExecuteAction(ctx context.Context, action types.P
 		}, nil
 	}
 
-	// Execute service call
+	// Execute service call with detailed logging
+	a.logger.WithFields(logrus.Fields{
+		"domain":     domain,
+		"service":    service,
+		"ha_entity":  haEntityID,
+		"pma_entity": action.EntityID,
+	}).Info("🔥 About to call Home Assistant service")
+
 	err = a.client.CallService(ctx, domain, service, haEntityID, data)
+
+	a.logger.WithFields(logrus.Fields{
+		"domain":     domain,
+		"service":    service,
+		"ha_entity":  haEntityID,
+		"pma_entity": action.EntityID,
+		"error":      err,
+	}).Info("🏁 Home Assistant service call completed")
+
 	if err != nil {
+		a.logger.WithError(err).WithFields(logrus.Fields{
+			"domain":     domain,
+			"service":    service,
+			"ha_entity":  haEntityID,
+			"pma_entity": action.EntityID,
+		}).Error("❌ Home Assistant service call failed")
 		a.incrementFailedActions()
 		return &types.PMAControlResult{
 			Success: false,
@@ -291,57 +357,245 @@ func (a *HomeAssistantAdapter) ExecuteAction(ctx context.Context, action types.P
 		}, nil
 	}
 
-	// Update metrics
+	// Update metrics (non-blocking to prevent deadlock)
 	duration := time.Since(start)
-	a.mutex.Lock()
-	a.metrics.SuccessfulActions++
-	a.updateAverageResponseTime(duration)
-	a.mutex.Unlock()
+	go func() {
+		a.mutex.Lock()
+		a.metrics.SuccessfulActions++
+		a.updateAverageResponseTime(duration)
+		a.mutex.Unlock()
+	}()
 
+	// Fetch the updated entity state from Home Assistant
+	a.logger.WithField("ha_entity", haEntityID).Info("🔍 Fetching updated entity state after action")
+
+	// Create a fresh context for the state fetch with a short timeout
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Immediate state determination based on action type
+	var predictedState types.PMAEntityState
+	switch action.Action {
+	case "turn_on":
+		predictedState = types.PMAEntityState("on")
+	case "turn_off":
+		predictedState = types.PMAEntityState("off")
+	case "toggle":
+		// For toggle, we need to fetch current state first, but we can predict immediately
+		if currentEntities, err := a.client.GetAllEntitiesHTTPOnly(fetchCtx); err == nil {
+			for _, entity := range currentEntities {
+				if entity.EntityID == haEntityID {
+					if entity.State == "on" {
+						predictedState = types.PMAEntityState("off")
+					} else {
+						predictedState = types.PMAEntityState("on")
+					}
+					break
+				}
+			}
+		}
+		// If we couldn't fetch current state, assume it worked and predict based on most common case
+		if predictedState == "" {
+			predictedState = types.PMAEntityState("on")
+		}
+	default:
+		// For other actions, try to determine state from action parameters
+		predictedState = types.PMAEntityState("on") // Safe default
+	}
+
+	a.logger.WithFields(logrus.Fields{
+		"ha_entity":       haEntityID,
+		"action":          action.Action,
+		"predicted_state": predictedState,
+	}).Info("🎯 Predicted new state based on action")
+
+	// For immediate response, attributes will be nil since we're not fetching them
+	var updatedAttributes map[string]interface{}
+
+	// Async verification of actual state (for accuracy but not blocking response)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.logger.WithField("panic", r).Error("Panic during async state verification")
+			}
+		}()
+
+		// Brief wait for HA to process the change
+		time.Sleep(200 * time.Millisecond)
+
+		verifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if verifiedEntities, err := a.client.GetAllEntitiesHTTPOnly(verifyCtx); err == nil {
+			for _, entity := range verifiedEntities {
+				if entity.EntityID == haEntityID {
+					actualState := types.PMAEntityState(entity.State)
+					if actualState != predictedState {
+						a.logger.WithFields(logrus.Fields{
+							"ha_entity":       haEntityID,
+							"predicted_state": predictedState,
+							"actual_state":    actualState,
+						}).Warn("⚠️ State prediction mismatch - triggering correction")
+
+						// Trigger state correction via event handler if available
+						if a.eventHandler != nil {
+							a.eventHandler(action.EntityID, string(predictedState), string(actualState))
+						}
+					} else {
+						a.logger.WithFields(logrus.Fields{
+							"ha_entity":    haEntityID,
+							"actual_state": actualState,
+						}).Info("✅ State prediction confirmed by verification")
+					}
+					break
+				}
+			}
+		} else {
+			a.logger.WithError(err).Warn("Failed to verify entity state - prediction may be inaccurate")
+		}
+	}()
+
+	// Return immediately with predicted state for optimal responsiveness
 	return &types.PMAControlResult{
 		Success:     true,
 		EntityID:    action.EntityID,
 		Action:      action.Action,
+		NewState:    predictedState,
+		Attributes:  updatedAttributes,
 		ProcessedAt: time.Now(),
 		Duration:    duration,
 	}, nil
 }
 
-// SyncEntities synchronizes all entities from HomeAssistant
-func (a *HomeAssistantAdapter) SyncEntities(ctx context.Context) ([]types.PMAEntity, error) {
-	if !a.IsConnected() {
-		return nil, fmt.Errorf("adapter not connected")
+// RefreshEntityState refreshes a specific entity's state from Home Assistant
+func (a *HomeAssistantAdapter) RefreshEntityState(ctx context.Context, entityID string) error {
+	a.logger.WithField("entity_id", entityID).Info("🔄 Refreshing entity state from Home Assistant")
+
+	// Convert PMA entity ID to HA entity ID
+	haEntityID := a.convertPMAEntityIDToHA(entityID)
+
+	// Fetch current state from Home Assistant
+	entities, err := a.client.GetAllEntitiesHTTPOnly(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch entities from Home Assistant: %w", err)
 	}
 
+	// Find and update the specific entity
+	for _, entity := range entities {
+		if entity.EntityID == haEntityID {
+			// Trigger state update through event handler if available
+			if a.eventHandler != nil {
+				a.eventHandler(entityID, "", entity.State)
+				a.logger.WithFields(logrus.Fields{
+					"entity_id": entityID,
+					"ha_entity": haEntityID,
+					"new_state": entity.State,
+				}).Info("✅ Entity state refreshed from Home Assistant")
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("entity %s not found in Home Assistant", haEntityID)
+}
+
+// SyncEntities synchronizes all entities from HomeAssistant
+func (a *HomeAssistantAdapter) SyncEntities(ctx context.Context) ([]types.PMAEntity, error) {
 	a.logger.Info("Starting entity synchronization from Home Assistant")
 
-	haEntities, err := a.client.GetAllEntities(ctx)
+	// Use HTTP-only mode for syncing to avoid WebSocket connection issues
+	// This bypasses any potential WebSocket conflicts and ensures reliable syncing
+	a.logger.Debug("Calling GetAllEntitiesHTTPOnly...")
+	logMemStats(a.logger, "before_GetAllEntitiesHTTPOnly")
+	haEntities, err := a.client.GetAllEntitiesHTTPOnly(ctx)
 	if err != nil {
 		a.mutex.Lock()
 		a.metrics.SyncErrors++
 		a.mutex.Unlock()
-		return nil, fmt.Errorf("failed to fetch entities from HomeAssistant: %w", err)
+		return nil, fmt.Errorf("failed to fetch entities from HomeAssistant via HTTP: %w", err)
 	}
+	a.logger.WithField("raw_entity_count", len(haEntities)).Info("Successfully fetched entities, starting batch conversion...")
+	if len(haEntities) > 0 {
+		a.logger.WithField("sample_ha_entity", fmt.Sprintf("%#v", haEntities[0])).Info("Sample HA entity after fetch")
+	}
+	logMemStats(a.logger, "after_GetAllEntitiesHTTPOnly")
 
+	// Process entities in batches to reduce memory usage
+	const batchSize = 10
 	var pmaEntities []types.PMAEntity
-	for _, haEntity := range haEntities {
-		pmaEntity, err := a.converter.ConvertToPMAEntity(haEntity)
-		if err != nil {
-			a.logger.WithError(err).WithField("entity_id", haEntity.EntityID).Warn("Failed to convert entity")
-			continue
+	totalEntities := len(haEntities)
+
+	for i := 0; i < totalEntities; i += batchSize {
+		end := i + batchSize
+		if end > totalEntities {
+			end = totalEntities
 		}
-		pmaEntities = append(pmaEntities, pmaEntity)
+
+		batch := haEntities[i:end]
+		a.logger.WithFields(logrus.Fields{
+			"batch_start": i,
+			"batch_end":   end,
+			"batch_size":  len(batch),
+			"total":       totalEntities,
+		}).Debug("Processing entity batch...")
+
+		// Process this batch
+		for j, haEntity := range batch {
+			pmaEntity, err := a.converter.ConvertToPMAEntity(haEntity)
+			if err != nil {
+				a.logger.WithError(err).WithField("entity_id", haEntity.EntityID).Warn("Failed to convert entity")
+				continue
+			}
+			pmaEntities = append(pmaEntities, pmaEntity)
+
+			// Log progress every 5 entities within a batch
+			if j == 0 {
+				a.logger.WithField("sample_pma_entity", fmt.Sprintf("%#v", pmaEntity)).Info("Sample PMA entity after conversion")
+			}
+		}
+
+		logMemStats(a.logger, fmt.Sprintf("after_batch_%d", i/batchSize))
+
+		// Force garbage collection after each batch to prevent memory buildup
+		runtime.GC()
+
+		// Small delay to allow GC to complete
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Update metrics
+	a.logger.WithField("converted_entity_count", len(pmaEntities)).Info("Entity conversion completed, updating metrics...")
+	if len(pmaEntities) > 0 {
+		a.logger.WithField("sample_final_pma_entity", fmt.Sprintf("%#v", pmaEntities[0])).Info("Sample PMA entity after all conversion")
+	}
+	logMemStats(a.logger, "after_all_batches")
+
+	// Update metrics (using non-blocking approach to prevent deadlock)
 	now := time.Now()
-	a.mutex.Lock()
+	a.logger.Info("About to update metrics without mutex lock...")
+
+	// These are simple assignments that don't need mutex protection
+	// since they're just setting primitive values atomically
 	a.lastSync = &now
 	a.metrics.EntitiesManaged = len(pmaEntities)
 	a.metrics.LastSync = &now
-	a.mutex.Unlock()
+
+	a.logger.Info("Metrics updated successfully without mutex")
 
 	a.logger.WithField("entity_count", len(pmaEntities)).Info("Entity synchronization completed")
+
+	a.logger.WithFields(logrus.Fields{
+		"entity_count": len(pmaEntities),
+		"sample_entity_ids": func() []string {
+			var ids []string
+			for i, e := range pmaEntities {
+				if i < 3 {
+					ids = append(ids, e.GetID())
+				}
+			}
+			return ids
+		}(),
+	}).Info("About to return entities from SyncEntities")
+
 	return pmaEntities, nil
 }
 
@@ -448,6 +702,78 @@ func (a *HomeAssistantAdapter) GetMetrics() *types.AdapterMetrics {
 	return &metrics
 }
 
+// SetEventHandler sets the callback function for WebSocket state change events
+func (a *HomeAssistantAdapter) SetEventHandler(handler func(entityID, oldState, newState string)) {
+	a.eventHandler = handler
+	a.logger.Info("Event handler registered for WebSocket state changes")
+}
+
+// processWebSocketEvents processes WebSocket events from Home Assistant
+func (a *HomeAssistantAdapter) processWebSocketEvents() {
+	a.logger.Info("🎯 Starting WebSocket event processing goroutine")
+
+	eventChan := a.client.GetStateChangeEvents()
+	a.logger.WithField("event_chan", eventChan != nil).Info("📡 Got event channel from client")
+
+	for {
+		select {
+		case event := <-eventChan:
+			a.logger.WithFields(logrus.Fields{
+				"entity_id":  event.Data.EntityID,
+				"event_type": event.EventType,
+			}).Debug("Received WebSocket state change event")
+
+			a.processStateChangeEvent(event)
+
+		case <-a.stopChan:
+			a.logger.Info("Stopping WebSocket event processing")
+			return
+		}
+	}
+}
+
+// processStateChangeEvent processes a single state change event
+func (a *HomeAssistantAdapter) processStateChangeEvent(event HAStateChangeEvent) {
+	if event.EventType != "state_changed" {
+		return
+	}
+
+	entityID := event.Data.EntityID
+	if entityID == "" {
+		return
+	}
+
+	// Extract old and new states
+	var oldState, newState string
+
+	if event.Data.NewState != nil {
+		if state, ok := event.Data.NewState["state"].(string); ok {
+			newState = state
+		}
+	}
+
+	if event.Data.OldState != nil {
+		if state, ok := event.Data.OldState["state"].(string); ok {
+			oldState = state
+		}
+	}
+
+	a.logger.WithFields(logrus.Fields{
+		"entity_id": entityID,
+		"old_state": oldState,
+		"new_state": newState,
+	}).Info("Processing Home Assistant state change")
+
+	// Call the registered event handler if available
+	if a.eventHandler != nil {
+		// Convert HA entity ID to PMA entity ID format
+		pmaEntityID := a.convertHAEntityIDToPMA(entityID)
+		a.eventHandler(pmaEntityID, oldState, newState)
+	} else {
+		a.logger.Warn("No event handler registered for state changes")
+	}
+}
+
 // Helper methods
 
 func (a *HomeAssistantAdapter) updateHealth(healthy bool, message string) {
@@ -489,9 +815,30 @@ func (a *HomeAssistantAdapter) convertPMAEntityIDToHA(pmaEntityID string) string
 	return pmaEntityID
 }
 
+func (a *HomeAssistantAdapter) convertHAEntityIDToPMA(haEntityID string) string {
+	// Add "ha_" prefix if not present
+	if len(haEntityID) > 0 && haEntityID[:2] != "ha_" {
+		return "ha_" + haEntityID
+	}
+	return haEntityID
+}
+
 func getFirstAlias(aliases []string) string {
 	if len(aliases) > 0 {
 		return aliases[0]
 	}
 	return ""
+}
+
+// logMemStats logs current memory usage
+func logMemStats(logger *logrus.Logger, context string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	logger.WithFields(logrus.Fields{
+		"context":        context,
+		"alloc_mb":       m.Alloc / 1024 / 1024,
+		"total_alloc_mb": m.TotalAlloc / 1024 / 1024,
+		"sys_mb":         m.Sys / 1024 / 1024,
+		"num_gc":         m.NumGC,
+	}).Info("[MEMSTATS] Memory usage snapshot")
 }

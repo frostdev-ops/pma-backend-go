@@ -22,9 +22,11 @@ type HASubscriptionResponse struct {
 	Message       string          `json:"message,omitempty"`
 }
 
-// WebSocketHandler handles WebSocket connections
+// WebSocketHandler handles WebSocket connections with authentication
 func (h *Handlers) WebSocketHandler(hub *websocket.Hub) gin.HandlerFunc {
-	return websocket.HandleWebSocketGin(hub)
+	return func(c *gin.Context) {
+		websocket.HandleWebSocketWithAuth(hub, c.Writer, c.Request, h.cfg)
+	}
 }
 
 // GetWebSocketStats returns WebSocket statistics

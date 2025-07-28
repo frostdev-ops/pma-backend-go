@@ -23,8 +23,8 @@ func NewRoomRepository(db *sql.DB) repositories.RoomRepository {
 // Create creates a new room
 func (r *RoomRepository) Create(ctx context.Context, room *models.Room) error {
 	query := `
-		INSERT INTO rooms (name, home_assistant_area_id, icon, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO rooms (name, area_id, home_assistant_area_id, icon, description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
 	now := time.Now()
@@ -32,6 +32,7 @@ func (r *RoomRepository) Create(ctx context.Context, room *models.Room) error {
 		ctx,
 		query,
 		room.Name,
+		room.AreaID,
 		room.HomeAssistantAreaID,
 		room.Icon,
 		room.Description,
@@ -57,7 +58,7 @@ func (r *RoomRepository) Create(ctx context.Context, room *models.Room) error {
 // GetByID retrieves a room by ID
 func (r *RoomRepository) GetByID(ctx context.Context, id int) (*models.Room, error) {
 	query := `
-		SELECT id, name, home_assistant_area_id, icon, description, created_at, updated_at
+		SELECT id, name, area_id, home_assistant_area_id, icon, description, created_at, updated_at
 		FROM rooms
 		WHERE id = ?
 	`
@@ -66,6 +67,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id int) (*models.Room, err
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&room.ID,
 		&room.Name,
+		&room.AreaID,
 		&room.HomeAssistantAreaID,
 		&room.Icon,
 		&room.Description,
@@ -86,7 +88,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id int) (*models.Room, err
 // GetByName retrieves a room by name
 func (r *RoomRepository) GetByName(ctx context.Context, name string) (*models.Room, error) {
 	query := `
-		SELECT id, name, home_assistant_area_id, icon, description, created_at, updated_at
+		SELECT id, name, area_id, home_assistant_area_id, icon, description, created_at, updated_at
 		FROM rooms
 		WHERE name = ?
 	`
@@ -95,6 +97,7 @@ func (r *RoomRepository) GetByName(ctx context.Context, name string) (*models.Ro
 	err := r.db.QueryRowContext(ctx, query, name).Scan(
 		&room.ID,
 		&room.Name,
+		&room.AreaID,
 		&room.HomeAssistantAreaID,
 		&room.Icon,
 		&room.Description,
@@ -115,7 +118,7 @@ func (r *RoomRepository) GetByName(ctx context.Context, name string) (*models.Ro
 // GetAll retrieves all rooms
 func (r *RoomRepository) GetAll(ctx context.Context) ([]*models.Room, error) {
 	query := `
-		SELECT id, name, home_assistant_area_id, icon, description, created_at, updated_at
+		SELECT id, name, area_id, home_assistant_area_id, icon, description, created_at, updated_at
 		FROM rooms
 		ORDER BY name
 	`
@@ -132,6 +135,7 @@ func (r *RoomRepository) GetAll(ctx context.Context) ([]*models.Room, error) {
 		err := rows.Scan(
 			&room.ID,
 			&room.Name,
+			&room.AreaID,
 			&room.HomeAssistantAreaID,
 			&room.Icon,
 			&room.Description,
@@ -151,7 +155,7 @@ func (r *RoomRepository) GetAll(ctx context.Context) ([]*models.Room, error) {
 func (r *RoomRepository) Update(ctx context.Context, room *models.Room) error {
 	query := `
 		UPDATE rooms 
-		SET name = ?, home_assistant_area_id = ?, icon = ?, description = ?, updated_at = ?
+		SET name = ?, area_id = ?, home_assistant_area_id = ?, icon = ?, description = ?, updated_at = ?
 		WHERE id = ?
 	`
 
@@ -160,6 +164,7 @@ func (r *RoomRepository) Update(ctx context.Context, room *models.Room) error {
 		ctx,
 		query,
 		room.Name,
+		room.AreaID,
 		room.HomeAssistantAreaID,
 		room.Icon,
 		room.Description,
@@ -203,4 +208,174 @@ func (r *RoomRepository) Delete(ctx context.Context, id int) error {
 	}
 
 	return nil
+}
+
+// GetByAreaID retrieves all rooms in a specific area
+func (r *RoomRepository) GetByAreaID(ctx context.Context, areaID int) ([]*models.Room, error) {
+	query := `
+		SELECT id, name, area_id, home_assistant_area_id, icon, description, created_at, updated_at
+		FROM rooms
+		WHERE area_id = ?
+		ORDER BY name
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, areaID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query rooms by area: %w", err)
+	}
+	defer rows.Close()
+
+	var rooms []*models.Room
+	for rows.Next() {
+		room := &models.Room{}
+		err := rows.Scan(
+			&room.ID,
+			&room.Name,
+			&room.AreaID,
+			&room.HomeAssistantAreaID,
+			&room.Icon,
+			&room.Description,
+			&room.CreatedAt,
+			&room.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan room: %w", err)
+		}
+		rooms = append(rooms, room)
+	}
+
+	return rooms, nil
+}
+
+// GetRoomsWithEntities retrieves rooms with their entities for hierarchical view
+func (r *RoomRepository) GetRoomsWithEntities(ctx context.Context, areaID *int) ([]models.RoomWithEntities, error) {
+	var query string
+	var args []interface{}
+
+	if areaID != nil {
+		query = `
+			SELECT 
+				r.id, r.name, r.area_id, r.home_assistant_area_id, r.icon, r.description,
+				COUNT(e.entity_id) as entity_count
+			FROM rooms r
+			LEFT JOIN entities e ON e.room_id = r.id
+			WHERE r.area_id = ?
+			GROUP BY r.id, r.name, r.area_id, r.home_assistant_area_id, r.icon, r.description
+			ORDER BY r.name
+		`
+		args = append(args, *areaID)
+	} else {
+		query = `
+			SELECT 
+				r.id, r.name, r.area_id, r.home_assistant_area_id, r.icon, r.description,
+				COUNT(e.entity_id) as entity_count
+			FROM rooms r
+			LEFT JOIN entities e ON e.room_id = r.id
+			GROUP BY r.id, r.name, r.area_id, r.home_assistant_area_id, r.icon, r.description
+			ORDER BY r.name
+		`
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query rooms with entities: %w", err)
+	}
+	defer rows.Close()
+
+	var rooms []models.RoomWithEntities
+	for rows.Next() {
+		var room models.RoomWithEntities
+		var areaID sql.NullInt64
+		var haAreaID, icon, description sql.NullString
+
+		err := rows.Scan(
+			&room.ID,
+			&room.Name,
+			&areaID,
+			&haAreaID,
+			&icon,
+			&description,
+			&room.EntityCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan room with entities: %w", err)
+		}
+
+		if areaID.Valid {
+			intVal := int(areaID.Int64)
+			room.AreaID = &intVal
+		}
+		if haAreaID.Valid {
+			room.HomeAssistantAreaID = &haAreaID.String
+		}
+		if icon.Valid {
+			room.Icon = &icon.String
+		}
+		if description.Valid {
+			room.Description = &description.String
+		}
+
+		rooms = append(rooms, room)
+	}
+
+	return rooms, nil
+}
+
+// AssignToArea assigns a room to an area
+func (r *RoomRepository) AssignToArea(ctx context.Context, roomID int, areaID *int) error {
+	query := `UPDATE rooms SET area_id = ?, updated_at = ? WHERE id = ?`
+
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx, query, areaID, now, roomID)
+	if err != nil {
+		return fmt.Errorf("failed to assign room to area: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("room not found with ID: %d", roomID)
+	}
+
+	return nil
+}
+
+// GetUnassignedRooms retrieves all rooms that are not assigned to any area
+func (r *RoomRepository) GetUnassignedRooms(ctx context.Context) ([]*models.Room, error) {
+	query := `
+		SELECT id, name, area_id, home_assistant_area_id, icon, description, created_at, updated_at
+		FROM rooms
+		WHERE area_id IS NULL
+		ORDER BY name
+	`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unassigned rooms: %w", err)
+	}
+	defer rows.Close()
+
+	var rooms []*models.Room
+	for rows.Next() {
+		room := &models.Room{}
+		err := rows.Scan(
+			&room.ID,
+			&room.Name,
+			&room.AreaID,
+			&room.HomeAssistantAreaID,
+			&room.Icon,
+			&room.Description,
+			&room.CreatedAt,
+			&room.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan room: %w", err)
+		}
+		rooms = append(rooms, room)
+	}
+
+	return rooms, nil
 }

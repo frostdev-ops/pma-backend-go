@@ -155,13 +155,13 @@ func (r *UserRepository) GetAll(ctx context.Context) ([]*models.User, error) {
 		FROM users
 		ORDER BY created_at DESC
 	`
-	
+
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query users: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var users []*models.User
 	for rows.Next() {
 		user := &models.User{}
@@ -177,6 +177,6 @@ func (r *UserRepository) GetAll(ctx context.Context) ([]*models.User, error) {
 		}
 		users = append(users, user)
 	}
-	
+
 	return users, nil
 }

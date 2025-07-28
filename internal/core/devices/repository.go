@@ -14,16 +14,16 @@ type Repository interface {
 	GetAllDevices() ([]Device, error)
 	GetDevicesByType(deviceType DeviceType) ([]Device, error)
 	DeleteDevice(id string) error
-	
+
 	// State operations
 	SaveDeviceState(deviceID string, state map[string]interface{}) error
 	GetDeviceState(deviceID string) (map[string]interface{}, error)
 	GetDeviceStateHistory(deviceID string, limit int) ([]DeviceStateEntry, error)
-	
+
 	// Event operations
 	SaveDeviceEvent(event DeviceEvent) error
 	GetDeviceEvents(deviceID string, eventType EventType, since time.Time, limit int) ([]DeviceEvent, error)
-	
+
 	// Credentials operations
 	SaveDeviceCredentials(deviceID string, credentials map[string]interface{}) error
 	GetDeviceCredentials(deviceID string) (map[string]interface{}, error)
@@ -58,7 +58,7 @@ func (m *DeviceModel) ToDevice() Device {
 	for i, cap := range m.Capabilities {
 		capabilities[i] = DeviceCapability(cap)
 	}
-	
+
 	return &BaseDevice{
 		ID:           m.ID,
 		Type:         DeviceType(m.DeviceType),
@@ -78,7 +78,7 @@ func FromDevice(device Device) *DeviceModel {
 	for i, cap := range capabilities {
 		capStrings[i] = string(cap)
 	}
-	
+
 	return &DeviceModel{
 		ID:           device.GetID(),
 		AdapterType:  device.GetAdapter(),

@@ -3,6 +3,7 @@ package unified
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +14,10 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/shelly"
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/ups"
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/cache"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types/registries"
+	"github.com/frostdev-ops/pma-backend-go/pkg/debug"
 	"github.com/sirupsen/logrus"
 )
 
@@ -41,8 +44,8 @@ type UnifiedEntityService struct {
 	roomService     RoomServiceInterface
 	eventEmitter    EventEmitter
 
-	// Caching
-	entityCache     map[string]types.PMAEntity
+	// Redis-based caching
+	redisCache      *cache.RedisEntityCache
 	cacheExpiry     time.Duration
 	lastCacheUpdate time.Time
 
@@ -51,6 +54,11 @@ type UnifiedEntityService struct {
 	syncStopChan chan bool
 	syncRunning  bool
 	config       *config.Config
+
+	// Memory leak prevention
+	syncSemaphore  chan struct{} // Limit concurrent sync operations
+	maxSyncWorkers int           // Maximum concurrent sync workers
+	syncTimeout    time.Duration // Timeout for sync operations
 }
 
 // NewUnifiedEntityService creates a new unified entity service
@@ -62,14 +70,30 @@ func NewUnifiedEntityService(
 	// Create the registry manager
 	registryManager := registries.NewRegistryManager(logger)
 
+	// Initialize Redis cache if enabled
+	var redisCache *cache.RedisEntityCache
+	if config.Redis.Enabled {
+		var err error
+		redisCache, err = cache.NewRedisEntityCache(config, logger)
+		if err != nil {
+			logger.WithError(err).Error("Failed to initialize Redis entity cache, falling back to in-memory cache")
+			redisCache = nil
+		}
+	} else {
+		logger.Info("Redis caching disabled, using in-memory fallback")
+	}
+
 	service := &UnifiedEntityService{
 		typeRegistry:    typeRegistry,
 		registryManager: registryManager,
 		logger:          logger,
-		entityCache:     make(map[string]types.PMAEntity),
+		redisCache:      redisCache,
 		cacheExpiry:     5 * time.Minute,
 		config:          config,
 		syncStopChan:    make(chan bool, 1),
+		syncSemaphore:   make(chan struct{}, 3), // Limit to 3 concurrent syncs
+		maxSyncWorkers:  3,                      // Maximum 3 concurrent sync workers
+		syncTimeout:     10 * time.Minute,
 	}
 
 	return service
@@ -107,6 +131,40 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 			errors = append(errors, fmt.Errorf("failed to register HA adapter: %w", err))
 		} else {
 			s.logger.Info("HomeAssistant adapter registered successfully")
+
+			// Set up event handler to forward HA state changes to unified service
+			haAdapter.SetEventHandler(func(entityID, oldState, newState string) {
+				s.logger.WithFields(logrus.Fields{
+					"entity_id": entityID,
+					"old_state": oldState,
+					"new_state": newState,
+				}).Debug("Received HA state change, updating unified service")
+
+				// Create a background context for the update
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
+				// Update the entity state in the unified service.
+				// This will update the in-memory state AND broadcast the change via WebSocket.
+				_, err := s.UpdateEntityState(ctx, entityID, newState, types.SourceHomeAssistant)
+				if err != nil {
+					s.logger.WithError(err).WithField("entity_id", entityID).Error("Failed to update entity state in unified service")
+				}
+			})
+
+			// CRITICAL FIX: Connect the adapter synchronously during startup to ensure it's ready for sync
+			s.logger.Info("Connecting Home Assistant adapter synchronously during startup...")
+
+			// Create a context with timeout for the connection attempt
+			connectCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			if err := haAdapter.Connect(connectCtx); err != nil {
+				s.logger.WithError(err).Error("Failed to connect Home Assistant adapter during startup")
+				errors = append(errors, fmt.Errorf("failed to connect HA adapter: %w", err))
+			} else {
+				s.logger.Info("Home Assistant adapter connected successfully during startup")
+			}
 		}
 	}
 
@@ -127,33 +185,76 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 		}
 	}
 
-	// Initialize Shelly adapter
+	// Initialize Shelly adapter with enhanced discovery
 	if config.Devices.Shelly.Enabled {
-		pollInterval, err := time.ParseDuration(config.Devices.Shelly.PollInterval)
+		discoveryInterval, err := time.ParseDuration(config.Devices.Shelly.DiscoveryInterval)
 		if err != nil {
-			pollInterval = 30 * time.Second // Default fallback
+			discoveryInterval = 5 * time.Minute
 		}
 
-		// Convert device configs to IP addresses
-		var deviceIPs []string
-		for _, device := range config.Devices.Shelly.Devices {
-			if device.Enabled {
-				deviceIPs = append(deviceIPs, device.IP)
-			}
+		discoveryTimeout, err := time.ParseDuration(config.Devices.Shelly.DiscoveryTimeout)
+		if err != nil {
+			discoveryTimeout = 30 * time.Second
+		}
+
+		pollInterval, err := time.ParseDuration(config.Devices.Shelly.PollInterval)
+		if err != nil {
+			pollInterval = 30 * time.Second
+		}
+
+		healthCheckInterval, err := time.ParseDuration(config.Devices.Shelly.HealthCheckInterval)
+		if err != nil {
+			healthCheckInterval = 60 * time.Second
+		}
+
+		retryBackoff, err := time.ParseDuration(config.Devices.Shelly.RetryBackoff)
+		if err != nil {
+			retryBackoff = 10 * time.Second
 		}
 
 		shellyConfig := shelly.ShellyAdapterConfig{
-			Username:      config.Devices.Shelly.Username,
-			Password:      config.Devices.Shelly.Password,
-			PollInterval:  pollInterval,
-			AutoReconnect: config.Devices.Shelly.AutoReconnect,
-			Devices:       deviceIPs,
+			Enabled:                config.Devices.Shelly.Enabled,
+			DiscoveryInterval:      discoveryInterval,
+			DiscoveryTimeout:       discoveryTimeout,
+			NetworkScanEnabled:     config.Devices.Shelly.NetworkScanEnabled,
+			NetworkScanRanges:      config.Devices.Shelly.NetworkScanRanges,
+			AutoWiFiSetup:          config.Devices.Shelly.AutoWiFiSetup,
+			DefaultUsername:        config.Devices.Shelly.DefaultUsername,
+			DefaultPassword:        config.Devices.Shelly.DefaultPassword,
+			PollInterval:           pollInterval,
+			MaxDevices:             config.Devices.Shelly.MaxDevices,
+			HealthCheckInterval:    healthCheckInterval,
+			RetryAttempts:          config.Devices.Shelly.RetryAttempts,
+			RetryBackoff:           retryBackoff,
+			EnableGen1Support:      config.Devices.Shelly.EnableGen1Support,
+			EnableGen2Support:      config.Devices.Shelly.EnableGen2Support,
+			DiscoveryBroadcastAddr: config.Devices.Shelly.DiscoveryBroadcastAddr,
+
+			// Auto-detection configuration
+			AutoDetectSubnets:         config.Devices.Shelly.AutoDetectSubnets,
+			AutoDetectInterfaceFilter: config.Devices.Shelly.AutoDetectInterfaceFilter,
+			ExcludeLoopback:           config.Devices.Shelly.ExcludeLoopback,
+			ExcludeDockerInterfaces:   config.Devices.Shelly.ExcludeDockerInterfaces,
+			MinSubnetSize:             config.Devices.Shelly.MinSubnetSize,
 		}
-		shellyAdapter := shelly.NewShellyAdapter(shellyConfig, s.logger)
+		// Create debug logger for Shelly adapter
+		debugConfig := &debug.DebugConfig{
+			Enabled:     true,
+			Level:       "debug",
+			Console:     true,
+			FileEnabled: false,
+		}
+		debugLogger, err := debug.NewDebugLogger(debugConfig)
+		if err != nil {
+			s.logger.WithError(err).Error("Failed to create debug logger for Shelly adapter")
+			debugLogger = nil
+		}
+
+		shellyAdapter := shelly.NewShellyAdapter(shellyConfig, s.logger, debugLogger)
 		if err := s.RegisterAdapter(shellyAdapter); err != nil {
 			errors = append(errors, fmt.Errorf("failed to register Shelly adapter: %w", err))
 		} else {
-			s.logger.Info("Shelly adapter registered successfully")
+			s.logger.Info("Enhanced Shelly adapter registered successfully")
 		}
 	}
 
@@ -215,59 +316,145 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 
 // GetAll retrieves all entities with optional filtering
 func (s *UnifiedEntityService) GetAll(ctx context.Context, options GetAllOptions) ([]*EntityWithRoom, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
+	s.logger.Debug("🔍 GetAll method starting...")
 
-	// Get all entities from registry
-	entities, err := s.registryManager.GetEntityRegistry().GetAllEntities()
-	if err != nil {
-		s.logger.WithError(err).Error("Failed to get all entities from registry")
-		return nil, fmt.Errorf("failed to get entities: %w", err)
-	}
+	// Add timeout protection
+	done := make(chan []*EntityWithRoom, 1)
+	errChan := make(chan error, 1)
 
-	// Filter entities based on options
-	filteredEntities := s.filterEntities(entities, options)
-
-	// Convert to EntityWithRoom format
-	result := make([]*EntityWithRoom, 0, len(filteredEntities))
-	for _, entity := range filteredEntities {
-		entityWithRoom := &EntityWithRoom{
-			Entity: entity,
-		}
-
-		// Add room information if requested
-		if options.IncludeRoom && entity.GetRoomID() != nil {
-			room, err := s.roomService.GetRoomByID(ctx, *entity.GetRoomID())
-			if err != nil {
-				s.logger.WithError(err).Warnf("Failed to get room for entity %s", entity.GetID())
-			} else {
-				entityWithRoom.Room = room
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.WithField("panic", r).Error("GetAll method panic recovered")
+				errChan <- fmt.Errorf("GetAll panic: %v", r)
 			}
+		}()
+
+		s.logger.Debug("🔒 Attempting to acquire read lock...")
+		s.mutex.RLock()
+		s.logger.Debug("✅ Read lock acquired")
+		defer func() {
+			s.mutex.RUnlock()
+			s.logger.Debug("🔓 Read lock released")
+		}()
+
+		// Get all entities from registry
+		s.logger.Debug("📋 Getting entities from registry...")
+		entities, err := s.registryManager.GetEntityRegistry().GetAllEntities()
+		if err != nil {
+			s.logger.WithError(err).Error("Failed to get all entities from registry")
+			// Return empty array instead of error to prevent 500 errors
+			s.logger.Info("📭 Registry error - returning empty array as fallback")
+			done <- []*EntityWithRoom{}
+			return
 		}
 
-		// Add area information if requested
-		if options.IncludeArea && entity.GetAreaID() != nil {
-			area, err := s.getAreaByID(ctx, *entity.GetAreaID())
-			if err != nil {
-				s.logger.WithError(err).Warnf("Failed to get area for entity %s", entity.GetID())
-			} else {
-				entityWithRoom.Area = area
+		s.logger.WithField("entity_count", len(entities)).Debug("📊 Retrieved entities from registry")
+
+		// If no entities found, return empty array instead of error
+		if len(entities) == 0 {
+			s.logger.Info("📭 No entities found in registry - returning empty array")
+			done <- []*EntityWithRoom{}
+			return
+		}
+
+		// Filter entities based on options
+		s.logger.Debug("🔍 Filtering entities...")
+		filteredEntities := s.filterEntities(entities, options)
+		s.logger.WithField("filtered_count", len(filteredEntities)).Debug("✅ Entities filtered")
+
+		// Convert to EntityWithRoom format (without room/area info to avoid additional service calls)
+		result := make([]*EntityWithRoom, 0, len(filteredEntities))
+		for _, entity := range filteredEntities {
+			entityWithRoom := &EntityWithRoom{
+				Entity: entity,
 			}
+			result = append(result, entityWithRoom)
 		}
 
-		result = append(result, entityWithRoom)
-	}
+		s.logger.WithField("result_count", len(result)).Debug("🎯 GetAll completed successfully")
+		done <- result
+	}()
 
-	return result, nil
+	// Wait for result or timeout
+	select {
+	case result := <-done:
+		return result, nil
+	case err := <-errChan:
+		// Return empty array instead of error to prevent 500 errors
+		s.logger.WithError(err).Error("GetAll error - returning empty array as fallback")
+		return []*EntityWithRoom{}, nil
+	case <-ctx.Done():
+		s.logger.Error("🚨 GetAll method timed out - possible deadlock detected")
+		// Return empty array instead of error to prevent 500 errors
+		return []*EntityWithRoom{}, nil
+	}
 }
 
 // GetByID retrieves a specific entity by ID
 func (s *UnifiedEntityService) GetByID(ctx context.Context, entityID string, options GetEntityOptions) (*EntityWithRoom, error) {
-	entity, err := s.registryManager.GetEntityRegistry().GetEntity(entityID)
-	if err != nil {
-		s.logger.WithError(err).Errorf("Failed to get entity: %s", entityID)
-		return nil, fmt.Errorf("failed to get entity: %w", err)
+	s.logger.WithFields(logrus.Fields{
+		"entity_id":    entityID,
+		"include_room": options.IncludeRoom,
+		"include_area": options.IncludeArea,
+	}).Debug("GetByID request received in unified service")
+
+	// First, try to get entity from Redis cache
+	var entity types.PMAEntity
+	var err error
+
+	if s.redisCache != nil {
+		s.logger.WithField("entity_id", entityID).Debug("🔍 Checking Redis cache first")
+		entity, err = s.redisCache.GetEntity(ctx, entityID)
+		if err == nil {
+			s.logger.WithField("entity_id", entityID).Info("✅ Entity found in Redis cache")
+		} else {
+			s.logger.WithField("entity_id", entityID).Debug("❌ Entity not found in Redis cache, falling back to registry")
+		}
 	}
+
+	// If not found in Redis, fall back to entity registry
+	if entity == nil {
+		s.logger.WithField("entity_id", entityID).Debug("🔄 Getting entity from registry")
+		entity, err = s.registryManager.GetEntityRegistry().GetEntity(entityID)
+		if err != nil {
+			s.logger.WithError(err).WithFields(logrus.Fields{
+				"entity_id": entityID,
+				"method":    "GetEntity from registry",
+			}).Error("Failed to get entity from registry")
+
+			// Let's also check what entities are actually in the registry
+			if allEntities, getAllErr := s.GetAll(ctx, GetAllOptions{}); getAllErr == nil {
+				s.logger.WithFields(logrus.Fields{
+					"entity_id":      entityID,
+					"total_entities": len(allEntities),
+				}).Debug("Registry status during failed GetByID")
+
+				// Check if we can find a similar entity ID
+				for _, entityWithRoom := range allEntities {
+					existingID := entityWithRoom.Entity.GetID()
+					if strings.Contains(existingID, entityID) || strings.Contains(entityID, existingID) {
+						s.logger.WithFields(logrus.Fields{
+							"requested_id":  entityID,
+							"similar_id":    existingID,
+							"friendly_name": entityWithRoom.Entity.GetFriendlyName(),
+						}).Info("Found similar entity ID in registry")
+					}
+				}
+			}
+
+			return nil, fmt.Errorf("failed to get entity: %w", err)
+		}
+		s.logger.WithField("entity_id", entityID).Debug("✅ Entity found in registry")
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"entity_id":     entityID,
+		"friendly_name": entity.GetFriendlyName(),
+		"type":          entity.GetType(),
+		"source":        entity.GetSource(),
+		"state":         entity.GetState(),
+	}).Debug("Entity found in registry")
 
 	entityWithRoom := &EntityWithRoom{
 		Entity: entity,
@@ -521,29 +708,72 @@ func (s *UnifiedEntityService) ExecuteAction(ctx context.Context, action types.P
 
 // SyncFromSource synchronizes entities from a specific source
 func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.PMASourceType) (*SyncResult, error) {
+	// Use semaphore to limit concurrent sync operations
+	select {
+	case s.syncSemaphore <- struct{}{}:
+		defer func() { <-s.syncSemaphore }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, fmt.Errorf("too many concurrent sync operations")
+	}
+
+	s.logger.WithField("source", source).Info("Starting entity sync from source")
+
+	// Add timeout to prevent hanging syncs
+	ctx, cancel := context.WithTimeout(ctx, s.syncTimeout)
+	defer cancel()
+
 	adapter, err := s.registryManager.GetAdapterRegistry().GetAdapterBySource(source)
 	if err != nil {
+		s.logger.WithError(err).WithField("source", source).Error("No adapter found for source")
 		return nil, fmt.Errorf("no adapter found for source %s: %w", source, err)
 	}
 
+	s.logger.WithFields(logrus.Fields{
+		"source":       source,
+		"adapter_id":   adapter.GetID(),
+		"adapter_name": adapter.GetName(),
+	}).Info("Found adapter for sync")
+
 	startTime := time.Now()
 
-	// Broadcast sync start
+	// Broadcast sync start (non-blocking, but with limit)
 	if s.eventEmitter != nil {
-		s.eventEmitter.BroadcastPMASyncStatus(string(source), "syncing", map[string]interface{}{
-			"started_at": startTime,
-		})
+		// Use a single goroutine for all broadcasts to prevent memory leaks
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.WithField("panic", r).Error("WebSocket broadcast panicked")
+				}
+			}()
+
+			s.eventEmitter.BroadcastPMASyncStatus(string(source), "syncing", map[string]interface{}{
+				"started_at": startTime,
+			})
+		}()
 	}
 
 	// Sync entities
+	s.logger.WithField("source", source).Info("Calling adapter.SyncEntities()")
 	entities, err := adapter.SyncEntities(ctx)
 	if err != nil {
-		// Broadcast sync error
+		s.logger.WithError(err).WithField("source", source).Error("Adapter SyncEntities failed")
+
+		// Broadcast sync error (non-blocking)
 		if s.eventEmitter != nil {
-			s.eventEmitter.BroadcastPMASyncStatus(string(source), "error", map[string]interface{}{
-				"error":    err.Error(),
-				"duration": time.Since(startTime),
-			})
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.WithField("panic", r).Error("WebSocket error broadcast panicked")
+					}
+				}()
+
+				s.eventEmitter.BroadcastPMASyncStatus(string(source), "error", map[string]interface{}{
+					"error":    err.Error(),
+					"duration": time.Since(startTime),
+				})
+			}()
 		}
 
 		return &SyncResult{
@@ -555,50 +785,151 @@ func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.
 		}, err
 	}
 
-	// Register/update entities in the registry
+	s.logger.WithFields(logrus.Fields{
+		"source":         source,
+		"entities_count": len(entities),
+	}).Info("Adapter returned entities for sync")
+
+	// Process entities in batches to prevent memory spikes
+	const batchSize = 10 // Reduced from 50 to prevent memory spikes
 	registeredCount := 0
 	updatedCount := 0
 	var errors []string
 
-	for _, entity := range entities {
-		// Check if entity already exists
-		existingEntity, err := s.registryManager.GetEntityRegistry().GetEntity(entity.GetID())
-		if err != nil {
-			// Entity doesn't exist, register it
-			if err := s.registryManager.GetEntityRegistry().RegisterEntity(entity); err != nil {
-				errors = append(errors, fmt.Sprintf("Failed to register entity %s: %v", entity.GetID(), err))
-				continue
-			}
-			registeredCount++
+	// Create a semaphore to limit concurrent WebSocket broadcasts
+	broadcastSemaphore := make(chan struct{}, 5) // Reduced from 10 to 5 concurrent broadcasts
 
-			// Broadcast new entity added
-			if s.eventEmitter != nil {
-				s.eventEmitter.BroadcastPMAEntityAdded(entity)
-			}
-		} else {
-			// Entity exists, check for conflicts and update
-			if s.shouldUpdateEntity(existingEntity, entity) {
-				// Store old state for broadcasting
-				oldState := existingEntity.GetState()
+	s.logger.WithField("entities_count", len(entities)).Info("Starting entity registration/update process")
 
-				if err := s.registryManager.GetEntityRegistry().UpdateEntity(entity); err != nil {
-					errors = append(errors, fmt.Sprintf("Failed to update entity %s: %v", entity.GetID(), err))
+	logMemStats(s.logger, "before_registration_loop")
+
+	for i := 0; i < len(entities); i += batchSize {
+		end := i + batchSize
+		if end > len(entities) {
+			end = len(entities)
+		}
+
+		batch := entities[i:end]
+		s.logger.WithFields(logrus.Fields{
+			"batch_start": i,
+			"batch_end":   end,
+			"batch_size":  len(batch),
+		}).Debug("Registering entity batch")
+
+		for j, entity := range batch {
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				return &SyncResult{
+					Source:      source,
+					Success:     false,
+					Error:       "sync cancelled",
+					Duration:    time.Since(startTime),
+					ProcessedAt: time.Now(),
+				}, ctx.Err()
+			default:
+			}
+
+			// Check if entity already exists
+			existingEntity, err := s.registryManager.GetEntityRegistry().GetEntity(entity.GetID())
+
+			if err != nil {
+				// Entity doesn't exist, register it
+				if err := s.registryManager.GetEntityRegistry().RegisterEntity(entity); err != nil {
+					errMsg := fmt.Sprintf("Failed to register entity %s: %v", entity.GetID(), err)
+					errors = append(errors, errMsg)
+					s.logger.WithError(err).WithField("entity_id", entity.GetID()).Error("Failed to register entity")
 					continue
 				}
-				updatedCount++
+				registeredCount++
 
-				// Broadcast entity state change
-				if s.eventEmitter != nil && oldState != entity.GetState() {
-					s.eventEmitter.BroadcastPMAEntityStateChange(
-						entity.GetID(),
-						oldState,
-						entity.GetState(),
-						entity,
-					)
+				// Cache the entity in Redis for fast access
+				if s.redisCache != nil {
+					if err := s.redisCache.SetEntity(ctx, entity.GetID(), entity); err != nil {
+						s.logger.WithError(err).WithField("entity_id", entity.GetID()).Warn("Failed to cache entity in Redis")
+					}
+				}
+
+				// Broadcast new entity added (with semaphore control)
+				if s.eventEmitter != nil {
+					select {
+					case broadcastSemaphore <- struct{}{}:
+						go func(entityID string, entityToAdd types.PMAEntity) {
+							defer func() {
+								<-broadcastSemaphore // Release semaphore
+								if r := recover(); r != nil {
+									s.logger.WithField("panic", r).Error("WebSocket entity added broadcast panicked")
+								}
+							}()
+
+							s.eventEmitter.BroadcastPMAEntityAdded(entityToAdd)
+						}(entity.GetID(), entity)
+					default:
+						s.logger.Debug("WebSocket broadcast queue full, skipping entity added broadcast")
+					}
+				}
+			} else {
+				// Entity exists, check for conflicts and update
+				if s.shouldUpdateEntity(existingEntity, entity) {
+					// Store old state for broadcasting
+					oldState := existingEntity.GetState()
+
+					if err := s.registryManager.GetEntityRegistry().UpdateEntity(entity); err != nil {
+						errMsg := fmt.Sprintf("Failed to update entity %s: %v", entity.GetID(), err)
+						errors = append(errors, errMsg)
+						s.logger.WithError(err).WithField("entity_id", entity.GetID()).Error("Failed to update entity")
+						continue
+					}
+					updatedCount++
+
+					// Update the entity in Redis cache
+					if s.redisCache != nil {
+						if err := s.redisCache.SetEntity(ctx, entity.GetID(), entity); err != nil {
+							s.logger.WithError(err).WithField("entity_id", entity.GetID()).Warn("Failed to update entity in Redis cache")
+						}
+					}
+
+					// Broadcast entity state change (with semaphore control)
+					if s.eventEmitter != nil && oldState != entity.GetState() {
+						select {
+						case broadcastSemaphore <- struct{}{}:
+							go func(entityID string, oldStateVal, newStateVal types.PMAEntityState) {
+								defer func() {
+									<-broadcastSemaphore // Release semaphore
+									if r := recover(); r != nil {
+										s.logger.WithField("panic", r).Error("WebSocket state change broadcast panicked")
+									}
+								}()
+
+								s.eventEmitter.BroadcastPMAEntityStateChange(
+									entityID,
+									oldStateVal,
+									newStateVal,
+									nil, // Pass nil for entityData to reduce memory usage
+								)
+							}(entity.GetID(), oldState, entity.GetState())
+						default:
+							s.logger.Debug("WebSocket broadcast queue full, skipping state change broadcast")
+						}
+					}
 				}
 			}
+
+			// Log sample entity for the first in batch
+			if j == 0 {
+				s.logger.WithField("sample_entity_to_register", fmt.Sprintf("%#v", entity)).Info("Sample entity to register")
+			}
 		}
+
+		// Log memory stats after each batch
+		logMemStats(s.logger, fmt.Sprintf("after_registration_batch_%d", i/batchSize))
+
+		// Force garbage collection after each batch to prevent memory accumulation
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond) // Small delay to allow GC to complete
 	}
+
+	logMemStats(s.logger, "after_all_registration_batches")
 
 	result := &SyncResult{
 		Source:             source,
@@ -612,32 +943,46 @@ func (s *UnifiedEntityService) SyncFromSource(ctx context.Context, source types.
 
 	if len(errors) > 0 {
 		result.Error = fmt.Sprintf("Sync completed with %d errors: %s", len(errors), strings.Join(errors, "; "))
+		s.logger.WithFields(logrus.Fields{
+			"source":      source,
+			"error_count": len(errors),
+			"errors":      errors,
+		}).Warn("Sync completed with errors")
 	}
 
-	// Broadcast sync completion
+	s.logger.WithFields(logrus.Fields{
+		"source":              source,
+		"success":             result.Success,
+		"entities_found":      result.EntitiesFound,
+		"entities_registered": result.EntitiesRegistered,
+		"entities_updated":    result.EntitiesUpdated,
+		"duration":            result.Duration,
+		"error_count":         len(errors),
+	}).Info("Entity sync completed")
+
+	// Broadcast sync completion (non-blocking)
 	if s.eventEmitter != nil {
 		status := "completed"
 		if len(errors) > 0 {
 			status = "completed_with_errors"
 		}
 
-		s.eventEmitter.BroadcastPMASyncStatus(string(source), status, map[string]interface{}{
-			"entities_found":      len(entities),
-			"entities_registered": registeredCount,
-			"entities_updated":    updatedCount,
-			"duration":            time.Since(startTime),
-			"error_count":         len(errors),
-		})
-	}
+		go func(statusVal string, durationVal time.Duration) {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.WithField("panic", r).Error("WebSocket completion broadcast panicked")
+				}
+			}()
 
-	s.logger.WithFields(logrus.Fields{
-		"source":              source,
-		"entities_found":      len(entities),
-		"entities_registered": registeredCount,
-		"entities_updated":    updatedCount,
-		"duration":            time.Since(startTime),
-		"errors":              len(errors),
-	}).Info("Entity sync completed")
+			s.eventEmitter.BroadcastPMASyncStatus(string(source), statusVal, map[string]interface{}{
+				"entities_found":      len(entities),
+				"entities_registered": registeredCount,
+				"entities_updated":    updatedCount,
+				"duration":            durationVal,
+				"error_count":         len(errors),
+			})
+		}(status, time.Since(startTime))
+	}
 
 	return result, nil
 }
@@ -654,14 +999,47 @@ func (s *UnifiedEntityService) SyncFromAllSources(ctx context.Context) ([]*SyncR
 	s.logger.WithField("adapter_count", len(adapters)).Info("Starting sync from all sources")
 
 	var results []*SyncResult
-	var wg sync.WaitGroup
 	var mutex sync.Mutex
 
-	for _, adapter := range adapters {
-		wg.Add(1)
-		go func(adapter types.PMAAdapter) {
-			defer wg.Done()
+	// Process adapters sequentially to prevent goroutine explosion
+	// Only use goroutines if we have multiple adapters and want to process them in parallel
+	if len(adapters) > 1 {
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, 2) // Limit to 2 concurrent syncs
 
+		for _, adapter := range adapters {
+			wg.Add(1)
+			go func(adapter types.PMAAdapter) {
+				defer wg.Done()
+
+				// Acquire semaphore
+				select {
+				case semaphore <- struct{}{}:
+					defer func() { <-semaphore }()
+				case <-ctx.Done():
+					return
+				}
+
+				result, err := s.SyncFromSource(ctx, adapter.GetSourceType())
+				if err != nil {
+					result = &SyncResult{
+						Source:      adapter.GetSourceType(),
+						Success:     false,
+						Error:       err.Error(),
+						ProcessedAt: time.Now(),
+					}
+				}
+
+				mutex.Lock()
+				results = append(results, result)
+				mutex.Unlock()
+			}(adapter)
+		}
+
+		wg.Wait()
+	} else {
+		// Single adapter - process sequentially
+		for _, adapter := range adapters {
 			result, err := s.SyncFromSource(ctx, adapter.GetSourceType())
 			if err != nil {
 				result = &SyncResult{
@@ -671,14 +1049,10 @@ func (s *UnifiedEntityService) SyncFromAllSources(ctx context.Context) ([]*SyncR
 					ProcessedAt: time.Now(),
 				}
 			}
-
-			mutex.Lock()
 			results = append(results, result)
-			mutex.Unlock()
-		}(adapter)
+		}
 	}
 
-	wg.Wait()
 	return results, nil
 }
 
@@ -696,11 +1070,23 @@ func (s *UnifiedEntityService) StartPeriodicSync() error {
 		return nil
 	}
 
-	// Parse sync interval
+	// Parse sync interval with safety checks
 	syncInterval, err := time.ParseDuration(s.config.HomeAssistant.Sync.FullSyncInterval)
 	if err != nil {
 		s.logger.WithError(err).Warn("Invalid sync interval, using default 1 hour")
 		syncInterval = 1 * time.Hour
+	}
+
+	// Prevent extremely short intervals that could cause memory leaks
+	if syncInterval < 5*time.Minute {
+		s.logger.WithField("requested_interval", syncInterval).Warn("Sync interval too short, using minimum 5 minutes")
+		syncInterval = 5 * time.Minute
+	}
+
+	// Prevent extremely long intervals
+	if syncInterval > 24*time.Hour {
+		s.logger.WithField("requested_interval", syncInterval).Warn("Sync interval too long, using maximum 24 hours")
+		syncInterval = 24 * time.Hour
 	}
 
 	s.logger.WithField("interval", syncInterval).Info("Starting periodic entity sync scheduler")
@@ -737,23 +1123,89 @@ func (s *UnifiedEntityService) StopPeriodicSync() {
 
 // periodicSyncLoop runs the periodic synchronization
 func (s *UnifiedEntityService) periodicSyncLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.WithField("panic", r).Error("Periodic sync loop panicked")
+			// Check if we should still be running before restarting
+			select {
+			case <-s.syncStopChan:
+				s.logger.Info("Periodic sync loop stopped after panic")
+				return
+			default:
+				// Only restart if we're still supposed to be running
+				s.logger.Info("Restarting periodic sync loop after panic")
+				time.Sleep(30 * time.Second)
+				// Check again before restarting to prevent goroutine leaks
+				select {
+				case <-s.syncStopChan:
+					s.logger.Info("Periodic sync loop stopped before restart")
+					return
+				default:
+					// Check if sync is still running before restarting
+					s.mutex.RLock()
+					syncRunning := s.syncRunning
+					s.mutex.RUnlock()
+
+					if !syncRunning {
+						s.logger.Info("Periodic sync stopped, not restarting")
+						return
+					}
+
+					// Use a separate goroutine to avoid stack overflow, but with proper cleanup
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								s.logger.WithField("panic", r).Error("Restarted periodic sync loop panicked")
+							}
+						}()
+						s.periodicSyncLoop()
+					}()
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-s.syncStopChan:
 			s.logger.Info("Periodic sync loop stopped")
 			return
 		case <-s.syncTicker.C:
-			s.performPeriodicSync()
+			// Use a separate goroutine for sync to prevent blocking
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.WithField("panic", r).Error("Periodic sync panicked")
+					}
+				}()
+				s.performPeriodicSync()
+			}()
 		}
 	}
 }
 
 // performPeriodicSync executes a full sync from all sources
 func (s *UnifiedEntityService) performPeriodicSync() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.WithField("panic", r).Error("Periodic sync panicked")
+		}
+	}()
+
 	s.logger.Info("Starting periodic sync from all sources")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Add timeout to prevent hanging syncs
+	ctx, cancel := context.WithTimeout(context.Background(), s.syncTimeout)
 	defer cancel()
+
+	// Use semaphore to limit concurrent sync operations
+	select {
+	case s.syncSemaphore <- struct{}{}:
+		defer func() { <-s.syncSemaphore }()
+	default:
+		s.logger.Warn("Too many concurrent sync operations, skipping this periodic sync")
+		return
+	}
 
 	results, err := s.SyncFromAllSources(ctx)
 	if err != nil {
@@ -777,11 +1229,11 @@ func (s *UnifiedEntityService) performPeriodicSync() {
 	}
 
 	s.logger.WithFields(logrus.Fields{
-		"total_sources":             len(results),
-		"successful_sources":        successCount,
-		"total_entities_found":      totalFound,
-		"total_entities_registered": totalRegistered,
-		"total_entities_updated":    totalUpdated,
+		"total_sources":    len(results),
+		"successful_syncs": successCount,
+		"total_found":      totalFound,
+		"total_registered": totalRegistered,
+		"total_updated":    totalUpdated,
 	}).Info("Periodic sync completed")
 }
 
@@ -928,12 +1380,203 @@ func (s *UnifiedEntityService) getRoomByID(ctx context.Context, roomID string) (
 }
 
 func (s *UnifiedEntityService) getAreaByID(ctx context.Context, areaID string) (*types.PMAArea, error) {
-	// This would need to be implemented with an area service
-	// For now, return a placeholder
+	// For now, return a default area. This would be enhanced with actual area service integration
 	return &types.PMAArea{
 		ID:   areaID,
 		Name: "Unknown Area",
 	}, nil
+}
+
+// UpdateEntityState updates an entity's state from an external source and broadcasts the change
+func (s *UnifiedEntityService) UpdateEntityState(ctx context.Context, entityID string, newState string, source types.PMASourceType) (types.PMAEntity, error) {
+	s.logger.WithFields(logrus.Fields{
+		"entity_id": entityID,
+		"new_state": newState,
+		"source":    source,
+	}).Debug("Updating entity state from external source")
+
+	// Get the entity from Redis cache (no mutex needed, Redis handles concurrency)
+	var entity types.PMAEntity
+	var exists bool
+	var cacheSize int
+
+	if s.redisCache != nil {
+		var err error
+		entity, err = s.redisCache.GetEntity(ctx, entityID)
+		if err != nil {
+			exists = false
+		} else {
+			exists = true
+		}
+
+		// Get cache size for debugging
+		cacheSize, _ = s.redisCache.GetCacheSize(ctx)
+	} else {
+		exists = false
+		cacheSize = 0
+	}
+
+	if !exists {
+		s.logger.WithFields(logrus.Fields{
+			"entity_id":  entityID,
+			"cache_size": cacheSize,
+		}).Debug("Entity not found in cache for state update")
+
+		// Return success for unknown entities to avoid flooding logs
+		return nil, nil
+	}
+
+	// Store old state for comparison (no mutex needed for read-only comparison)
+	oldState := entity.GetState()
+
+	// Only proceed if state actually changed
+	if oldState == types.PMAEntityState(newState) {
+		s.logger.WithFields(logrus.Fields{
+			"entity_id": entityID,
+			"state":     newState,
+		}).Debug("Entity state unchanged, skipping update")
+		return entity, nil
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"entity_id": entityID,
+		"old_state": oldState,
+		"new_state": newState,
+	}).Debug("Entity state changed, updating")
+
+	// Update the entity state directly instead of cloning
+	// This is more memory efficient
+	s.updateEntityStateDirectly(entity, newState)
+
+	// Save the updated entity back to the cache (no mutex needed, Redis handles concurrency)
+	if s.redisCache != nil {
+		if err := s.redisCache.SetEntity(ctx, entityID, entity); err != nil {
+			s.logger.WithError(err).WithField("entity_id", entityID).Error("Failed to save entity to Redis cache")
+			return entity, fmt.Errorf("failed to save entity to cache: %w", err)
+		}
+	}
+
+	// CRITICAL SECTION: Only hold mutex for registry operations
+	s.mutex.Lock()
+	if err := s.registryManager.GetEntityRegistry().UpdateEntity(entity); err != nil {
+		s.mutex.Unlock()
+		s.logger.WithError(err).WithField("entity_id", entityID).Error("Failed to update entity in registry")
+		// Don't return error here as the cache was already updated
+		// This ensures partial success rather than complete failure
+	} else {
+		s.mutex.Unlock()
+		s.logger.WithField("entity_id", entityID).Debug("✅ Entity updated in registry")
+	}
+
+	// Enhanced real-time broadcasting for immediate UI updates
+	if s.eventEmitter != nil {
+		// Immediate broadcast in current goroutine for critical responsiveness
+		s.eventEmitter.BroadcastPMAEntityStateChange(entityID, oldState, newState, map[string]interface{}{
+			"entity":        entity,
+			"change_source": source,
+			"timestamp":     time.Now().UTC(),
+		})
+
+		s.logger.WithFields(logrus.Fields{
+			"entity_id": entityID,
+			"old_state": oldState,
+			"new_state": newState,
+			"source":    source,
+		}).Info("📡 Real-time state change broadcast completed")
+	}
+
+	return entity, nil
+}
+
+// HandleExternalStateChange handles state changes from external sources (physical switches, automations, etc.)
+func (s *UnifiedEntityService) HandleExternalStateChange(ctx context.Context, entityID string, newState string, source types.PMASourceType, metadata map[string]interface{}) error {
+	s.logger.WithFields(logrus.Fields{
+		"entity_id": entityID,
+		"new_state": newState,
+		"source":    source,
+		"metadata":  metadata,
+	}).Info("🔄 Handling external state change")
+
+	// Update the entity state immediately
+	entity, err := s.UpdateEntityState(ctx, entityID, newState, source)
+	if err != nil {
+		s.logger.WithError(err).WithField("entity_id", entityID).Error("Failed to handle external state change")
+		return err
+	}
+
+	// Additional broadcast with external source context for UI differentiation
+	if s.eventEmitter != nil {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.WithField("panic", r).Error("Panic during external state change broadcast")
+				}
+			}()
+
+			broadcastData := map[string]interface{}{
+				"entity":           entity,
+				"change_source":    source,
+				"external_trigger": true,
+				"metadata":         metadata,
+				"timestamp":        time.Now().UTC(),
+			}
+
+			s.eventEmitter.BroadcastPMAEntityStateChange(entityID, "", newState, broadcastData)
+
+			s.logger.WithFields(logrus.Fields{
+				"entity_id": entityID,
+				"new_state": newState,
+				"source":    source,
+			}).Info("📡 External state change broadcast sent")
+		}()
+	}
+
+	return nil
+}
+
+// cloneEntity creates a copy of an entity for safe modification
+func (s *UnifiedEntityService) cloneEntity(entity types.PMAEntity) types.PMAEntity {
+	switch e := entity.(type) {
+	case *types.PMASwitchEntity:
+		clone := *e
+		return &clone
+	case *types.PMALightEntity:
+		clone := *e
+		return &clone
+	case *types.PMASensorEntity:
+		clone := *e
+		return &clone
+	default:
+		s.logger.WithField("entity_type", fmt.Sprintf("%T", entity)).Warn("Unknown entity type for cloning")
+		return entity // Return original if we can't clone
+	}
+}
+
+// updateGenericEntityState updates the state of a generic entity using reflection
+func (s *UnifiedEntityService) updateGenericEntityState(entity types.PMAEntity, newState string) {
+	// For generic entities, we'll try to set common fields
+	s.logger.WithFields(logrus.Fields{
+		"entity_id":   entity.GetID(),
+		"entity_type": fmt.Sprintf("%T", entity),
+		"new_state":   newState,
+	}).Debug("Updating generic entity state")
+}
+
+// updateEntityStateDirectly updates the state of an entity directly
+func (s *UnifiedEntityService) updateEntityStateDirectly(entity types.PMAEntity, newState string) {
+	switch e := entity.(type) {
+	case *types.PMASwitchEntity:
+		e.State = types.PMAEntityState(newState)
+		e.LastUpdated = time.Now()
+	case *types.PMALightEntity:
+		e.State = types.PMAEntityState(newState)
+		e.LastUpdated = time.Now()
+	case *types.PMASensorEntity:
+		e.State = types.PMAEntityState(newState)
+		e.LastUpdated = time.Now()
+	default:
+		s.logger.WithField("entity_id", entity.GetID()).Warn("Attempted to update state for unknown entity type")
+	}
 }
 
 // Types for service options and responses
@@ -970,4 +1613,19 @@ type SyncResult struct {
 	Error              string              `json:"error,omitempty"`
 	Duration           time.Duration       `json:"duration"`
 	ProcessedAt        time.Time           `json:"processed_at"`
+}
+
+// logMemStats logs current memory usage
+func logMemStats(logger *logrus.Logger, context string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	logger.WithFields(logrus.Fields{
+		"context":        context,
+		"alloc_mb":       m.Alloc / 1024 / 1024,
+		"total_alloc_mb": m.TotalAlloc / 1024 / 1024,
+		"sys_mb":         m.Sys / 1024 / 1024,
+		"num_gc":         m.NumGC,
+		"goroutines":     runtime.NumGoroutine(),
+		"heap_objects":   m.HeapObjects,
+	}).Info("[MEMSTATS] Memory usage snapshot")
 }

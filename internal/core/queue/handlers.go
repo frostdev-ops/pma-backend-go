@@ -1013,15 +1013,15 @@ func (h *BulkOperationHandler) Execute(ctx context.Context, action *models.Queue
 		payload.MaxConcurrent = 20 // Max safety limit
 	}
 
-	operationTimeout := 30 // seconds
+	operationTimeout := 30                             // seconds
 	if payload.Timeout > 0 && payload.Timeout <= 180 { // max 3 minutes per operation
 		operationTimeout = payload.Timeout
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"operation_count":  len(payload.Operations),
-		"max_concurrent":   payload.MaxConcurrent,
-		"stop_on_error":    payload.StopOnError,
+		"operation_count":   len(payload.Operations),
+		"max_concurrent":    payload.MaxConcurrent,
+		"stop_on_error":     payload.StopOnError,
 		"operation_timeout": operationTimeout,
 	}).Info("Starting bulk operation processing")
 
@@ -1034,19 +1034,19 @@ func (h *BulkOperationHandler) Execute(ctx context.Context, action *models.Queue
 	// Create semaphore for concurrency control
 	semaphore := make(chan struct{}, payload.MaxConcurrent)
 	resultsChan := make(chan struct {
-		index int
+		index  int
 		result map[string]interface{}
 	}, len(payload.Operations))
 
 	// Process operations concurrently
 	for i, operation := range payload.Operations {
 		go func(index int, op map[string]interface{}) {
-			semaphore <- struct{}{} // Acquire semaphore
+			semaphore <- struct{}{}        // Acquire semaphore
 			defer func() { <-semaphore }() // Release semaphore
 
 			result := h.executeOperation(ctx, op, operationTimeout)
 			resultsChan <- struct {
-				index int
+				index  int
 				result map[string]interface{}
 			}{index, result}
 		}(i, operation)

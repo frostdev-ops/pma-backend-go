@@ -39,6 +39,7 @@ type Entity struct {
 type Room struct {
 	ID                  int            `json:"id" db:"id"`
 	Name                string         `json:"name" db:"name"`
+	AreaID              sql.NullInt64  `json:"area_id" db:"area_id"`
 	HomeAssistantAreaID sql.NullString `json:"home_assistant_area_id" db:"home_assistant_area_id"`
 	Icon                sql.NullString `json:"icon" db:"icon"`
 	Description         sql.NullString `json:"description" db:"description"`

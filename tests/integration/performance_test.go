@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/unified"
 	"github.com/sirupsen/logrus"
@@ -16,8 +17,9 @@ func BenchmarkEntitySync(b *testing.B) {
 	// Setup
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel) // Reduce noise during benchmarks
+	cfg := &config.Config{}           // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	// Create adapter with many entities
 	adapter := NewLargeMockAdapter(1000) // 1000 entities
@@ -46,8 +48,9 @@ func BenchmarkConflictResolution(b *testing.B) {
 	// Setup with multiple adapters having overlapping entities
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	// Create multiple adapters with same entities
 	adapter1 := NewLargeMockAdapter(500)
@@ -93,8 +96,9 @@ func BenchmarkEntityRetrieval(b *testing.B) {
 	// Setup
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	adapter := NewLargeMockAdapter(10000) // Large number of entities
 	err := unifiedService.RegisterAdapter(adapter)
@@ -132,8 +136,9 @@ func BenchmarkActionExecution(b *testing.B) {
 	// Setup
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	adapter := NewMockPMAAdapter()
 	err := unifiedService.RegisterAdapter(adapter)
@@ -175,8 +180,9 @@ func BenchmarkConcurrentOperations(b *testing.B) {
 	// Setup
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	adapter := NewMockPMAAdapter()
 	err := unifiedService.RegisterAdapter(adapter)
@@ -233,6 +239,7 @@ func BenchmarkConcurrentOperations(b *testing.B) {
 func TestPerformanceScaling(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 
 	testCases := []struct {
 		name        string
@@ -247,7 +254,7 @@ func TestPerformanceScaling(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			typeRegistry := types.NewPMATypeRegistry(logger)
-			unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+			unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 			adapter := NewLargeMockAdapter(tc.entityCount)
 			err := unifiedService.RegisterAdapter(adapter)
@@ -284,6 +291,7 @@ func TestPerformanceScaling(t *testing.T) {
 func TestMemoryUsage(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 
 	// Test with increasing entity counts to check for memory leaks
 	entityCounts := []int{100, 500, 1000}
@@ -291,7 +299,7 @@ func TestMemoryUsage(t *testing.T) {
 	for _, count := range entityCounts {
 		t.Run(fmt.Sprintf("Memory test with %d entities", count), func(t *testing.T) {
 			typeRegistry := types.NewPMATypeRegistry(logger)
-			unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+			unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 			adapter := NewLargeMockAdapter(count)
 			err := unifiedService.RegisterAdapter(adapter)
@@ -324,8 +332,9 @@ func TestMemoryUsage(t *testing.T) {
 func TestAdapterHealthUnderLoad(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.WarnLevel)
+	cfg := &config.Config{} // Minimal config for testing
 	typeRegistry := types.NewPMATypeRegistry(logger)
-	unifiedService := unified.NewUnifiedEntityService(typeRegistry, logger)
+	unifiedService := unified.NewUnifiedEntityService(typeRegistry, cfg, logger)
 
 	adapter := NewMockPMAAdapter()
 	err := unifiedService.RegisterAdapter(adapter)

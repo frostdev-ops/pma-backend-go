@@ -602,13 +602,13 @@ func (m *managerImpl) GetMemoryUsage() CacheMemoryReport {
 		return report.LargestCaches[i].MemoryUsage > report.LargestCaches[j].MemoryUsage
 	})
 
-		// Check for memory pressure
+	// Check for memory pressure
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	
+
 	if float64(report.TotalMemoryUsage)/float64(memStats.Alloc) > 0.5 {
 		report.MemoryPressure = true
-		report.RecommendedActions = append(report.RecommendedActions, 
+		report.RecommendedActions = append(report.RecommendedActions,
 			"High cache memory usage detected - consider clearing least used caches")
 	}
 
