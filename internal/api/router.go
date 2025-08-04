@@ -352,6 +352,26 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				//	mcp.DELETE("/servers/:id", h.RemoveMCPServer)
 				//	mcp.POST("/servers/:id/restart", h.RestartMCPServer)
 				// }
+
+				// Enhanced conversation management endpoints (STREAMLINED - essential only)
+				conversations := ai.Group("/conversations")
+				{
+					// Basic conversation operations for frontend
+					conversations.POST("", h.CreateConversation)
+					conversations.GET("", h.GetConversations)
+					conversations.GET("/:id", h.GetConversation)
+					conversations.POST("/:id/messages", h.SendMessage)
+					conversations.GET("/:id/messages", h.GetConversationMessages)
+
+					// DISABLED advanced conversation handlers for streamlining
+					// conversations.PUT("/:id", h.UpdateConversation)
+					// conversations.DELETE("/:id", h.DeleteConversation)
+					// conversations.POST("/:id/archive", h.ArchiveConversation)
+					// conversations.POST("/:id/unarchive", h.UnarchiveConversation)
+					// conversations.POST("/:id/generate-title", h.GenerateConversationTitle)
+					// conversations.GET("/statistics", h.GetConversationStatistics)
+					// conversations.POST("/cleanup", h.CleanupConversations)
+				}
 			}
 
 			// Automation endpoints - use automation handler for proper registration
@@ -791,25 +811,6 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				shelly.GET("/status", h.GetShellyAdapterStatus)
 			}
 
-			// Enhanced conversation management endpoints (STREAMLINED - essential only)
-			conversations := protected.Group("/conversations")
-			{
-				// Basic conversation operations for frontend
-				conversations.POST("", h.CreateConversation)
-				conversations.GET("", h.GetConversations)
-				conversations.GET("/:id", h.GetConversation)
-				conversations.POST("/:id/messages", h.SendMessage)
-				conversations.GET("/:id/messages", h.GetConversationMessages)
-
-				// DISABLED advanced conversation handlers for streamlining
-				// conversations.PUT("/:id", h.UpdateConversation)
-				// conversations.DELETE("/:id", h.DeleteConversation)
-				// conversations.POST("/:id/archive", h.ArchiveConversation)
-				// conversations.POST("/:id/unarchive", h.UnarchiveConversation)
-				// conversations.POST("/:id/generate-title", h.GenerateConversationTitle)
-				// conversations.GET("/statistics", h.GetConversationStatistics)
-				// conversations.POST("/cleanup", h.CleanupConversations)
-			}
 
 			// Analytics system endpoints
 			if h.AnalyticsHandler != nil {

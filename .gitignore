@@ -25,6 +25,9 @@ go.work
 *.db
 *.db-journal
 
+# Configs
+configs/
+
 # IDE
 .idea/
 .vscode/
@@ -40,3 +43,6 @@ Thumbs.db
 
 # Air tmp directory
 tmp/ 
+
+# claude
+CLAUDE.md

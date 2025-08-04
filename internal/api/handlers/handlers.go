@@ -1126,8 +1126,13 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		logger.Info("Conversation service configured with MCP tools")
 	}
 
-	// Conversation service is now initialized earlier with centralized LLM service
-	// This section has been moved to avoid duplicate initialization
+	// Assign conversation service to handlers struct
+	handlers.conversationService = conversationService
+	if conversationService != nil {
+		logger.Info("Conversation service assigned to handlers successfully")
+	} else {
+		logger.Warn("Conversation service is nil - conversation endpoints will not be available")
+	}
 
 	// Initialize WebSocket optimization
 	optimizationConfig := websocket.DefaultOptimizationConfig()
