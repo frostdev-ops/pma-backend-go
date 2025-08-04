@@ -23,7 +23,7 @@ func (h *Handlers) getControllerUserID(c *gin.Context) *int {
 		return nil
 	}
 
-	userIDStr := h.getUserIDFromContext(c)
+	userIDStr := getUserIDFromContext(c)
 	if userIDStr == "" {
 		return nil
 	}

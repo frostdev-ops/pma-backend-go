@@ -51,8 +51,35 @@ func (m *Manager) GetUserPreferences(userID string) (*UserPreferences, error) {
 		return nil, fmt.Errorf("failed to unmarshal preferences: %w", err)
 	}
 
+	// Fix null arrays that should be empty arrays instead
+	m.ensureDefaultArrays(&prefs)
+
 	prefs.UserID = userID
 	return &prefs, nil
+}
+
+// ensureDefaultArrays fixes null arrays that should be empty arrays instead
+func (m *Manager) ensureDefaultArrays(prefs *UserPreferences) {
+	// Fix navbar configurations
+	if prefs.Navbar.Configurations == nil {
+		defaults := DefaultPreferences()
+		prefs.Navbar.Configurations = defaults.Navbar.Configurations
+		if prefs.Navbar.ActiveConfigurationID == "" {
+			prefs.Navbar.ActiveConfigurationID = defaults.Navbar.ActiveConfigurationID
+		}
+		m.logger.Debug("Fixed null navbar configurations with defaults")
+	}
+
+	// Fix other null arrays
+	if prefs.Automation.AutomationGroups == nil {
+		prefs.Automation.AutomationGroups = []AutomationGroup{}
+	}
+	if prefs.Automation.FavoriteAutomations == nil {
+		prefs.Automation.FavoriteAutomations = []string{}
+	}
+	if prefs.Automation.QuickActions == nil {
+		prefs.Automation.QuickActions = []QuickAction{}
+	}
 }
 
 // UpdateUserPreferences saves user preferences to database

@@ -117,8 +117,6 @@ type ConversationAnalytics struct {
 type CreateConversationRequest struct {
 	Title        string                 `json:"title" binding:"required"`
 	SystemPrompt *string                `json:"system_prompt,omitempty"`
-	Provider     *string                `json:"provider,omitempty"`
-	Model        *string                `json:"model,omitempty"`
 	Temperature  *float64               `json:"temperature,omitempty"`
 	MaxTokens    *int                   `json:"max_tokens,omitempty"`
 	ContextData  map[string]interface{} `json:"context_data,omitempty"`
@@ -129,8 +127,6 @@ type CreateConversationRequest struct {
 type UpdateConversationRequest struct {
 	Title        *string                `json:"title,omitempty"`
 	SystemPrompt *string                `json:"system_prompt,omitempty"`
-	Provider     *string                `json:"provider,omitempty"`
-	Model        *string                `json:"model,omitempty"`
 	Temperature  *float64               `json:"temperature,omitempty"`
 	MaxTokens    *int                   `json:"max_tokens,omitempty"`
 	ContextData  map[string]interface{} `json:"context_data,omitempty"`
@@ -270,7 +266,7 @@ type EnhancedChatRequest struct {
 type EnhancedChatResponse struct {
 	ConversationID string              `json:"conversation_id"`
 	Message        ConversationMessage `json:"message"`
-	Response       ChatResponse        `json:"response"`
+	Response       interface{}         `json:"response"` // Can be ChatResponse or llm.ChatResponse
 	ToolExecutions []MCPToolExecution  `json:"tool_executions,omitempty"`
 	TokensUsed     int                 `json:"tokens_used"`
 	Cost           float64             `json:"cost"`

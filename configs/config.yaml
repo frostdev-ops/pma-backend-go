@@ -93,39 +93,146 @@ websocket:
   write_timeout: 10 # seconds
 
 ai:
+  enabled: true
+  default_model: "LFM2-1.2B"
+  default_provider: "llamacpp"
   fallback_enabled: true
-  fallback_delay: "2s"
-  default_provider: "gemini"
-  max_retries: 3
-  timeout: "60s"
-  providers:
-    - type: "ollama"
-      enabled: true
-      url: "http://localhost:11434"
-      default_model: "qwen3:0.6b"
-      auto_start: true
-      priority: 2
-      resource_limits:
-        max_memory: "4GB"
-        max_cpu: 80
-    - type: "openai"
-      enabled: false
-      api_key: "" # Override with OPENAI_API_KEY environment variable
-      default_model: "gpt-3.5-turbo"
+
+
+
+  llamacpp:
+    enabled: true # PRIMARY LLM provider for LFM2 with optimal RPi5 performance
+    base_url: "http://localhost:8000"
+    api_key: "" # Optional for local llama.cpp server
+    default_model: "LFM2-1.2B"
+    timeout: "60s"
+    max_retries: 3
+    auto_start: true # Always start llama.cpp server automatically
+    # LFM2-optimized parameters
+    generation_params:
+      temperature: 0.3
+      min_p: 0.15
+      repetition_penalty: 1.05
       max_tokens: 4096
-      priority: 2
-    - type: "claude"
-      enabled: false
-      api_key: "" # Override with CLAUDE_API_KEY environment variable
-      default_model: "claude-3-haiku-20240307"
-      max_tokens: 4096
-      priority: 3
-    - type: "gemini"
-      enabled: true
-      api_key: "AIzaSyArZr6EQ2atRvilgk7T7aSEhZkYmQhdPo4" # Override with GEMINI_API_KEY environment variable
-      default_model: "gemini-2.5-flash"
-      max_tokens: 4096
-      priority: 1
+# Speech Services Configuration
+speech:
+  enabled: true
+  
+  # Multi-Instance Streaming TTS Configuration
+  streaming:
+    enabled: true
+    max_workers: 5
+    chunk_size: 500
+    context_overlap: 50
+    buffer_size: 3
+    quality_preset: "balanced"  # fast, balanced, high
+    max_concurrent_streams: 10
+    stream_timeout: "5m"
+    chunk_timeout: "90s"
+    progress_interval: "500ms"
+    cleanup_interval: "30s"
+    max_retries: 3
+    retry_delay: "1s"
+    
+  # Piper Cluster Configuration
+  cluster:
+    base_port: 8001
+    port_range: 10
+    health_check_interval: "30s"
+    worker_timeout: "90s"
+    auto_scaling: true
+    min_workers: 2
+    max_workers: 8
+    default_workers: 3
+    scale_up_threshold: 0.8
+    scale_down_threshold: 0.3
+    load_balance_strategy: "least_busy"  # round_robin, least_busy, fastest
+    queue_buffer: 100
+    result_buffer: 100
+    
+  # Audio Processing Configuration
+  audio_processing:
+    sample_rate: 22050
+    format: "wav"
+    normalize_volume: true
+    insert_natural_pauses: true
+    cross_fade_duration: "50ms"
+    quality_assurance: true
+    max_output_size: "50MB"
+    
+  # Intelligent Caching Configuration
+  caching:
+    enabled: true
+    max_cache_size: "500MB"
+    max_entries: 10000
+    ttl: "24h"
+    cleanup_interval: "1h"
+    persistent_cache: true
+    cache_directory: "./data/cache/tts"
+    preload_common_phrases: true
+    compression_enabled: false
+    eviction_policy: "lru"  # lru, lfu, ttl
+    max_file_size: "10MB"
+    
+  # Quality Presets for Different Performance/Quality Tradeoffs
+  quality_presets:
+    fast:
+      chunk_size: 300
+      context_overlap: 25
+      worker_count: 3
+      processing_delay: "0ms"
+      audio_quality: "standard"
+      compression_level: 3
+    balanced:
+      chunk_size: 500
+      context_overlap: 50
+      worker_count: 5
+      processing_delay: "100ms"
+      audio_quality: "high"
+      compression_level: 5
+    high:
+      chunk_size: 700
+      context_overlap: 75
+      worker_count: 8
+      processing_delay: "200ms"
+      audio_quality: "premium"
+      compression_level: 7
+      
+  # Legacy TTS Configuration (for backward compatibility)
+  tts:
+    enabled: true
+    # TTS Daemon configuration (preferred - high performance with model caching)
+    use_daemon: true
+    daemon_url: "http://127.0.0.1:8001"
+    daemon_timeout: "60s"
+    daemon_health_check_interval: "60s"
+    # Fallback to subprocess if daemon is unavailable
+    python_script_path: "/opt/pma/speech/tts_piper_fallback.py"
+    default_model: "tts_models/en/ljspeech/fast_pitch"
+    device: "auto"
+    max_text_length: 1000
+    output_dir: "./data/temp/tts"
+    timeout: "30s"
+    force_gpu: false
+    
+  # Speech-to-Text Configuration
+  stt:
+    enabled: true
+    python_script_path: "/opt/pma/speech/stt.py"
+    default_model: "tiny"
+    language: "en"
+    silence_threshold: 300
+    autocorrect: true
+    max_audio_duration: "60s"
+    output_dir: "./data/temp/stt"
+    timeout: "30s"
+    
+  # Audio Upload Configuration
+  audio:
+    upload_max_size: 10485760  # 10MB
+    allowed_formats: ["wav", "mp3", "m4a", "ogg", "webm", "mp4"]
+    sample_rate: 16000
+    channels: 1
 
 # Router/Network Configuration
 router:
@@ -174,10 +281,10 @@ devices:
     exclude_docker_interfaces: true # Exclude Docker and other virtual interfaces
     min_subnet_size: 16 # Don't scan subnets smaller than /16 (larger numbers = smaller subnets)
   ups:
-    enabled: false
-    nut_host: "localhost"
+    enabled: true
+    nut_host: ""  # Empty host enables I2C mode
     nut_port: 3493
-    ups_name: "ups"
+    ups_name: "i2c_ups"
     username: ""
     password: ""
     nut_servers: []
@@ -262,7 +369,21 @@ storage:
 # Security Configuration
 security:
   enable_cors: true
-  allowed_origins: ["*"] # Override with PMA_ALLOWED_ORIGINS environment variable
+  allowed_origins: 
+    - "http://192.168.100.1"
+    - "http://192.168.100.1:80"
+    - "http://192.168.100.1:3000"
+    - "http://192.168.100.1:5173"
+    - "http://192.168.10.83"
+    - "http://192.168.10.83:80"
+    - "http://localhost"
+    - "http://localhost:80"
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+    - "http://127.0.0.1"
+    - "http://127.0.0.1:80"
+    - "http://127.0.0.1:3000"
+    - "http://127.0.0.1:5173"
   rate_limiting:
     enabled: true
     requests_per_minute: 600

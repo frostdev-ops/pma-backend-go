@@ -119,7 +119,7 @@ func (m *MemoryMonitor) Stop() {
 	m.running = false
 	close(m.stopChan)
 	m.logger.Info("Memory monitor stopped")
-	
+
 	// Create a new stopChan for potential restart
 	m.stopChan = make(chan bool)
 }

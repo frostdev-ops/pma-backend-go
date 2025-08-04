@@ -349,6 +349,9 @@ func (c *Client) handleMessage(message []byte) {
 			},
 		}
 		c.send <- pong.ToJSON()
+	case "auth":
+		// Handle authentication request
+		c.handleAuthentication(msg)
 	default:
 		c.logger.WithField("message_type", msg.Type).Warn("Unknown WebSocket message type")
 	}
@@ -356,6 +359,12 @@ func (c *Client) handleMessage(message []byte) {
 
 // SubscribeToRoom subscribes the client to room updates
 func (c *Client) SubscribeToRoom(roomID int) {
+	// CRITICAL FIX: Add nil check to prevent "assignment to entry in nil map" panic
+	if c.rooms == nil {
+		c.rooms = make(map[int]bool)
+		c.logger.WithField("client_id", c.ID).Warn("🔧 [WS-FIX] Recreated nil rooms map")
+	}
+
 	c.rooms[roomID] = true
 	c.logger.WithFields(logrus.Fields{
 		"client_id": c.ID,
@@ -381,6 +390,12 @@ func (c *Client) IsInRoom(roomID int) bool {
 func (c *Client) SubscribeToHAEvents(eventTypes []string) error {
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
+
+	// CRITICAL FIX: Add nil check to prevent "assignment to entry in nil map" panic
+	if c.haSubscriptions == nil {
+		c.haSubscriptions = make(map[string]bool)
+		c.logger.WithField("client_id", c.ID).Warn("🔧 [WS-FIX] Recreated nil haSubscriptions map")
+	}
 
 	for _, eventType := range eventTypes {
 		c.haSubscriptions[eventType] = true
@@ -416,6 +431,12 @@ func (c *Client) SubscribeToHAEntities(entityIDs []string) error {
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
 
+	// CRITICAL FIX: Add nil check to prevent "assignment to entry in nil map" panic
+	if c.entityFilters == nil {
+		c.entityFilters = make(map[string]bool)
+		c.logger.WithField("client_id", c.ID).Warn("🔧 [WS-FIX] Recreated nil entityFilters map")
+	}
+
 	for _, entityID := range entityIDs {
 		c.entityFilters[entityID] = true
 	}
@@ -449,6 +470,12 @@ func (c *Client) UnsubscribeFromHAEntities(entityIDs []string) error {
 func (c *Client) SubscribeToHARooms(roomIDs []string) error {
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
+
+	// CRITICAL FIX: Add nil check to prevent "assignment to entry in nil map" panic
+	if c.roomFilters == nil {
+		c.roomFilters = make(map[string]bool)
+		c.logger.WithField("client_id", c.ID).Warn("🔧 [WS-FIX] Recreated nil roomFilters map")
+	}
 
 	for _, roomID := range roomIDs {
 		c.roomFilters[roomID] = true
@@ -553,4 +580,35 @@ func (c *Client) IsSubscribedToHARoom(roomID string) bool {
 	}
 
 	return c.roomFilters[roomID]
+}
+
+// handleAuthentication handles WebSocket authentication requests
+func (c *Client) handleAuthentication(msg Message) {
+	c.logger.WithFields(logrus.Fields{
+		"client_id":      c.ID,
+		"token_provided": msg.Token != "",
+	}).Info("WebSocket authentication request received")
+
+	// For now, since authentication is disabled in the system,
+	// we'll just acknowledge the auth request and mark as successful
+	// TODO: Implement proper JWT validation when authentication is re-enabled
+
+	authResponse := Message{
+		Type: "auth_response",
+		Data: map[string]interface{}{
+			"success": true,
+			"message": "Authentication successful",
+			"user": map[string]interface{}{
+				"authenticated": true,
+			},
+		},
+	}
+
+	c.send <- authResponse.ToJSON()
+
+	c.logger.WithFields(logrus.Fields{
+		"client_id": c.ID,
+		"response":  authResponse,
+		"json":      string(authResponse.ToJSON()),
+	}).Info("WebSocket authentication response sent")
 }

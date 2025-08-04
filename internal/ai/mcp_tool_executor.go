@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/sirupsen/logrus"
 )
 
@@ -388,6 +389,24 @@ func NewMCPToolExecutor(logger *logrus.Logger) *MCPToolExecutor {
 	return &MCPToolExecutor{
 		logger: logger,
 	}
+}
+
+// GetAvailableTools returns all available MCP tools from the database
+func (e *MCPToolExecutor) GetAvailableTools(ctx context.Context, mcpRepo repositories.MCPRepository) ([]*MCPTool, error) {
+	tools, err := mcpRepo.GetAllTools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tools from repository: %w", err)
+	}
+
+	// Convert interface{} to []*MCPTool
+	var mcpTools []*MCPTool
+	for _, tool := range tools {
+		if mcpTool, ok := tool.(*MCPTool); ok && mcpTool.Enabled {
+			mcpTools = append(mcpTools, mcpTool)
+		}
+	}
+
+	return mcpTools, nil
 }
 
 // NewMCPToolExecutorWithDefaults creates a new MCP tool executor with default service wrappers

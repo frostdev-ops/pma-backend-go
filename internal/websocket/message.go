@@ -42,6 +42,7 @@ type Message struct {
 	Type      string                 `json:"type"`
 	Data      map[string]interface{} `json:"data"`
 	Timestamp time.Time              `json:"timestamp"`
+	Token     string                 `json:"token,omitempty"` // For authentication messages
 }
 
 // UnmarshalJSON provides custom JSON unmarshaling for Message to handle different timestamp formats
@@ -51,6 +52,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		Type      string                 `json:"type"`
 		Data      map[string]interface{} `json:"data"`
 		Timestamp interface{}            `json:"timestamp"`
+		Token     string                 `json:"token,omitempty"`
 	}
 
 	var temp TempMessage
@@ -61,6 +63,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	// Copy basic fields
 	m.Type = temp.Type
 	m.Data = temp.Data
+	m.Token = temp.Token
 
 	// Handle timestamp parsing with multiple format support
 	m.Timestamp = parseTimestamp(temp.Timestamp)

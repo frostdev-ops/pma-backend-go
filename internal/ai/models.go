@@ -1,8 +1,9 @@
 package ai
 
 import (
-	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"time"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/config"
 )
 
 // ChatRequest represents an incoming chat request
@@ -368,16 +369,6 @@ type EntityChangeRecord struct {
 
 // AI Settings & Management Models
 
-// AISettingsResponse represents AI configuration settings
-type AISettingsResponse struct {
-	Providers       []AIProviderInfo `json:"providers"`
-	DefaultProvider string           `json:"default_provider"`
-	FallbackEnabled bool             `json:"fallback_enabled"`
-	MaxRetries      int              `json:"max_retries"`
-	Timeout         string           `json:"timeout"`
-	LastUpdated     time.Time        `json:"last_updated"`
-}
-
 // AIProviderInfo represents AI provider information
 type AIProviderInfo struct {
 	Type         string                 `json:"type"`
@@ -391,6 +382,28 @@ type AIProviderInfo struct {
 	Extra        map[string]interface{} `json:"extra,omitempty"`
 }
 
+// AISettingsResponse represents the current AI configuration
+type AISettingsResponse struct {
+	Providers       []AIProviderInfo      `json:"providers"`
+	DefaultProvider string                `json:"default_provider"`
+	FallbackEnabled bool                  `json:"fallback_enabled"`
+	MaxRetries      int                   `json:"max_retries"`
+	Timeout         string                `json:"timeout"`
+	HugotSettings   HugotSettingsResponse `json:"hugot_settings"`
+	LastUpdated     time.Time             `json:"last_updated"`
+}
+
+// HugotSettingsResponse represents current Hugot configuration
+type HugotSettingsResponse struct {
+	Enabled      bool     `json:"enabled"`
+	ModelsDir    string   `json:"models_dir"`
+	DefaultModel string   `json:"default_model"`
+	Timeout      string   `json:"timeout"`
+	MaxRetries   int      `json:"max_retries"`
+	Models       []string `json:"available_models"`
+	Status       string   `json:"status"`
+}
+
 // AISettingsRequest represents AI settings update request
 type AISettingsRequest struct {
 	Providers       []config.AIProviderConfig `json:"providers"`
@@ -398,6 +411,17 @@ type AISettingsRequest struct {
 	FallbackEnabled bool                      `json:"fallback_enabled"`
 	MaxRetries      int                       `json:"max_retries"`
 	Timeout         string                    `json:"timeout"`
+	// Hugot-specific settings
+	HugotSettings HugotSettingsRequest `json:"hugot_settings,omitempty"`
+}
+
+// HugotSettingsRequest represents Hugot-specific configuration
+type HugotSettingsRequest struct {
+	Enabled      bool   `json:"enabled"`
+	ModelsDir    string `json:"models_dir"`
+	DefaultModel string `json:"default_model"`
+	Timeout      string `json:"timeout"`
+	MaxRetries   int    `json:"max_retries"`
 }
 
 // AIConnectionTestRequest represents connection test request

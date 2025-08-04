@@ -23,33 +23,37 @@ func NewMCPRepository(db *sql.DB) repositories.MCPRepository {
 }
 
 // CreateTool creates a new MCP tool
-func (r *MCPRepository) CreateTool(ctx context.Context, tool *ai.MCPTool) error {
+func (r *MCPRepository) CreateTool(ctx context.Context, tool interface{}) error {
+	mcpTool, ok := tool.(*ai.MCPTool)
+	if !ok {
+		return fmt.Errorf("invalid MCP tool type")
+	}
 	query := `
 		INSERT INTO mcp_tools (id, name, description, schema, handler, category, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	schemaJSON, err := json.Marshal(tool.Schema)
+	schemaJSON, err := json.Marshal(mcpTool.Schema)
 	if err != nil {
 		return fmt.Errorf("failed to marshal schema: %w", err)
 	}
 
 	now := time.Now()
-	tool.CreatedAt = now
-	tool.UpdatedAt = now
+	mcpTool.CreatedAt = now
+	mcpTool.UpdatedAt = now
 
 	_, err = r.db.ExecContext(
 		ctx,
 		query,
-		tool.ID,
-		tool.Name,
-		tool.Description,
+		mcpTool.ID,
+		mcpTool.Name,
+		mcpTool.Description,
 		string(schemaJSON),
-		tool.Handler,
-		tool.Category,
-		tool.Enabled,
-		tool.CreatedAt,
-		tool.UpdatedAt,
+		mcpTool.Handler,
+		mcpTool.Category,
+		mcpTool.Enabled,
+		mcpTool.CreatedAt,
+		mcpTool.UpdatedAt,
 	)
 
 	if err != nil {
@@ -60,7 +64,7 @@ func (r *MCPRepository) CreateTool(ctx context.Context, tool *ai.MCPTool) error 
 }
 
 // GetTool retrieves a tool by ID
-func (r *MCPRepository) GetTool(ctx context.Context, id string) (*ai.MCPTool, error) {
+func (r *MCPRepository) GetTool(ctx context.Context, id string) (interface{}, error) {
 	query := `
 		SELECT id, name, description, schema, handler, category, enabled, usage_count, last_used, created_at, updated_at
 		FROM mcp_tools
@@ -100,11 +104,11 @@ func (r *MCPRepository) GetTool(ctx context.Context, id string) (*ai.MCPTool, er
 		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
 	}
 
-	return tool, nil
+	return interface{}(tool), nil
 }
 
 // GetToolByName retrieves a tool by name
-func (r *MCPRepository) GetToolByName(ctx context.Context, name string) (*ai.MCPTool, error) {
+func (r *MCPRepository) GetToolByName(ctx context.Context, name string) (interface{}, error) {
 	query := `
 		SELECT id, name, description, schema, handler, category, enabled, usage_count, last_used, created_at, updated_at
 		FROM mcp_tools
@@ -144,11 +148,15 @@ func (r *MCPRepository) GetToolByName(ctx context.Context, name string) (*ai.MCP
 		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
 	}
 
-	return tool, nil
+	return interface{}(tool), nil
 }
 
 // GetTools retrieves tools with filtering
-func (r *MCPRepository) GetTools(ctx context.Context, filter *ai.MCPToolFilter) ([]*ai.MCPTool, error) {
+func (r *MCPRepository) GetTools(ctx context.Context, filter interface{}) ([]interface{}, error) {
+	mcpFilter, ok := filter.(*ai.MCPToolFilter)
+	if !ok {
+		return nil, fmt.Errorf("invalid MCP tool filter type")
+	}
 	query := `
 		SELECT id, name, description, schema, handler, category, enabled, usage_count, last_used, created_at, updated_at
 		FROM mcp_tools
@@ -157,20 +165,20 @@ func (r *MCPRepository) GetTools(ctx context.Context, filter *ai.MCPToolFilter) 
 	var conditions []string
 	var args []interface{}
 
-	if filter != nil {
-		if filter.Category != nil {
+	if mcpFilter != nil {
+		if mcpFilter.Category != nil {
 			conditions = append(conditions, "category = ?")
-			args = append(args, *filter.Category)
+			args = append(args, *mcpFilter.Category)
 		}
 
-		if filter.Enabled != nil {
+		if mcpFilter.Enabled != nil {
 			conditions = append(conditions, "enabled = ?")
-			args = append(args, *filter.Enabled)
+			args = append(args, *mcpFilter.Enabled)
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if mcpFilter.SearchQuery != nil && *mcpFilter.SearchQuery != "" {
 			conditions = append(conditions, "(name LIKE ? OR description LIKE ?)")
-			searchTerm := "%" + *filter.SearchQuery + "%"
+			searchTerm := "%" + *mcpFilter.SearchQuery + "%"
 			args = append(args, searchTerm, searchTerm)
 		}
 	}
@@ -182,24 +190,24 @@ func (r *MCPRepository) GetTools(ctx context.Context, filter *ai.MCPToolFilter) 
 	// Add ordering
 	orderBy := "name"
 	orderDir := "ASC"
-	if filter != nil {
-		if filter.OrderBy != "" {
-			orderBy = filter.OrderBy
+	if mcpFilter != nil {
+		if mcpFilter.OrderBy != "" {
+			orderBy = mcpFilter.OrderBy
 		}
-		if filter.OrderDir != "" {
-			orderDir = filter.OrderDir
+		if mcpFilter.OrderDir != "" {
+			orderDir = mcpFilter.OrderDir
 		}
 	}
 	query += fmt.Sprintf(" ORDER BY %s %s", orderBy, orderDir)
 
 	// Add pagination
-	if filter != nil && filter.Limit > 0 {
+	if filter != nil && mcpFilter.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, mcpFilter.Limit)
 
-		if filter.Offset > 0 {
+		if mcpFilter.Offset > 0 {
 			query += " OFFSET ?"
-			args = append(args, filter.Offset)
+			args = append(args, mcpFilter.Offset)
 		}
 	}
 
@@ -243,30 +251,39 @@ func (r *MCPRepository) GetTools(ctx context.Context, filter *ai.MCPToolFilter) 
 		tools = append(tools, tool)
 	}
 
-	return tools, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(tools))
+	for i, tool := range tools {
+		result[i] = tool
+	}
+	return result, nil
 }
 
 // GetToolCount returns the count of tools matching the filter
-func (r *MCPRepository) GetToolCount(ctx context.Context, filter *ai.MCPToolFilter) (int, error) {
+func (r *MCPRepository) GetToolCount(ctx context.Context, filter interface{}) (int, error) {
+	mcpFilter, ok := filter.(*ai.MCPToolFilter)
+	if !ok {
+		return 0, fmt.Errorf("invalid MCP tool filter type")
+	}
 	query := "SELECT COUNT(*) FROM mcp_tools"
 
 	var conditions []string
 	var args []interface{}
 
-	if filter != nil {
-		if filter.Category != nil {
+	if mcpFilter != nil {
+		if mcpFilter.Category != nil {
 			conditions = append(conditions, "category = ?")
-			args = append(args, *filter.Category)
+			args = append(args, *mcpFilter.Category)
 		}
 
-		if filter.Enabled != nil {
+		if mcpFilter.Enabled != nil {
 			conditions = append(conditions, "enabled = ?")
-			args = append(args, *filter.Enabled)
+			args = append(args, *mcpFilter.Enabled)
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if mcpFilter.SearchQuery != nil && *mcpFilter.SearchQuery != "" {
 			conditions = append(conditions, "(name LIKE ? OR description LIKE ?)")
-			searchTerm := "%" + *filter.SearchQuery + "%"
+			searchTerm := "%" + *mcpFilter.SearchQuery + "%"
 			args = append(args, searchTerm, searchTerm)
 		}
 	}
@@ -284,8 +301,14 @@ func (r *MCPRepository) GetToolCount(ctx context.Context, filter *ai.MCPToolFilt
 	return count, nil
 }
 
+// GetAllTools retrieves all tools from the database
+func (r *MCPRepository) GetAllTools(ctx context.Context) ([]interface{}, error) {
+	// Use GetTools with no filter to get all tools
+	return r.GetTools(ctx, &ai.MCPToolFilter{})
+}
+
 // GetEnabledTools retrieves enabled tools, optionally filtered by category
-func (r *MCPRepository) GetEnabledTools(ctx context.Context, category string) ([]*ai.MCPTool, error) {
+func (r *MCPRepository) GetEnabledTools(ctx context.Context, category string) ([]interface{}, error) {
 	filter := &ai.MCPToolFilter{
 		Enabled:  &[]bool{true}[0], // Get pointer to true
 		OrderBy:  "name",
@@ -300,31 +323,35 @@ func (r *MCPRepository) GetEnabledTools(ctx context.Context, category string) ([
 }
 
 // UpdateTool updates a tool
-func (r *MCPRepository) UpdateTool(ctx context.Context, tool *ai.MCPTool) error {
+func (r *MCPRepository) UpdateTool(ctx context.Context, tool interface{}) error {
+	mcpTool, ok := tool.(*ai.MCPTool)
+	if !ok {
+		return fmt.Errorf("invalid MCP tool type")
+	}
 	query := `
 		UPDATE mcp_tools
 		SET name = ?, description = ?, schema = ?, handler = ?, category = ?, enabled = ?, updated_at = ?
 		WHERE id = ?
 	`
 
-	schemaJSON, err := json.Marshal(tool.Schema)
+	schemaJSON, err := json.Marshal(mcpTool.Schema)
 	if err != nil {
 		return fmt.Errorf("failed to marshal schema: %w", err)
 	}
 
-	tool.UpdatedAt = time.Now()
+	mcpTool.UpdatedAt = time.Now()
 
 	result, err := r.db.ExecContext(
 		ctx,
 		query,
-		tool.Name,
-		tool.Description,
+		mcpTool.Name,
+		mcpTool.Description,
 		string(schemaJSON),
-		tool.Handler,
-		tool.Category,
-		tool.Enabled,
-		tool.UpdatedAt,
-		tool.ID,
+		mcpTool.Handler,
+		mcpTool.Category,
+		mcpTool.Enabled,
+		mcpTool.UpdatedAt,
+		mcpTool.ID,
 	)
 
 	if err != nil {
@@ -407,34 +434,38 @@ func (r *MCPRepository) DisableTool(ctx context.Context, id string) error {
 }
 
 // CreateToolExecution creates a new tool execution record
-func (r *MCPRepository) CreateToolExecution(ctx context.Context, execution *ai.MCPToolExecution) error {
+func (r *MCPRepository) CreateToolExecution(ctx context.Context, execution interface{}) error {
+	mcpExecution, ok := execution.(*ai.MCPToolExecution)
+	if !ok {
+		return fmt.Errorf("invalid tool execution type")
+	}
 	query := `
 		INSERT INTO mcp_tool_executions (id, conversation_id, message_id, tool_id, tool_name, 
 		                                parameters, result, error, execution_time_ms, success, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	parametersJSON, err := json.Marshal(execution.Parameters)
+	parametersJSON, err := json.Marshal(mcpExecution.Parameters)
 	if err != nil {
 		return fmt.Errorf("failed to marshal parameters: %w", err)
 	}
 
-	execution.CreatedAt = time.Now()
+	mcpExecution.CreatedAt = time.Now()
 
 	_, err = r.db.ExecContext(
 		ctx,
 		query,
-		execution.ID,
-		execution.ConversationID,
-		execution.MessageID,
-		execution.ToolID,
-		execution.ToolName,
+		mcpExecution.ID,
+		mcpExecution.ConversationID,
+		mcpExecution.MessageID,
+		mcpExecution.ToolID,
+		mcpExecution.ToolName,
 		string(parametersJSON),
-		execution.Result,
-		execution.Error,
-		execution.ExecutionTimeMs,
-		execution.Success,
-		execution.CreatedAt,
+		mcpExecution.Result,
+		mcpExecution.Error,
+		mcpExecution.ExecutionTimeMs,
+		mcpExecution.Success,
+		mcpExecution.CreatedAt,
 	)
 
 	if err != nil {
@@ -445,7 +476,7 @@ func (r *MCPRepository) CreateToolExecution(ctx context.Context, execution *ai.M
 }
 
 // GetToolExecution retrieves a tool execution by ID
-func (r *MCPRepository) GetToolExecution(ctx context.Context, id string) (*ai.MCPToolExecution, error) {
+func (r *MCPRepository) GetToolExecution(ctx context.Context, id string) (interface{}, error) {
 	query := `
 		SELECT id, conversation_id, message_id, tool_id, tool_name, parameters, result, error, 
 		       execution_time_ms, success, created_at
@@ -481,11 +512,11 @@ func (r *MCPRepository) GetToolExecution(ctx context.Context, id string) (*ai.MC
 		return nil, fmt.Errorf("failed to unmarshal parameters: %w", err)
 	}
 
-	return execution, nil
+	return interface{}(execution), nil
 }
 
 // GetToolExecutions retrieves tool executions for a conversation
-func (r *MCPRepository) GetToolExecutions(ctx context.Context, conversationID string, limit int, offset int) ([]*ai.MCPToolExecution, error) {
+func (r *MCPRepository) GetToolExecutions(ctx context.Context, conversationID string, limit int, offset int) ([]interface{}, error) {
 	query := `
 		SELECT id, conversation_id, message_id, tool_id, tool_name, parameters, result, error, 
 		       execution_time_ms, success, created_at
@@ -541,11 +572,16 @@ func (r *MCPRepository) GetToolExecutions(ctx context.Context, conversationID st
 		executions = append(executions, execution)
 	}
 
-	return executions, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(executions))
+	for i, exec := range executions {
+		result[i] = exec
+	}
+	return result, nil
 }
 
 // GetToolExecutionsByTool retrieves tool executions for a specific tool
-func (r *MCPRepository) GetToolExecutionsByTool(ctx context.Context, toolID string, limit int, offset int) ([]*ai.MCPToolExecution, error) {
+func (r *MCPRepository) GetToolExecutionsByTool(ctx context.Context, toolID string, limit int, offset int) ([]interface{}, error) {
 	query := `
 		SELECT id, conversation_id, message_id, tool_id, tool_name, parameters, result, error, 
 		       execution_time_ms, success, created_at
@@ -601,11 +637,20 @@ func (r *MCPRepository) GetToolExecutionsByTool(ctx context.Context, toolID stri
 		executions = append(executions, execution)
 	}
 
-	return executions, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(executions))
+	for i, exec := range executions {
+		result[i] = exec
+	}
+	return result, nil
 }
 
 // UpdateToolExecution updates a tool execution
-func (r *MCPRepository) UpdateToolExecution(ctx context.Context, execution *ai.MCPToolExecution) error {
+func (r *MCPRepository) UpdateToolExecution(ctx context.Context, execution interface{}) error {
+	mcpExecution, ok := execution.(*ai.MCPToolExecution)
+	if !ok {
+		return fmt.Errorf("invalid MCP tool execution type")
+	}
 	query := `
 		UPDATE mcp_tool_executions
 		SET result = ?, error = ?, execution_time_ms = ?, success = ?
@@ -615,11 +660,11 @@ func (r *MCPRepository) UpdateToolExecution(ctx context.Context, execution *ai.M
 	result, err := r.db.ExecContext(
 		ctx,
 		query,
-		execution.Result,
-		execution.Error,
-		execution.ExecutionTimeMs,
-		execution.Success,
-		execution.ID,
+		mcpExecution.Result,
+		mcpExecution.Error,
+		mcpExecution.ExecutionTimeMs,
+		mcpExecution.Success,
+		mcpExecution.ID,
 	)
 
 	if err != nil {
@@ -660,7 +705,7 @@ func (r *MCPRepository) IncrementToolUsage(ctx context.Context, toolID string) e
 }
 
 // GetToolUsageStats retrieves tool usage statistics
-func (r *MCPRepository) GetToolUsageStats(ctx context.Context, startDate, endDate time.Time) ([]*ai.ToolUsageStats, error) {
+func (r *MCPRepository) GetToolUsageStats(ctx context.Context, startDate, endDate time.Time) ([]interface{}, error) {
 	query := `
 		SELECT 
 			t.name,
@@ -700,7 +745,12 @@ func (r *MCPRepository) GetToolUsageStats(ctx context.Context, startDate, endDat
 		stats = append(stats, stat)
 	}
 
-	return stats, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(stats))
+	for i, stat := range stats {
+		result[i] = stat
+	}
+	return result, nil
 }
 
 // GetToolSuccessRate retrieves the success rate for a tool over the last N days
@@ -727,7 +777,7 @@ func (r *MCPRepository) GetToolSuccessRate(ctx context.Context, toolID string, d
 }
 
 // GetMostUsedTools retrieves the most used tools
-func (r *MCPRepository) GetMostUsedTools(ctx context.Context, limit int, days int) ([]*ai.MCPTool, error) {
+func (r *MCPRepository) GetMostUsedTools(ctx context.Context, limit int, days int) ([]interface{}, error) {
 	query := `
 		SELECT t.id, t.name, t.description, t.schema, t.handler, t.category, t.enabled, 
 		       t.usage_count, t.last_used, t.created_at, t.updated_at
@@ -779,11 +829,16 @@ func (r *MCPRepository) GetMostUsedTools(ctx context.Context, limit int, days in
 		tools = append(tools, tool)
 	}
 
-	return tools, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(tools))
+	for i, tool := range tools {
+		result[i] = tool
+	}
+	return result, nil
 }
 
 // GetRecentToolExecutions retrieves recent tool executions
-func (r *MCPRepository) GetRecentToolExecutions(ctx context.Context, limit int) ([]*ai.MCPToolExecution, error) {
+func (r *MCPRepository) GetRecentToolExecutions(ctx context.Context, limit int) ([]interface{}, error) {
 	query := `
 		SELECT id, conversation_id, message_id, tool_id, tool_name, parameters, result, error, 
 		       execution_time_ms, success, created_at
@@ -827,7 +882,12 @@ func (r *MCPRepository) GetRecentToolExecutions(ctx context.Context, limit int) 
 		executions = append(executions, execution)
 	}
 
-	return executions, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(executions))
+	for i, exec := range executions {
+		result[i] = exec
+	}
+	return result, nil
 }
 
 // CleanupOldExecutions removes tool executions older than specified days

@@ -1,0 +1,177 @@
+# Enhanced 24/7 STT Configuration for PMA System
+
+enhanced_stt:
+  enabled: true
+  continuous_listening: false  # Start in wake word only mode
+  
+  # Wake Word Detection Configuration
+  wake_word_config:
+    enabled: true
+    keywords:
+      - word: "hey assistant"
+        enabled: true
+        sensitivity: 0.7
+        action: "start_listening"
+        context: "general"
+      - word: "hey pma"
+        enabled: true
+        sensitivity: 0.8
+        action: "start_listening"
+        context: "home_automation"
+      - word: "wake up"
+        enabled: true
+        sensitivity: 0.6
+        action: "start_listening"
+        context: "general"
+      - word: "stop listening"
+        enabled: true
+        sensitivity: 0.8
+        action: "stop_listening"
+        context: "control"
+    sensitivity_level: 0.7
+    min_confidence: 0.6
+    cooldown_period: "2s"
+    buffer_duration: "5s"
+    post_wake_duration: "3s"
+    power_saving_mode: true
+    adaptive_threshold: true
+    noise_gate_threshold: 0.01
+    model_path: "../../pma-ai/wake-word-models"
+  
+  # Audio Input Configuration
+  audio_config:
+    max_concurrent_streams: 5
+    buffer_size: 4096
+    default_sample_rate: 16000
+    default_channels: 1
+    quality_threshold: 0.5
+    auto_source_switch: true
+    power_saving_mode: true
+    noise_reduction: true
+    echo_cancellation: true
+    device_timeout: "30s"
+  
+  # STT Engine Configuration
+  stt_engine_config:
+    model: "base"  # whisper model: tiny, base, small, medium, large
+    language: "en"
+    auto_language_detect: false
+    chunk_duration: "2s"
+    overlap_duration: "0.5s"
+    max_processing_delay: "5s"
+    confidence_threshold: 0.7
+    noise_reduction: true
+    auto_correct: true
+    real_time_mode: true
+  
+  # Power Management Configuration
+  power_management:
+    enabled: true
+    battery_threshold: 0.20  # 20% battery
+    idle_timeout: "10m"
+    sleep_mode_enabled: true
+    sleep_start_hour: 23  # 11 PM
+    sleep_end_hour: 7     # 7 AM
+    reduced_processing: true
+    wake_word_only_mode: true
+  
+  # Privacy Configuration
+  privacy_config:
+    local_processing_only: true
+    auto_delete_recordings: true
+    retention_period: "24h"
+    encryption_enabled: true
+    anonymize_transcripts: false
+    consent_required: false
+  
+  # Notification Configuration
+  notification_config:
+    wake_word_detected: true
+    transcription_ready: true
+    error_occurred: true
+    device_connected: true
+    confidence_threshold: true
+
+# Integration with existing speech configuration
+speech:
+  enabled: true
+  # Enhanced STT will supplement the existing TTS system
+  enhanced_stt_integration: true
+  
+  # Existing TTS configuration (maintained for backward compatibility)
+  tts:
+    enabled: true
+    python_script_path: "../../pma-ai/pma-speech/tts.py"
+    default_model: "tts_models/en/ljspeech/fast_pitch"
+    device: "auto"
+    max_text_length: 1000
+    output_dir: "./data/temp/tts"
+    timeout: "30s"
+    force_gpu: false
+  
+  # Legacy STT configuration (for fallback)
+  stt:
+    enabled: true
+    python_script_path: "../../pma-ai/pma-speech/stt.py"
+    default_model: "base"
+    language: "en"
+    silence_threshold: 300
+    autocorrect: true
+    max_audio_duration: "60s"
+    output_dir: "./data/temp/stt"
+    timeout: "30s"
+  
+  # Audio configuration
+  audio:
+    upload_max_size: 10485760  # 10MB
+    allowed_formats: ["wav", "mp3", "m4a", "ogg", "webm"]
+    sample_rate: 16000
+    channels: 1
+
+# WebSocket configuration for real-time audio streaming
+websocket:
+  enabled: true
+  # STT-specific WebSocket topics
+  stt_topics:
+    - "stt:transcription"      # Real-time transcription events
+    - "stt:wake_word"          # Wake word detection events
+    - "stt:audio_device"       # Audio device status changes
+    - "stt:system"             # STT system events
+  
+  # Audio streaming configuration
+  audio_streaming:
+    enabled: true
+    chunk_size: 1024           # Audio chunk size in bytes
+    compression: false         # No compression for real-time processing
+    buffer_size: 10            # Number of chunks to buffer
+    timeout: "30s"             # Connection timeout
+
+# Logging configuration for STT system
+logging:
+  level: "info"
+  stt_specific_logging:
+    wake_word_detections: true
+    transcription_events: true
+    audio_device_changes: true
+    performance_metrics: true
+    error_details: true
+
+# File storage configuration
+storage:
+  temp_directories:
+    stt_audio: "./data/temp/stt/audio"
+    stt_transcriptions: "./data/temp/stt/transcriptions"
+    wake_word_models: "./data/models/wake-word"
+  
+  cleanup:
+    enabled: true
+    retention_hours: 24
+    cleanup_interval: "1h"
+
+# Development and debugging options
+debug:
+  stt_debug_mode: false
+  save_audio_chunks: false     # Save audio chunks for debugging
+  detailed_timing: false       # Log detailed timing information
+  mock_audio_devices: false    # Use mock devices for testing
+  simulate_wake_words: false   # Simulate wake word detections for testing

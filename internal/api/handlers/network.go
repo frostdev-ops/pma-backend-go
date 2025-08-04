@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/adapters/network"
@@ -356,7 +357,143 @@ func (h *Handlers) TestRouterConnection(c *gin.Context) {
 
 // Network Settings Management Handlers
 
-// GetNetworkSettings retrieves network/router settings
+// GetCORSConfiguration handles GET /api/v1/network/cors
+func (h *Handlers) GetCORSConfiguration(c *gin.Context) {
+	// Get current CORS configuration from config
+	corsConfig := map[string]interface{}{
+		"enabled":         h.cfg.Security.EnableCORS,
+		"allowed_origins": h.cfg.Security.AllowedOrigins,
+		"rate_limiting": map[string]interface{}{
+			"enabled":             h.cfg.Security.RateLimiting.Enabled,
+			"requests_per_minute": h.cfg.Security.RateLimiting.RequestsPerMinute,
+			"burst_size":          h.cfg.Security.RateLimiting.BurstSize,
+		},
+		"last_updated": time.Now(),
+	}
+
+	utils.SendSuccess(c, corsConfig)
+}
+
+// UpdateCORSConfiguration handles PUT /api/v1/network/cors
+func (h *Handlers) UpdateCORSConfiguration(c *gin.Context) {
+	var request struct {
+		Enabled        bool     `json:"enabled"`
+		AllowedOrigins []string `json:"allowed_origins"`
+		RateLimiting   struct {
+			Enabled           bool `json:"enabled"`
+			RequestsPerMinute int  `json:"requests_per_minute"`
+			BurstSize         int  `json:"burst_size"`
+		} `json:"rate_limiting"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Validate the configuration
+	if request.RateLimiting.RequestsPerMinute <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "Requests per minute must be greater than 0")
+		return
+	}
+
+	if request.RateLimiting.BurstSize <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "Burst size must be greater than 0")
+		return
+	}
+
+	// Save CORS configuration to database
+	configUpdates := map[string]string{
+		"security.enable_cors":                       fmt.Sprintf("%t", request.Enabled),
+		"security.allowed_origins":                   strings.Join(request.AllowedOrigins, ","),
+		"security.rate_limiting.enabled":             fmt.Sprintf("%t", request.RateLimiting.Enabled),
+		"security.rate_limiting.requests_per_minute": fmt.Sprintf("%d", request.RateLimiting.RequestsPerMinute),
+		"security.rate_limiting.burst_size":          fmt.Sprintf("%d", request.RateLimiting.BurstSize),
+	}
+
+	for key, value := range configUpdates {
+		if err := h.repos.Config.Set(ctx, &models.SystemConfig{
+			Key:   key,
+			Value: value,
+		}); err != nil {
+			h.log.WithError(err).Warn("Failed to save CORS config", "key", key)
+		}
+	}
+
+	// Update the in-memory config
+	h.cfg.Security.EnableCORS = request.Enabled
+	h.cfg.Security.AllowedOrigins = request.AllowedOrigins
+	h.cfg.Security.RateLimiting.Enabled = request.RateLimiting.Enabled
+	h.cfg.Security.RateLimiting.RequestsPerMinute = request.RateLimiting.RequestsPerMinute
+	h.cfg.Security.RateLimiting.BurstSize = request.RateLimiting.BurstSize
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"message":    "CORS configuration updated successfully",
+		"updated_at": time.Now(),
+		"config": map[string]interface{}{
+			"enabled":         request.Enabled,
+			"allowed_origins": request.AllowedOrigins,
+			"rate_limiting":   request.RateLimiting,
+		},
+	})
+}
+
+// TestCORSConfiguration handles POST /api/v1/network/cors/test
+func (h *Handlers) TestCORSConfiguration(c *gin.Context) {
+	var request struct {
+		Origin string `json:"origin"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Test if the origin would be allowed with current CORS configuration
+	var isAllowed bool
+	if h.cfg.Security.EnableCORS && len(h.cfg.Security.AllowedOrigins) > 0 {
+		// Check if wildcard is specified
+		if len(h.cfg.Security.AllowedOrigins) == 1 && h.cfg.Security.AllowedOrigins[0] == "*" {
+			isAllowed = true
+		} else {
+			// Check against configured origins
+			for _, allowedOrigin := range h.cfg.Security.AllowedOrigins {
+				if request.Origin == allowedOrigin {
+					isAllowed = true
+					break
+				}
+			}
+		}
+	} else {
+		// Fallback to default origins
+		defaultOrigins := []string{
+			"http://192.168.100.1", "http://192.168.100.1:80", "http://192.168.100.1:3000", "http://192.168.100.1:5173",
+			"http://localhost", "http://localhost:80", "http://localhost:3000", "http://localhost:5173",
+			"http://127.0.0.1", "http://127.0.0.1:80", "http://127.0.0.1:3000", "http://127.0.0.1:5173",
+		}
+		for _, defaultOrigin := range defaultOrigins {
+			if request.Origin == defaultOrigin {
+				isAllowed = true
+				break
+			}
+		}
+	}
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"origin":     request.Origin,
+		"is_allowed": isAllowed,
+		"tested_at":  time.Now(),
+		"config": map[string]interface{}{
+			"enabled":         h.cfg.Security.EnableCORS,
+			"allowed_origins": h.cfg.Security.AllowedOrigins,
+		},
+	})
+}
+
+// GetNetworkSettings retrieves comprehensive network settings
 func (h *Handlers) GetNetworkSettings(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -369,13 +506,22 @@ func (h *Handlers) GetNetworkSettings(c *gin.Context) {
 		return
 	}
 
-	// Prepare network settings response
+	// Prepare comprehensive network settings response
 	settings := map[string]interface{}{
 		"router": map[string]interface{}{
 			"enabled":    h.cfg.Router.Enabled,
 			"base_url":   h.cfg.Router.BaseURL,
 			"timeout":    h.cfg.Router.Timeout,
 			"monitoring": h.cfg.Router.MonitoringEnabled,
+		},
+		"cors": map[string]interface{}{
+			"enabled":         h.cfg.Security.EnableCORS,
+			"allowed_origins": h.cfg.Security.AllowedOrigins,
+		},
+		"rate_limiting": map[string]interface{}{
+			"enabled":             h.cfg.Security.RateLimiting.Enabled,
+			"requests_per_minute": h.cfg.Security.RateLimiting.RequestsPerMinute,
+			"burst_size":          h.cfg.Security.RateLimiting.BurstSize,
 		},
 		"router_status": status.RouterStatus,
 		"interfaces":    status.Interfaces,

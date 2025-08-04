@@ -48,7 +48,7 @@ func (h *Handlers) DiscoverShellyDevices(c *gin.Context) {
 	options := unified.GetAllOptions{
 		AvailableOnly: false,
 	}
-	
+
 	entitiesWithRooms, err := h.unifiedService.GetBySource(ctx, types.SourceShelly, options)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to discover Shelly devices")
@@ -212,7 +212,7 @@ func (h *Handlers) UpdateShellyConfig(c *gin.Context) {
 	// In a real implementation, this would update the configuration
 	// For now, we'll just acknowledge the request and log the config update
 	h.log.WithField("config_update", configUpdate).Info("Shelly configuration update requested")
-	
+
 	// Get adapter metrics for response
 	metrics := adapter.GetMetrics()
 
@@ -243,7 +243,7 @@ func (h *Handlers) GetShellyAdapterStatus(c *gin.Context) {
 // Helper function to convert PMA entity to Shelly device response
 func convertEntityToShellyDevice(entity types.PMAEntity) ShellyDeviceResponse {
 	attributes := entity.GetAttributes()
-	
+
 	device := ShellyDeviceResponse{
 		ID:         entity.GetID(),
 		Name:       entity.GetFriendlyName(),

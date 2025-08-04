@@ -16,6 +16,7 @@ type Config struct {
 	Logging          LoggingConfig          `mapstructure:"logging"`
 	WebSocket        WebSocketConfig        `mapstructure:"websocket"`
 	AI               AIConfig               `mapstructure:"ai"`
+	Speech           SpeechConfig           `mapstructure:"speech"`
 	Router           RouterConfig           `mapstructure:"router"`
 	Devices          DevicesConfig          `mapstructure:"devices"`
 	System           SystemConfig           `mapstructure:"system"`
@@ -123,14 +124,65 @@ type WebSocketHAConfig struct {
 	MaxErrorsRetained    int      `mapstructure:"max_errors_retained"`
 }
 
-// AIConfig contains AI/LLM provider configuration
+// AIConfig contains AI/LLM provider configuration (simplified for centralized service)
 type AIConfig struct {
-	Providers       []AIProviderConfig `mapstructure:"providers"`
-	FallbackEnabled bool               `mapstructure:"fallback_enabled"`
-	FallbackDelay   string             `mapstructure:"fallback_delay"`
-	DefaultProvider string             `mapstructure:"default_provider"`
-	MaxRetries      int                `mapstructure:"max_retries"`
-	Timeout         string             `mapstructure:"timeout"`
+	Enabled        bool               `mapstructure:"enabled"`
+	DefaultModel   string             `mapstructure:"default_model"`
+	DefaultProvider string            `mapstructure:"default_provider"`
+	FallbackEnabled bool              `mapstructure:"fallback_enabled"`
+	Ollama         OllamaConfig       `mapstructure:"ollama"`
+	Hugot          HugotConfig        `mapstructure:"hugot"`
+	VLLM           VLLMConfig         `mapstructure:"vllm"`
+	LlamaCpp       LlamaCppConfig     `mapstructure:"llamacpp"`
+}
+
+// OllamaConfig contains Ollama-specific configuration
+type OllamaConfig struct {
+	Enabled        bool             `mapstructure:"enabled"`
+	URL            string           `mapstructure:"url"`
+	AutoStart      bool             `mapstructure:"auto_start"`
+	Timeout        string           `mapstructure:"timeout"`
+	MaxRetries     int              `mapstructure:"max_retries"`
+	ResourceLimits AIResourceLimits `mapstructure:"resource_limits"`
+}
+
+// HugotConfig contains Hugot-specific configuration for local ONNX transformers
+type HugotConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	ModelsDir    string `mapstructure:"models_dir"`
+	DefaultModel string `mapstructure:"default_model"`
+	Timeout      string `mapstructure:"timeout"`
+	MaxRetries   int    `mapstructure:"max_retries"`
+}
+
+// VLLMConfig contains vLLM-specific configuration for high-performance LLM serving
+type VLLMConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	BaseURL      string `mapstructure:"base_url"`
+	APIKey       string `mapstructure:"api_key"`
+	DefaultModel string `mapstructure:"default_model"`
+	Timeout      string `mapstructure:"timeout"`
+	MaxRetries   int    `mapstructure:"max_retries"`
+}
+
+// LlamaCppConfig contains llama.cpp-specific configuration for edge LLM deployment
+type LlamaCppConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	BaseURL      string `mapstructure:"base_url"`
+	APIKey       string `mapstructure:"api_key"`
+	DefaultModel string `mapstructure:"default_model"`
+	Timeout      string `mapstructure:"timeout"`
+	MaxRetries   int    `mapstructure:"max_retries"`
+	AutoStart    bool   `mapstructure:"auto_start"`
+	BinaryPath   string `mapstructure:"binary_path"`
+	ModelPath    string `mapstructure:"model_path"`
+	ServerPort   int    `mapstructure:"server_port"`
+}
+
+// AIResourceLimits contains resource limit configuration for AI providers
+type AIResourceLimits struct {
+	MaxMemory string `mapstructure:"max_memory"`
+	MaxCPU    string `mapstructure:"max_cpu"`
 }
 
 // AIProviderConfig contains configuration for a specific AI provider
@@ -148,11 +200,69 @@ type AIProviderConfig struct {
 	Extra          map[string]interface{} `mapstructure:"extra,omitempty"`
 }
 
-// AIResourceLimits contains resource limits for local providers like Ollama
-type AIResourceLimits struct {
-	MaxMemory string `mapstructure:"max_memory"`
-	MaxCPU    int    `mapstructure:"max_cpu"`
-	MaxGPU    int    `mapstructure:"max_gpu"`
+// SpeechConfig contains speech services configuration
+type SpeechConfig struct {
+	Enabled   bool            `mapstructure:"enabled"`
+	Streaming StreamingConfig `mapstructure:"streaming"`
+	TTS       TTSConfig       `mapstructure:"tts"`
+	STT       STTConfig       `mapstructure:"stt"`
+	Audio     AudioConfig     `mapstructure:"audio"`
+}
+
+// StreamingConfig contains multi-instance streaming TTS configuration
+type StreamingConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`
+	MaxWorkers           int    `mapstructure:"max_workers"`
+	ChunkSize            int    `mapstructure:"chunk_size"`
+	ContextOverlap       int    `mapstructure:"context_overlap"`
+	BufferSize           int    `mapstructure:"buffer_size"`
+	QualityPreset        string `mapstructure:"quality_preset"`
+	MaxConcurrentStreams int    `mapstructure:"max_concurrent_streams"`
+	StreamTimeout        string `mapstructure:"stream_timeout"`
+	ChunkTimeout         string `mapstructure:"chunk_timeout"`
+	ProgressInterval     string `mapstructure:"progress_interval"`
+	CleanupInterval      string `mapstructure:"cleanup_interval"`
+	MaxRetries           int    `mapstructure:"max_retries"`
+	RetryDelay           string `mapstructure:"retry_delay"`
+}
+
+// TTSConfig contains Text-to-Speech configuration
+type TTSConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// TTS Daemon configuration
+	UseDaemon                 bool   `mapstructure:"use_daemon"`
+	DaemonURL                 string `mapstructure:"daemon_url"`
+	DaemonTimeout             string `mapstructure:"daemon_timeout"`
+	DaemonHealthCheckInterval string `mapstructure:"daemon_health_check_interval"`
+	// Fallback subprocess configuration
+	PythonScriptPath string `mapstructure:"python_script_path"`
+	DefaultModel     string `mapstructure:"default_model"`
+	Device           string `mapstructure:"device"`
+	MaxTextLength    int    `mapstructure:"max_text_length"`
+	OutputDir        string `mapstructure:"output_dir"`
+	Timeout          string `mapstructure:"timeout"`
+	ForceGPU         bool   `mapstructure:"force_gpu"`
+}
+
+// STTConfig contains Speech-to-Text configuration
+type STTConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`
+	PythonScriptPath string `mapstructure:"python_script_path"`
+	DefaultModel     string `mapstructure:"default_model"`
+	Language         string `mapstructure:"language"`
+	SilenceThreshold int    `mapstructure:"silence_threshold"`
+	Autocorrect      bool   `mapstructure:"autocorrect"`
+	MaxAudioDuration string `mapstructure:"max_audio_duration"`
+	OutputDir        string `mapstructure:"output_dir"`
+	Timeout          string `mapstructure:"timeout"`
+}
+
+// AudioConfig contains audio processing configuration
+type AudioConfig struct {
+	UploadMaxSize  int64    `mapstructure:"upload_max_size"`
+	AllowedFormats []string `mapstructure:"allowed_formats"`
+	SampleRate     int      `mapstructure:"sample_rate"`
+	Channels       int      `mapstructure:"channels"`
 }
 
 // DevicesConfig contains device integration configuration
@@ -559,12 +669,16 @@ func (c *Config) Validate() error {
 
 	// Validate UPS configuration if enabled
 	if c.Devices.UPS.Enabled {
-		if c.Devices.UPS.NUTHost == "" {
-			errors = append(errors, "devices.ups.nut_host is required when UPS is enabled")
+		// UPS can run in two modes:
+		// 1. Network mode (NUT): requires nut_host, nut_port
+		// 2. I2C mode: requires empty nut_host (for direct I2C communication)
+		if c.Devices.UPS.NUTHost != "" {
+			// Network mode validation
+			if c.Devices.UPS.NUTPort <= 0 || c.Devices.UPS.NUTPort > 65535 {
+				errors = append(errors, "devices.ups.nut_port must be between 1 and 65535 when using network mode")
+			}
 		}
-		if c.Devices.UPS.NUTPort <= 0 || c.Devices.UPS.NUTPort > 65535 {
-			errors = append(errors, "devices.ups.nut_port must be between 1 and 65535")
-		}
+		// Both modes require a UPS name
 		if c.Devices.UPS.UPSName == "" {
 			errors = append(errors, "devices.ups.ups_name is required when UPS is enabled")
 		}
@@ -587,25 +701,15 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate AI providers
-	// hasEnabledProvider := false  // Temporarily disabled for deployment
-	for i, provider := range c.AI.Providers {
-		if provider.Enabled {
-			// hasEnabledProvider = true  // Temporarily disabled for deployment
-			if provider.Type == "" {
-				errors = append(errors, fmt.Sprintf("ai.providers[%d].type is required", i))
-			}
-			if provider.Type != "ollama" && provider.APIKey == "" {
-				errors = append(errors, fmt.Sprintf("ai.providers[%d].api_key is required for %s", i, provider.Type))
-			}
-			if provider.Type == "ollama" && provider.URL == "" {
-				errors = append(errors, fmt.Sprintf("ai.providers[%d].url is required for Ollama", i))
-			}
+	// Validate AI configuration (simplified for centralized service)
+	if c.AI.Enabled {
+		if c.AI.DefaultModel == "" {
+			errors = append(errors, "ai.default_model is required when AI is enabled")
+		}
+		if c.AI.Ollama.Enabled && c.AI.Ollama.URL == "" {
+			errors = append(errors, "ai.ollama.url is required when Ollama is enabled")
 		}
 	}
-	// Temporarily disabled for deployment - if !hasEnabledProvider {
-	//	errors = append(errors, "at least one AI provider must be enabled")
-	// }
 
 	// Validate external services
 	if c.ExternalServices.IPCheckServices.Primary == "" {

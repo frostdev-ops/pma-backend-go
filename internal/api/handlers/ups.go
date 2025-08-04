@@ -12,12 +12,30 @@ import (
 
 // GetUPSStatus returns the current UPS status
 func (h *Handlers) GetUPSStatus(c *gin.Context) {
+	// Check if UPS is enabled in configuration
+	if !h.cfg.Devices.UPS.Enabled {
+		utils.SendSuccess(c, gin.H{
+			"enabled":     false,
+			"status":      "disabled",
+			"message":     "UPS monitoring is disabled in configuration",
+			"last_update": time.Now().UTC(),
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	status, err := h.upsService.GetCurrentStatus(ctx)
 	if err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "Failed to get UPS status")
+		h.log.WithError(err).Warn("Failed to get UPS status")
+		utils.SendSuccess(c, gin.H{
+			"enabled":     true,
+			"status":      "error",
+			"error":       err.Error(),
+			"message":     "UPS service unavailable",
+			"last_update": time.Now().UTC(),
+		})
 		return
 	}
 

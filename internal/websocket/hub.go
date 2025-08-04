@@ -124,7 +124,7 @@ func NewHub(logger *logrus.Logger) *Hub {
 
 	return &Hub{
 		clients:         make(map[*Client]bool),
-		broadcast:       make(chan []byte),
+		broadcast:       make(chan []byte, 1000), // CRITICAL FIX: Add buffer capacity to prevent channel blocking
 		register:        make(chan *Client),
 		unregister:      make(chan *Client),
 		logger:          logger,
@@ -144,7 +144,7 @@ func NewHub(logger *logrus.Logger) *Hub {
 
 // Run starts the hub's main loop
 func (h *Hub) Run() {
-	h.logger.Info("WebSocket hub starting...")
+	h.logger.Info("🔍 [WS-DEBUG] WebSocket hub starting main loop...")
 
 	// Start heartbeat ticker
 	heartbeatTicker := time.NewTicker(30 * time.Second)
@@ -157,28 +157,46 @@ func (h *Hub) Run() {
 	// Start cleanup ticker
 	defer h.cleanupTicker.Stop()
 
+	h.logger.Info("🔍 [WS-DEBUG] Hub entering main event loop")
+
 	for {
 		select {
 		case client := <-h.register:
+			h.logger.WithFields(logrus.Fields{
+				"client_id":    client.ID,
+				"client_ip":    client.info.IPAddress,
+				"channel_size": len(h.register),
+			}).Info("🔍 [WS-DEBUG] Received client registration request from channel")
 			h.registerClient(client)
 
 		case client := <-h.unregister:
+			h.logger.WithFields(logrus.Fields{
+				"client_id":    client.ID,
+				"channel_size": len(h.unregister),
+			}).Info("🔍 [WS-DEBUG] Received client unregistration request from channel")
 			h.unregisterClient(client)
 
 		case message := <-h.broadcast:
+			h.logger.WithFields(logrus.Fields{
+				"message_size": len(message),
+				"channel_size": len(h.broadcast),
+			}).Debug("🔍 [WS-DEBUG] Received broadcast message from channel")
 			h.broadcastMessage(message)
 
 		case <-heartbeatTicker.C:
+			h.logger.Debug("🔍 [WS-DEBUG] Heartbeat ticker triggered")
 			h.sendHeartbeat()
 
 		case <-metricsTicker.C:
+			h.logger.Debug("🔍 [WS-DEBUG] Metrics ticker triggered")
 			h.updateMetrics()
 
 		case <-h.cleanupTicker.C:
+			h.logger.Debug("🔍 [WS-DEBUG] Cleanup ticker triggered")
 			h.cleanupMemory()
 
 		case <-h.shutdown:
-			h.logger.Info("WebSocket hub shutting down...")
+			h.logger.Info("🔍 [WS-DEBUG] WebSocket hub shutting down...")
 			h.cleanupAll()
 			return
 		}
@@ -197,24 +215,48 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, cfg *confi
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"client_ip":  clientIP,
-		"path":       r.URL.Path,
-		"user_agent": r.Header.Get("User-Agent"),
-	}).Info("WebSocket connection attempt")
+		"client_ip":       clientIP,
+		"path":            r.URL.Path,
+		"user_agent":      r.Header.Get("User-Agent"),
+		"method":          r.Method,
+		"headers":         r.Header,
+		"current_clients": len(h.clients),
+	}).Info("🔍 [WS-DEBUG] WebSocket connection attempt received")
 
 	// CRITICAL FIX: Disable WebSocket authentication to match REST API approach
 	// Authentication has been disabled across the application for development/testing
-	h.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (authentication disabled system-wide)")
+	h.logger.WithFields(logrus.Fields{
+		"client_ip":        clientIP,
+		"auth_disabled":    true,
+		"cfg_auth_enabled": cfg != nil && cfg.Auth.Enabled,
+	}).Info("🔍 [WS-DEBUG] WebSocket connection allowed (authentication disabled system-wide)")
+
+	h.logger.WithField("client_ip", clientIP).Info("🔍 [WS-DEBUG] About to attempt WebSocket upgrade")
 
 	// Proceed with WebSocket upgrade without authentication checks
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to upgrade WebSocket connection")
+		h.logger.WithFields(logrus.Fields{
+			"client_ip": clientIP,
+			"error":     err,
+			"upgrader_config": map[string]interface{}{
+				"read_buffer_size":  upgrader.ReadBufferSize,
+				"write_buffer_size": upgrader.WriteBufferSize,
+				"check_origin":      "allow_all",
+			},
+		}).Error("🔍 [WS-DEBUG] Failed to upgrade WebSocket connection")
 		h.metrics.ConnectionErrors++
 		return
 	}
 
+	h.logger.WithField("client_ip", clientIP).Info("🔍 [WS-DEBUG] WebSocket upgrade successful")
+
 	clientID := generateClientID()
+
+	h.logger.WithFields(logrus.Fields{
+		"client_ip": clientIP,
+		"client_id": clientID,
+	}).Info("🔍 [WS-DEBUG] Generated client ID")
 
 	// Create client
 	client := &Client{
@@ -237,8 +279,20 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, cfg *confi
 		},
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"client_id":        clientID,
+		"client_ip":        clientIP,
+		"send_channel_cap": cap(client.send),
+		"hub_registered":   h != nil,
+	}).Info("🔍 [WS-DEBUG] Client struct created, about to register with hub")
+
 	// Register the client
 	h.register <- client
+
+	h.logger.WithFields(logrus.Fields{
+		"client_id": clientID,
+		"client_ip": clientIP,
+	}).Info("🔍 [WS-DEBUG] Client sent to registration channel")
 
 	// Allow collection of memory referenced by the caller
 	go client.writePump()
@@ -249,15 +303,21 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, cfg *confi
 		"client_ip":    clientIP,
 		"is_local":     isLocalConnection(clientIP),
 		"auth_enabled": cfg != nil && cfg.Auth.Enabled,
-	}).Info("WebSocket client connected with authentication")
+	}).Info("🔍 [WS-DEBUG] WebSocket client setup complete - pumps started")
 }
 
 // BroadcastToAll sends a message to all connected clients
 func (h *Hub) BroadcastToAll(messageType string, data interface{}) {
+	h.logger.WithFields(logrus.Fields{
+		"message_type": messageType,
+		"data_type":    fmt.Sprintf("%T", data),
+	}).Info("🔍 [WS-DEBUG] BroadcastToAll called")
+
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
 		// Convert to map if not already
 		dataMap = map[string]interface{}{"data": data}
+		h.logger.WithField("message_type", messageType).Debug("🔍 [WS-DEBUG] Converted data to map format")
 	}
 
 	message := Message{
@@ -268,11 +328,25 @@ func (h *Hub) BroadcastToAll(messageType string, data interface{}) {
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to marshal broadcast message")
+		h.logger.WithFields(logrus.Fields{
+			"message_type": messageType,
+			"error":        err,
+		}).Error("🔍 [WS-DEBUG] Failed to marshal broadcast message")
 		return
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"message_type": messageType,
+		"message_size": len(messageBytes),
+		"message_json": string(messageBytes[:min(200, len(messageBytes))]), // Show first 200 chars
+		"channel_full": len(h.broadcast) >= cap(h.broadcast),
+		"channel_len":  len(h.broadcast),
+		"channel_cap":  cap(h.broadcast),
+	}).Info("🔍 [WS-DEBUG] Sending message to broadcast channel")
+
 	h.broadcast <- messageBytes
+
+	h.logger.WithField("message_type", messageType).Info("🔍 [WS-DEBUG] Message sent to broadcast channel successfully")
 }
 
 // BroadcastToTopic sends a message to all clients subscribed to a topic
@@ -371,6 +445,13 @@ func (h *Hub) BroadcastEntityUpdate(entity *models.Entity) {
 
 // BroadcastPMAEntityStateChange broadcasts a PMA entity state change to WebSocket clients
 func (h *Hub) BroadcastPMAEntityStateChange(entityID string, oldState, newState interface{}, entity interface{}) {
+	h.logger.WithFields(logrus.Fields{
+		"entity_id":  entityID,
+		"old_state":  fmt.Sprintf("%v", oldState),
+		"new_state":  fmt.Sprintf("%v", newState),
+		"has_entity": entity != nil,
+	}).Info("🔍 [WS-DEBUG] BroadcastPMAEntityStateChange called")
+
 	message := map[string]interface{}{
 		"entity_id": entityID,
 		"old_state": oldState,
@@ -379,11 +460,21 @@ func (h *Hub) BroadcastPMAEntityStateChange(entityID string, oldState, newState 
 		"timestamp": time.Now().UTC(),
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"message_type": "pma_entity_state_changed",
+		"entity_id":    entityID,
+		"message_size": len(fmt.Sprintf("%v", message)),
+	}).Info("🔍 [WS-DEBUG] Calling BroadcastToAll with PMA entity state change")
+
 	// Broadcast to all clients
 	h.BroadcastToAll("pma_entity_state_changed", message)
 
+	h.logger.WithField("entity_id", entityID).Info("🔍 [WS-DEBUG] Calling BroadcastToTopic for entity-specific subscription")
+
 	// Broadcast to entity-specific topic
 	h.BroadcastToTopic(fmt.Sprintf("entity:%s", entityID), "pma_entity_state_changed", message)
+
+	h.logger.WithField("entity_id", entityID).Info("🔍 [WS-DEBUG] BroadcastPMAEntityStateChange complete")
 }
 
 // BroadcastPMAEntityAdded broadcasts when a new PMA entity is discovered
@@ -584,9 +675,21 @@ func (h *Hub) registerClient(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	h.logger.WithFields(logrus.Fields{
+		"client_id":       client.ID,
+		"ip_address":      client.info.IPAddress,
+		"user_agent":      client.info.UserAgent,
+		"current_clients": len(h.clients),
+		"max_clients":     h.maxClients,
+	}).Info("🔍 [WS-DEBUG] Attempting to register WebSocket client")
+
 	// Check if we've reached the maximum number of clients
 	if len(h.clients) >= h.maxClients {
-		h.logger.WithField("max_clients", h.maxClients).Warn("Maximum clients reached, rejecting new connection")
+		h.logger.WithFields(logrus.Fields{
+			"max_clients":     h.maxClients,
+			"current_clients": len(h.clients),
+			"client_id":       client.ID,
+		}).Warn("🔍 [WS-DEBUG] Maximum clients reached, rejecting new connection")
 		client.conn.Close()
 		return
 	}
@@ -600,7 +703,7 @@ func (h *Hub) registerClient(client *Client) {
 		"ip_address":    client.info.IPAddress,
 		"user_agent":    client.info.UserAgent,
 		"total_clients": len(h.clients),
-	}).Info("WebSocket client registered")
+	}).Info("🔍 [WS-DEBUG] WebSocket client registered successfully")
 
 	// Send welcome message
 	welcomeMsg := Message{
@@ -614,15 +717,32 @@ func (h *Hub) registerClient(client *Client) {
 	}
 
 	if msgBytes, err := json.Marshal(welcomeMsg); err == nil {
+		h.logger.WithFields(logrus.Fields{
+			"client_id":    client.ID,
+			"welcome_size": len(msgBytes),
+			"channel_len":  len(client.send),
+			"channel_cap":  cap(client.send),
+		}).Debug("🔍 [WS-DEBUG] Sending welcome message to new client")
+
 		select {
 		case client.send <- msgBytes:
+			h.logger.WithField("client_id", client.ID).Debug("🔍 [WS-DEBUG] Welcome message sent successfully")
 		default:
 			// Channel is full, close the connection
-			h.logger.WithField("client_id", client.ID).Warn("Client send channel full, closing connection")
+			h.logger.WithFields(logrus.Fields{
+				"client_id":   client.ID,
+				"channel_len": len(client.send),
+				"channel_cap": cap(client.send),
+			}).Warn("🔍 [WS-DEBUG] Client send channel full during registration, closing connection")
 			delete(h.clients, client)
 			close(client.send)
 			client.conn.Close()
 		}
+	} else {
+		h.logger.WithFields(logrus.Fields{
+			"client_id": client.ID,
+			"error":     err,
+		}).Error("🔍 [WS-DEBUG] Failed to marshal welcome message")
 	}
 }
 
@@ -658,22 +778,62 @@ func (h *Hub) broadcastMessage(message []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	clientCount := len(h.clients)
+	h.logger.WithFields(logrus.Fields{
+		"total_clients": clientCount,
+		"message_size":  len(message),
+		"message_type":  string(message[:min(100, len(message))]), // Show first 100 chars for debugging
+	}).Info("🔍 [WS-DEBUG] Broadcasting message to all clients")
+
+	if clientCount == 0 {
+		h.logger.Warn("🔍 [WS-DEBUG] No clients connected - message not delivered")
+		return
+	}
+
+	successCount := 0
+	failedCount := 0
+
 	for client := range h.clients {
 		select {
 		case client.send <- message:
+			successCount++
 			h.metrics.MessagesSent++
 			h.metrics.BytesSent += int64(len(message))
+			h.logger.WithFields(logrus.Fields{
+				"client_id": client.ID,
+				"client_ip": client.info.IPAddress,
+				"success":   true,
+			}).Debug("🔍 [WS-DEBUG] Message sent to client successfully")
 		default:
+			failedCount++
 			// Client's send channel is full, close it directly without spawning goroutine
 			// MEMORY LEAK FIX: Remove goroutine spawn to prevent goroutine leak
-			h.logger.WithField("client_id", client.ID).Warn("Client send channel full, closing connection")
+			h.logger.WithFields(logrus.Fields{
+				"client_id": client.ID,
+				"client_ip": client.info.IPAddress,
+				"reason":    "send_channel_full",
+			}).Warn("🔍 [WS-DEBUG] Client send channel full, closing connection")
 			delete(h.clients, client)
 			close(client.send)
 			client.conn.Close()
 		}
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"success_count": successCount,
+		"failed_count":  failedCount,
+		"total_clients": clientCount,
+	}).Info("🔍 [WS-DEBUG] Broadcast complete")
+
 	h.metrics.LastMessageTime = time.Now()
+}
+
+// Helper function for min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (h *Hub) sendHeartbeat() {

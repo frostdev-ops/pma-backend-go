@@ -3,10 +3,12 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/ai"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 // Conversation management handlers
@@ -64,7 +66,7 @@ func (h *Handlers) GetConversation(c *gin.Context) {
 		return
 	}
 
-	conversation, err := conversationService.GetConversation(c.Request.Context(), userID, conversationID)
+	conversation, err := conversationService.GetConversation(c.Request.Context(), conversationID)
 	if err != nil {
 		h.log.WithError(err).WithField("conversation_id", conversationID).Error("Failed to get conversation")
 		c.JSON(http.StatusNotFound, gin.H{"error": "Conversation not found"})
@@ -133,7 +135,7 @@ func (h *Handlers) GetConversations(c *gin.Context) {
 		return
 	}
 
-	conversations, err := conversationService.GetConversations(c.Request.Context(), userID, filter)
+	conversations, err := conversationService.GetConversations(c.Request.Context(), userID, filter.Limit, filter.Offset)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to get conversations")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve conversations"})
@@ -290,14 +292,47 @@ func (h *Handlers) SendMessage(c *gin.Context) {
 
 	conversationService := h.getConversationService()
 	if conversationService == nil {
+		h.log.Error("Conversation service is nil in SendMessage handler")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Conversation service not available"})
 		return
 	}
 
-	response, err := conversationService.SendMessage(c.Request.Context(), userID, conversationID, &req)
+	h.log.WithFields(logrus.Fields{
+		"user_id":         userID,
+		"conversation_id": conversationID,
+		"content_length":  len(req.Content),
+	}).Debug("Calling SendMessage on conversation service")
+
+	// Convert SendMessageRequest to ChatOptions for streamlined service
+	opts := ai.ChatOptions{
+		Provider:     "llamacpp",
+		Model:        "LFM2-1.2B", // Default full precision model
+		MaxTokens:    100,         // Default
+		Temperature:  0.7,         // Default
+		SystemPrompt: "You are a helpful AI assistant.",
+	}
+
+	if req.Temperature != nil {
+		opts.Temperature = *req.Temperature
+	}
+	if req.MaxTokens != nil {
+		opts.MaxTokens = *req.MaxTokens
+	}
+
+	response, err := conversationService.SendMessage(c.Request.Context(), conversationID, req.Content, opts)
 	if err != nil {
 		h.log.WithError(err).WithField("conversation_id", conversationID).Error("Failed to send message")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send message"})
+
+		// Check if it's an AI service availability issue
+		if strings.Contains(err.Error(), "AI service is not available") {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "AI service is currently unavailable",
+				"details": "The centralized LLM service is not initialized. Please check server configuration.",
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send message", "details": err.Error()})
 		return
 	}
 
@@ -401,7 +436,7 @@ func (h *Handlers) GetConversationStatistics(c *gin.Context) {
 		return
 	}
 
-	stats, err := conversationService.GetConversationStatistics(c.Request.Context(), userID, startDate, endDate)
+	stats, err := conversationService.GetConversationStatistics(c.Request.Context(), userID)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to get conversation statistics")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve statistics"})
@@ -438,13 +473,13 @@ func (h *Handlers) GenerateConversationTitle(c *gin.Context) {
 	}
 
 	// Verify user has access to conversation
-	_, err := conversationService.GetConversation(c.Request.Context(), userID, conversationID)
+	_, err := conversationService.GetConversation(c.Request.Context(), conversationID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Conversation not found"})
 		return
 	}
 
-	title, err := conversationService.GenerateConversationTitle(c.Request.Context(), conversationID)
+	title, err := conversationService.GenerateConversationTitle(c.Request.Context(), userID, conversationID)
 	if err != nil {
 		h.log.WithError(err).WithField("conversation_id", conversationID).Error("Failed to generate conversation title")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate title"})
@@ -480,7 +515,7 @@ func (h *Handlers) CleanupConversations(c *gin.Context) {
 		return
 	}
 
-	err := conversationService.CleanupOldData(c.Request.Context(), days)
+	results, err := conversationService.CleanupOldData(c.Request.Context(), days)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to cleanup conversation data")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cleanup data"})
@@ -488,13 +523,14 @@ func (h *Handlers) CleanupConversations(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Cleanup completed successfully",
-		"days":    days,
+		"cleanup_results": results,
+		"message":         "Cleanup completed successfully",
+		"days":            days,
 	})
 }
 
 // Helper function to get conversation service
-func (h *Handlers) getConversationService() *ai.ConversationService {
+func (h *Handlers) getConversationService() *ai.StreamlinedConversationService {
 	// Return the properly wired conversation service with MCP integration
 	return h.conversationService
 }

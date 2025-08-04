@@ -783,6 +783,105 @@ func (h *Handlers) GetKioskDisplayStatus(c *gin.Context) {
 	utils.SendSuccess(c, status)
 }
 
+// GetKioskScreenDimensions gets screen dimensions for dashboard creation
+func (h *Handlers) GetKioskScreenDimensions(c *gin.Context) {
+	// Get kiosk token to find the device
+	kioskToken := c.Query("token")
+
+	// Default dimensions for common kiosk displays
+	defaultDimensions := map[string]interface{}{
+		"screen": map[string]interface{}{
+			"width":        1920,
+			"height":       1080,
+			"aspect_ratio": "16:9",
+			"diagonal":     "24", // inches
+			"dpi":          96,
+		},
+		"usable_area": map[string]interface{}{
+			"width":  1880, // Account for system chrome
+			"height": 1040,
+		},
+		"optimal_grid": map[string]interface{}{
+			"grid_size": 40,
+			"columns":   47, // 1880 / 40
+			"rows":      26, // 1040 / 40
+			"gap":       8,
+			"padding":   16,
+		},
+		"recommended_sizes": map[string]interface{}{
+			"small":  map[string]interface{}{"columns": 32, "rows": 18, "grid_size": 50},
+			"medium": map[string]interface{}{"columns": 47, "rows": 26, "grid_size": 40},
+			"large":  map[string]interface{}{"columns": 62, "rows": 34, "grid_size": 30},
+		},
+		"device_info": map[string]interface{}{
+			"type":        "kiosk_display",
+			"orientation": "landscape",
+			"touch":       true,
+			"detected_at": time.Now(),
+		},
+	}
+
+	// Try to get real dimensions from kiosk device status if token provided
+	if kioskToken != "" {
+		// In a full implementation, query the kiosk device status for real screen dimensions
+		// For now, we'll try to get stored device info from the kiosk system
+		tokens, err := h.repos.Kiosk.GetAllTokens(c.Request.Context())
+		if err == nil {
+			for _, token := range tokens {
+				if token.Token == kioskToken {
+					// Try to get device status with screen info
+					if status, err := h.repos.Kiosk.GetDeviceStatus(c.Request.Context(), token.ID); err == nil {
+						// Parse device info if available
+						if status.DeviceInfo != nil {
+							var deviceInfo map[string]interface{}
+							if err := json.Unmarshal(status.DeviceInfo, &deviceInfo); err == nil {
+								// Check for screen dimensions in device info
+								if screenInfo, ok := deviceInfo["screen"]; ok {
+									if screenMap, ok := screenInfo.(map[string]interface{}); ok {
+										// Use real screen dimensions if available
+										if width, ok := screenMap["width"].(float64); ok {
+											defaultDimensions["screen"].(map[string]interface{})["width"] = int(width)
+										}
+										if height, ok := screenMap["height"].(float64); ok {
+											defaultDimensions["screen"].(map[string]interface{})["height"] = int(height)
+										}
+
+										// Recalculate optimal grid based on real dimensions
+										screenWidth := defaultDimensions["screen"].(map[string]interface{})["width"].(int)
+										screenHeight := defaultDimensions["screen"].(map[string]interface{})["height"].(int)
+
+										usableWidth := screenWidth - 40 // Account for padding
+										usableHeight := screenHeight - 40
+
+										defaultDimensions["usable_area"].(map[string]interface{})["width"] = usableWidth
+										defaultDimensions["usable_area"].(map[string]interface{})["height"] = usableHeight
+
+										// Calculate optimal grid
+										gridSize := 40
+										columns := usableWidth / gridSize
+										rows := usableHeight / gridSize
+
+										defaultDimensions["optimal_grid"].(map[string]interface{})["columns"] = columns
+										defaultDimensions["optimal_grid"].(map[string]interface{})["rows"] = rows
+									}
+								}
+
+								// Add device-specific info
+								defaultDimensions["device_info"].(map[string]interface{})["kiosk_name"] = token.Name
+								defaultDimensions["device_info"].(map[string]interface{})["room_id"] = token.RoomID
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	h.log.WithField("dimensions", defaultDimensions).Info("Kiosk screen dimensions requested")
+	utils.SendSuccess(c, defaultDimensions)
+}
+
 // ControlKioskDisplayBrightness controls display brightness
 func (h *Handlers) ControlKioskDisplayBrightness(c *gin.Context) {
 	var req struct {

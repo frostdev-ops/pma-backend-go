@@ -31,6 +31,7 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/core/i18n"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/interfaces"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/kiosk"
+
 	"github.com/frostdev-ops/pma-backend-go/internal/core/media"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/monitoring"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/network"
@@ -38,6 +39,8 @@ import (
 	"github.com/frostdev-ops/pma-backend-go/internal/core/queue"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/rooms"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/screensaver"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/speech"
+	"github.com/frostdev-ops/pma-backend-go/internal/core/stt"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/system"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/test"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/types"
@@ -399,11 +402,44 @@ func (a *ConversationRepositoryAdapter) CreateConversation(ctx context.Context, 
 }
 
 func (a *ConversationRepositoryAdapter) GetConversation(ctx context.Context, id string, userID string) (*ai.Conversation, error) {
-	return a.repo.GetConversation(ctx, id, userID)
+	result, err := a.repo.GetConversation(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	conv, ok := result.(*ai.Conversation)
+	if !ok {
+		return nil, fmt.Errorf("invalid conversation type")
+	}
+	return conv, nil
 }
 
-func (a *ConversationRepositoryAdapter) GetConversations(ctx context.Context, filter *ai.ConversationFilter) ([]*ai.Conversation, error) {
-	return a.repo.GetConversations(ctx, filter)
+func (a *ConversationRepositoryAdapter) GetConversations(ctx context.Context, userID string, limit int, offset int) ([]*ai.Conversation, error) {
+	// Create a filter with the provided parameters
+	filter := &ai.ConversationFilter{
+		UserID: &userID,
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	result, err := a.repo.GetConversations(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	convs := make([]*ai.Conversation, len(result))
+	for i, item := range result {
+		if conv, ok := item.(*ai.Conversation); ok {
+			convs[i] = conv
+		} else {
+			return nil, fmt.Errorf("invalid conversation type at index %d", i)
+		}
+	}
+	return convs, nil
 }
 
 func (a *ConversationRepositoryAdapter) UpdateConversation(ctx context.Context, conv *ai.Conversation) error {
@@ -427,7 +463,22 @@ func (a *ConversationRepositoryAdapter) CreateMessage(ctx context.Context, msg *
 }
 
 func (a *ConversationRepositoryAdapter) GetConversationMessages(ctx context.Context, conversationID string, limit int, offset int) ([]*ai.ConversationMessage, error) {
-	return a.repo.GetConversationMessages(ctx, conversationID, limit, offset)
+	result, err := a.repo.GetConversationMessages(ctx, conversationID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	msgs := make([]*ai.ConversationMessage, len(result))
+	for i, item := range result {
+		if msg, ok := item.(*ai.ConversationMessage); ok {
+			msgs[i] = msg
+		} else {
+			return nil, fmt.Errorf("invalid message type at index %d", i)
+		}
+	}
+	return msgs, nil
 }
 
 func (a *ConversationRepositoryAdapter) CreateOrUpdateAnalytics(ctx context.Context, analytics *ai.ConversationAnalytics) error {
@@ -435,11 +486,33 @@ func (a *ConversationRepositoryAdapter) CreateOrUpdateAnalytics(ctx context.Cont
 }
 
 func (a *ConversationRepositoryAdapter) GetConversationAnalytics(ctx context.Context, conversationID string, date time.Time) (*ai.ConversationAnalytics, error) {
-	return a.repo.GetConversationAnalytics(ctx, conversationID, date)
+	result, err := a.repo.GetConversationAnalytics(ctx, conversationID, date)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	analytics, ok := result.(*ai.ConversationAnalytics)
+	if !ok {
+		return nil, fmt.Errorf("invalid analytics type")
+	}
+	return analytics, nil
 }
 
 func (a *ConversationRepositoryAdapter) GetGlobalStatistics(ctx context.Context, userID string, startDate, endDate time.Time) (*ai.ConversationStatistics, error) {
-	return a.repo.GetGlobalStatistics(ctx, userID, startDate, endDate)
+	result, err := a.repo.GetGlobalStatistics(ctx, userID, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	stats, ok := result.(*ai.ConversationStatistics)
+	if !ok {
+		return nil, fmt.Errorf("invalid statistics type")
+	}
+	return stats, nil
 }
 
 func (a *ConversationRepositoryAdapter) CleanupOldConversations(ctx context.Context, days int) error {
@@ -464,11 +537,37 @@ func NewMCPRepositoryAdapter(repo repositories.MCPRepository) *MCPRepositoryAdap
 }
 
 func (a *MCPRepositoryAdapter) GetToolByName(ctx context.Context, name string) (*ai.MCPTool, error) {
-	return a.repo.GetToolByName(ctx, name)
+	result, err := a.repo.GetToolByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	tool, ok := result.(*ai.MCPTool)
+	if !ok {
+		return nil, fmt.Errorf("invalid tool type")
+	}
+	return tool, nil
 }
 
 func (a *MCPRepositoryAdapter) GetEnabledTools(ctx context.Context, category string) ([]*ai.MCPTool, error) {
-	return a.repo.GetEnabledTools(ctx, category)
+	result, err := a.repo.GetEnabledTools(ctx, category)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	tools := make([]*ai.MCPTool, len(result))
+	for i, item := range result {
+		if tool, ok := item.(*ai.MCPTool); ok {
+			tools[i] = tool
+		} else {
+			return nil, fmt.Errorf("invalid tool type at index %d", i)
+		}
+	}
+	return tools, nil
 }
 
 func (a *MCPRepositoryAdapter) CreateToolExecution(ctx context.Context, execution *ai.MCPToolExecution) error {
@@ -492,9 +591,9 @@ type Handlers struct {
 	db                  *sql.DB
 	automationEngine    *automation.AutomationEngine
 	automationHandler   *AutomationHandler
+	conversationService *ai.StreamlinedConversationService
 	llmManager          *ai.LLMManager
-	chatService         *ai.ChatService
-	conversationService *ai.ConversationService
+	smartModelSelector  *ai.SmartModelSelector
 	mcpToolExecutor     *ai.MCPToolExecutor
 	networkService      *network.Service
 	upsService          *ups.UPSAdapter
@@ -517,6 +616,7 @@ type Handlers struct {
 	AnalyticsHandler   *AnalyticsHandler
 	enhancedDB         *database.EnhancedDB
 	PerformanceHandler *PerformanceHandler
+	enhancedSTTService *stt.EnhancedSTTService
 	MemoryHandler      *MemoryHandler
 	alertingEngine     *monitoring.AlertingEngine
 	dashboardEngine    *monitoring.DashboardEngine
@@ -561,74 +661,71 @@ type Handlers struct {
 	// Screensaver System
 	screensaverService *screensaver.Service
 
+	// Speech System
+	speechService interface{} // Can be *speech.Service or *speech.StreamingTTSService
+	speechHandler *SpeechHandlers
+
 	// Debug utilities
 	debugUtils *debug.ServiceLogger
 }
 
 // NewHandlers creates a new handlers instance
 func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logrus.Logger, wsHub *websocket.Hub, db *sql.DB, enhancedDB *database.EnhancedDB, recoveryManager *errors.RecoveryManager, debugLogger *debug.DebugLogger) *Handlers {
-	// Initialize AI services
+	// Initialize streamlined AI services with llama.cpp
 	var llmManager *ai.LLMManager
-	var chatService *ai.ChatService
+	var conversationService *ai.StreamlinedConversationService
 
-	// Try to initialize LLM manager
-	logger.Info("Attempting to initialize LLM manager...")
-	if manager, err := ai.NewLLMManager(cfg, logger); err != nil {
-		logger.WithError(err).Error("Failed to initialize LLM manager - AI services will be unavailable")
+	// Initialize LLM Manager with llama.cpp
+	logger.Info("Initializing streamlined AI services with llama.cpp...")
+	if manager, err := ai.NewLLMManager(cfg, logger, repos.Config); err != nil {
+		logger.WithError(err).Error("Failed to create LLM Manager")
 		llmManager = nil
 	} else {
-		logger.Info("LLM manager created successfully")
+		logger.Info("LLM Manager created successfully")
 		llmManager = manager
 
-		// Register provider factories for all supported AI providers
-		logger.Info("Registering AI provider factories...")
-
-		// Register Ollama provider factory
-		llmManager.RegisterProviderFactory("ollama", func(cfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
-			provider := providers.NewOllamaProvider(cfg, logger)
-			logger.WithField("provider_name", provider.GetName()).Info("DEBUG: Ollama provider created")
-			return provider
+		// Register provider factories
+		llmManager.RegisterProviderFactory("llamacpp", func(providerCfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
+			logger.WithFields(logrus.Fields{
+				"provider_cfg": providerCfg,
+				"auto_start":   providerCfg.AutoStart,
+				"llamacpp_cfg": cfg.AI.LlamaCpp,
+			}).Info("Creating LlamaCpp provider with config")
+			return providers.NewLlamaCppProviderWithConfigAndRepo(providerCfg, cfg, logger, repos.Config)
 		})
 
-		// Register Gemini provider factory
-		llmManager.RegisterProviderFactory("gemini", func(cfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
-			return providers.NewGeminiProvider(cfg, logger)
-		})
-
-		// Register OpenAI provider factory
-		llmManager.RegisterProviderFactory("openai", func(cfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
-			return providers.NewOpenAIProvider(cfg, logger)
-		})
-
-		// Register Claude provider factory
-		llmManager.RegisterProviderFactory("claude", func(cfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
-			return providers.NewClaudeProvider(cfg, logger)
-		})
-
-		logger.Info("AI provider factories registered successfully")
-
-		// Re-initialize providers now that factories are registered
-		logger.Info("Re-initializing AI providers...")
+		// Initialize providers
 		if err := llmManager.ReinitializeProviders(cfg); err != nil {
-			logger.WithError(err).Error("Failed to initialize AI providers - will continue without AI")
+			logger.WithError(err).Error("Failed to initialize LLM Manager providers")
 			llmManager = nil
 		} else {
-			logger.Info("AI providers re-initialized successfully")
-
-			// Initialize providers (calls Initialize on each provider)
-			ctx := context.Background()
-			logger.Info("Initializing provider instances...")
-			if err := llmManager.Initialize(ctx); err != nil {
-				logger.WithError(err).Error("Failed to initialize provider instances - will continue without AI")
+			// Initialize the manager
+			if err := llmManager.Initialize(context.Background()); err != nil {
+				logger.WithError(err).Error("Failed to initialize LLM Manager providers")
 				llmManager = nil
 			} else {
-				logger.Info("AI provider instances initialized successfully")
+				logger.Info("LLM Manager initialized successfully")
 			}
-
-			// Initialize chat service with the LLM manager
-			chatService = ai.NewChatService(llmManager, logger)
 		}
 	}
+
+	// Initialize conversation service
+	if llmManager != nil {
+		conversationService = ai.NewStreamlinedConversationService(llmManager, logger)
+
+		// Wire up the conversation repository for persistence
+		if repos.Conversation != nil {
+			conversationRepoAdapter := NewConversationRepositoryAdapter(repos.Conversation)
+			conversationService.SetConversationRepository(conversationRepoAdapter)
+			logger.Info("Conversation service configured with persistence")
+		}
+
+		logger.Info("Conversation service initialized successfully")
+	}
+
+	// Initialize smart model selector
+	smartModelSelector := ai.NewSmartModelSelector(logger)
+	logger.Info("Smart model selector initialized successfully")
 
 	// Initialize core services
 	networkConfig := network.Config{
@@ -882,29 +979,83 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		logger.Info("Screensaver service initialized successfully")
 	}
 
+	// Initialize Speech service
+	var speechService interface{} // Can be *speech.Service or *speech.StreamingTTSService
+	if cfg.Speech.Enabled {
+		logger.Info("Initializing speech service...")
+		// Try to initialize streaming TTS service first
+		if cfg.Speech.Streaming.Enabled {
+			logger.Info("Streaming TTS enabled, initializing StreamingTTSService...")
+			logger.Info("DEBUG: About to call NewStreamingTTSService...")
+			if streamingService, err := speech.NewStreamingTTSService(&cfg.Speech, logger); err != nil {
+				logger.WithError(err).Warn("Failed to initialize streaming TTS service, falling back to basic service")
+				logger.Info("DEBUG: StreamingTTSService creation failed, entering fallback path...")
+				// Fallback to basic service
+				if service, err := speech.NewService(&cfg.Speech, logger); err != nil {
+					logger.WithError(err).Error("Failed to initialize basic speech service")
+					speechService = nil
+				} else {
+					logger.Info("Basic speech service initialized successfully")
+					speechService = service
+				}
+			} else {
+				logger.Info("Streaming TTS service initialized successfully")
+				logger.Info("DEBUG: StreamingTTSService creation succeeded, storing service...")
+				// Store the full StreamingTTSService to allow type assertion in handlers
+				speechService = streamingService
+
+				// Start the streaming service to initialize the cluster
+				logger.Info("DEBUG: About to start streaming cluster...")
+				ctx := context.Background()
+				logger.Info("DEBUG: Calling streamingService.StartStreaming...")
+				if err := streamingService.StartStreaming(ctx); err != nil {
+					logger.WithError(err).Warn("Failed to start streaming cluster, streaming will use fallback mode")
+					logger.Info("DEBUG: StartStreaming failed!")
+				} else {
+					logger.Info("Streaming TTS cluster started successfully")
+					logger.Info("DEBUG: StartStreaming succeeded!")
+				}
+				logger.Info("DEBUG: Completed streaming cluster startup attempt")
+			}
+		} else {
+			logger.Info("Streaming TTS disabled, using basic speech service")
+			if service, err := speech.NewService(&cfg.Speech, logger); err != nil {
+				logger.WithError(err).Error("Failed to initialize speech service")
+				speechService = nil
+			} else {
+				logger.Info("Speech service initialized successfully")
+				speechService = service
+			}
+		}
+	} else {
+		logger.Info("Speech service is disabled in configuration")
+		speechService = nil
+	}
+
 	handlers := &Handlers{
-		cfg:               cfg,
-		repos:             repos,
-		log:               logger,
-		wsHub:             wsHub,
-		db:                db,
-		automationEngine:  automationEngine,
-		automationHandler: automationHandler,
-		llmManager:        llmManager,
-		chatService:       chatService,
-		networkService:    networkService,
-		upsService:        upsService,
-		systemService:     systemService,
-		displayService:    displayService,
-		bluetoothService:  bluetoothService,
-		energyService:     energyService,
-		roomService:       roomService,
-		queueService:      queueService,
-		kioskService:      kioskService,
-		KioskHandler:      kioskHandler,
-		eventsHandler:     eventsHandler,
-		mcpHandler:        mcpHandler,
-		fileHandler:       fileHandler,
+		cfg:                 cfg,
+		repos:               repos,
+		log:                 logger,
+		wsHub:               wsHub,
+		db:                  db,
+		automationEngine:    automationEngine,
+		automationHandler:   automationHandler,
+		conversationService: conversationService,
+		llmManager:          llmManager,
+		smartModelSelector:  smartModelSelector,
+		networkService:      networkService,
+		upsService:          upsService,
+		systemService:       systemService,
+		displayService:      displayService,
+		bluetoothService:    bluetoothService,
+		energyService:       energyService,
+		roomService:         roomService,
+		queueService:        queueService,
+		kioskService:        kioskService,
+		KioskHandler:        kioskHandler,
+		eventsHandler:       eventsHandler,
+		mcpHandler:          mcpHandler,
+		fileHandler:         fileHandler,
 
 		testService:        test.NewService(cfg, repos, logger, db),
 		cacheManager:       cacheManager,
@@ -936,6 +1087,10 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 		// Screensaver System
 		screensaverService: screensaverService,
 
+		// Speech System
+		speechService: speechService,
+		speechHandler: NewSpeechHandlers(speechService, logger, repos.Config),
+
 		// Debug utilities
 		debugUtils: debug.NewServiceLogger("handlers", debugLogger),
 	}
@@ -965,20 +1120,14 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	}
 	handlers.mcpToolExecutor = mcpToolExecutor
 
-	// Initialize conversation service if we have the required components
-	if llmManager != nil && repos.Conversation != nil && repos.MCP != nil {
-		conversationService := ai.NewConversationService(
-			llmManager,
-			NewConversationRepositoryAdapter(repos.Conversation), // Implements ai.ConversationRepositoryInterface
-			NewMCPRepositoryAdapter(repos.MCP),                   // Implements ai.MCPRepositoryInterface
-			mcpToolExecutor,
-			logger,
-		)
-		handlers.conversationService = conversationService
-		logger.Info("Conversation service initialized with MCP integration")
-	} else {
-		logger.Info("Conversation service initialization skipped - using MCP tool executor directly")
+	// Wire up MCP tool executor to conversation service if available
+	if conversationService != nil && mcpToolExecutor != nil {
+		conversationService.SetMCPToolExecutor(mcpToolExecutor)
+		logger.Info("Conversation service configured with MCP tools")
 	}
+
+	// Conversation service is now initialized earlier with centralized LLM service
+	// This section has been moved to avoid duplicate initialization
 
 	// Initialize WebSocket optimization
 	optimizationConfig := websocket.DefaultOptimizationConfig()
@@ -1542,6 +1691,30 @@ func (h *Handlers) GetScreensaverImage(c *gin.Context) {
 	c.Data(http.StatusOK, contentType, data)
 }
 
+func (h *Handlers) CleanupOrphanedImages(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	err := h.screensaverService.CleanupOrphanedImages(ctx)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to cleanup orphaned screensaver images")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success":   false,
+			"error":     "Failed to cleanup orphaned images",
+			"details":   err.Error(),
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"message":   "Orphaned images cleaned up successfully",
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
+
+	h.log.Info("Orphaned screensaver images cleaned up successfully")
+}
+
 func (h *Handlers) GetMobileUploadPage(c *gin.Context) {
 	h.fileHandler.GetMobileUploadPage(c)
 }
@@ -1660,6 +1833,11 @@ func (h *Handlers) GetUnifiedService() *unified.UnifiedEntityService {
 // GetAutomationEngine returns the automation engine for external access (e.g., shutdown)
 func (h *Handlers) GetAutomationEngine() *automation.AutomationEngine {
 	return h.automationEngine
+}
+
+// GetAutomationHandler returns the automation handler for route registration
+func (h *Handlers) GetAutomationHandler() *AutomationHandler {
+	return h.automationHandler
 }
 
 // Analytics Handler Wrappers
@@ -2451,4 +2629,202 @@ func (h *Handlers) TestHAConnectionSimple(c *gin.Context) {
 			return firstFive
 		}(),
 	})
+}
+
+// Speech service wrapper methods
+
+// SpeechEnabled returns whether speech services are enabled
+func (h *Handlers) SpeechEnabled() bool {
+	if h.speechService == nil {
+		return false
+	}
+
+	switch s := h.speechService.(type) {
+	case *speech.Service:
+		return s.Enabled()
+	case *speech.StreamingTTSService:
+		return s.Service.Enabled()
+	default:
+		return false
+	}
+}
+
+// TextToSpeech handles TTS requests
+func (h *Handlers) TextToSpeech(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.TextToSpeech(c)
+}
+
+// SpeechToText handles STT requests
+func (h *Handlers) SpeechToText(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.SpeechToText(c)
+}
+
+// RecordAndTranscribe handles live recording and transcription
+func (h *Handlers) RecordAndTranscribe(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.RecordAndTranscribe(c)
+}
+
+// GetTTSModels returns available TTS models
+func (h *Handlers) GetTTSModels(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetTTSModels(c)
+}
+
+// GetVoices returns available TTS voices
+func (h *Handlers) GetVoices(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetVoices(c)
+}
+
+// GetVoiceSpeakers returns speakers for a specific voice
+func (h *Handlers) GetVoiceSpeakers(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetVoiceSpeakers(c)
+}
+
+// TextToSpeechStreaming handles streaming TTS requests
+func (h *Handlers) TextToSpeechStreaming(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.TextToSpeechStreaming(c)
+}
+
+// GetStreamingStatus returns the status of streaming operations
+func (h *Handlers) GetStreamingStatus(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetStreamingStatus(c)
+}
+
+// CancelStreamingSession cancels a streaming TTS session
+func (h *Handlers) CancelStreamingSession(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.CancelStreamingSession(c)
+}
+
+// GetStreamingMetrics returns streaming performance metrics
+func (h *Handlers) GetStreamingMetrics(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetStreamingMetrics(c)
+}
+
+// DownloadAudio serves generated audio files
+func (h *Handlers) DownloadAudio(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.DownloadAudio(c)
+}
+
+// GetSpeechStatus returns speech service status
+func (h *Handlers) GetSpeechStatus(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetSpeechStatus(c)
+}
+
+// SpeechHealthCheck performs speech service health check
+func (h *Handlers) SpeechHealthCheck(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.SpeechHealthCheck(c)
+}
+
+// CleanupTempFiles cleans up old temporary files
+func (h *Handlers) CleanupTempFiles(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.CleanupTempFiles(c)
+}
+
+// GetSpeechSettings returns speech service settings
+func (h *Handlers) GetSpeechSettings(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetSpeechSettings(c)
+}
+
+// UpdateSpeechSettings updates speech service settings
+func (h *Handlers) UpdateSpeechSettings(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.UpdateSpeechSettings(c)
+}
+
+// STTWebSocketHandler handles WebSocket connections for real-time STT
+func (h *Handlers) STTWebSocketHandler(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.STTWebSocketHandler(c)
+}
+
+// GetSTTMetrics returns STT service performance metrics
+func (h *Handlers) GetSTTMetrics(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.GetSTTMetrics(c)
+}
+
+// RestartSTTService restarts the STT service components
+func (h *Handlers) RestartSTTService(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.RestartSTTService(c)
+}
+
+// ValidateSTTConfiguration validates STT service configuration
+func (h *Handlers) ValidateSTTConfiguration(c *gin.Context) {
+	if h.speechHandler == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Speech service not available")
+		return
+	}
+	h.speechHandler.ValidateSTTConfiguration(c)
 }

@@ -64,7 +64,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 	router.Use(middleware.ErrorResponseMiddleware(batchLogger.Logger, recoveryManager))
 	// Use the BatchLogger for request logging with batching capabilities
 	router.Use(middleware.LoggingMiddleware(batchLogger))
-	router.Use(middleware.CORSMiddleware())
+	router.Use(middleware.CORSMiddleware(cfg))
 
 	// Rate limiting - temporarily disabled for debugging
 	// rateLimiter := middleware.NewRateLimiter(100, 200) // 100 requests/sec, burst 200
@@ -117,10 +117,16 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 			public.GET("/status", h.Health)
 
 			// SSE stream endpoint (public for real-time updates) - needs special CORS handling
-			public.GET("/events/stream", middleware.CORSMiddlewareSSE(), h.GetEventStream)
+			public.GET("/events/stream", middleware.CORSMiddlewareSSE(cfg), h.GetEventStream)
 
 			// Image serving endpoint (public for screensaver display)
 			public.GET("/screensaver/images/:filename", h.GetScreensaverImage)
+
+			// Audio file downloads (public for browser playback)
+			if h.SpeechEnabled() {
+				public.GET("/speech/audio/:filename", h.DownloadAudio)
+			}
+
 		}
 
 		// Mobile upload page (public)
@@ -221,26 +227,27 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				controllers.GET("/:id/export", h.ExportControllerDashboard)
 				controllers.POST("/import", h.ImportControllerDashboard)
 
-				// Sharing
-				controllers.POST("/:id/share", h.ShareControllerDashboard)
+				// Sharing (DISABLED)
+				// controllers.POST("/:id/share", h.ShareControllerDashboard)
 
 				// Search
 				controllers.GET("/search", h.SearchControllerDashboards)
 			}
 
-			// Controller Template endpoints
-			templates := protected.Group("/controller-templates")
-			{
-				templates.GET("/", h.GetControllerTemplates)
-				templates.POST("/", h.CreateControllerTemplate)
-				templates.POST("/:id/apply", h.ApplyControllerTemplate)
-			}
+			// Controller Template endpoints (DISABLED)
+			// templates := protected.Group("/controller-templates")
+			// {
+			// DISABLED template handlers
+			// templates.GET("/", h.GetControllerTemplates)
+			// templates.POST("/", h.CreateControllerTemplate)
+			// templates.POST("/:id/apply", h.ApplyControllerTemplate)
+			// }
 
-			// Controller Analytics endpoints
-			analytics := protected.Group("/controller-analytics")
-			{
-				analytics.GET("/", h.GetControllerAnalytics)
-			}
+			// Controller Analytics endpoints (DISABLED)
+			// analytics := protected.Group("/controller-analytics")
+			// {
+			//	analytics.GET("/", h.GetControllerAnalytics)
+			// }
 
 			// Scene endpoints
 			scenes := protected.Group("/scenes")
@@ -270,58 +277,89 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				}
 			}
 
-			// AI endpoints
+			// AI endpoints (STREAMLINED - essential endpoints only)
 			ai := protected.Group("/ai")
 			{
+				// Core AI functionality for frontend
 				ai.POST("/chat", h.ChatWithAI)
-				ai.POST("/complete", h.CompleteText)
-				ai.POST("/chat/context", h.ChatWithContext)
 				ai.GET("/providers", h.GetProviders)
 				ai.GET("/models", h.GetModels)
+				ai.GET("/models/preference", h.GetModelPreference)
+				ai.PUT("/models/preference", h.SetModelPreference)
 				ai.GET("/statistics", h.GetAIStatistics)
-				ai.POST("/test/:provider", h.TestAIProvider)
-				ai.GET("/summary", h.GetSystemSummary)
-				ai.POST("/analyze/entity/:id", h.AnalyzeEntity)
-				ai.POST("/generate/automation", h.GenerateAutomation)
-
-				// Model Management endpoints
-				models := ai.Group("/models")
-				{
-					models.GET("/storage", h.GetModelStorageInfo)
-					models.GET("/downloads", h.GetModelDownloads)
-					models.POST("/install", h.InstallModel)
-					models.DELETE("/:id", h.RemoveModel)
-					models.POST("/:id/test", h.RunModelTest)
-				}
-
-				// AI Settings & Management
 				ai.GET("/settings", h.GetAISettings)
-				ai.PUT("/settings", h.UpdateAISettings) // Fixed method name
-				ai.POST("/test-connection", h.TestAIConnection)
+				ai.POST("/test/:provider", h.TestAIProvider)
 
-				// Ollama Process Management
-				ollama := ai.Group("/ollama")
-				{
-					ollama.GET("/status", h.GetOllamaStatus)
-					ollama.GET("/metrics", h.GetOllamaMetrics)
-					ollama.GET("/health", h.GetOllamaHealth)
-					ollama.POST("/start", h.StartOllamaProcess)
-					ollama.POST("/stop", h.StopOllamaProcess)
-					ollama.POST("/restart", h.RestartOllamaProcess)
-					ollama.GET("/monitoring", h.GetOllamaMonitoring)
-				}
+				// DISABLED complex AI handlers for streamlining
+				// ai.POST("/complete", h.CompleteText)
+				// ai.POST("/chat/context", h.ChatWithContext)
+				// ai.GET("/summary", h.GetSystemSummary)
+				// ai.POST("/analyze/entity/:id", h.AnalyzeEntity)
+				// ai.POST("/generate/automation", h.GenerateAutomation)
 
-				// MCP Server Management
-				mcp := ai.Group("/mcp")
-				{
-					mcp.GET("/servers", h.GetMCPServers)
-					mcp.POST("/servers", h.AddMCPServer)
-					mcp.DELETE("/servers/:id", h.RemoveMCPServer)
-					mcp.POST("/servers/:id/restart", h.RestartMCPServer)
-				}
+				// Model Management endpoints (DISABLED)
+				// models := ai.Group("/models")
+				// {
+				// DISABLED - model management handlers not implemented in streamlined AI system
+				// models.GET("/storage", h.GetModelStorageInfo)
+				// models.GET("/downloads", h.GetModelDownloads)
+				// models.POST("/install", h.InstallModel)
+				// models.DELETE("/:id", h.RemoveModel)
+				// models.POST("/:id/test", h.RunModelTest)
+				// models.POST("/check-updates", h.CheckModelUpdates)
+				// models.GET("/browse", h.BrowseRepositoryModels)
+
+				// Model Preferences (DISABLED)
+				// models.GET("/preference", h.GetModelPreference)
+				// models.POST("/preference", h.SetModelPreference)
+				// models.DELETE("/preference", h.DeleteModelPreference)
+				// }
+
+				// AI Settings & Management (DISABLED - not needed for streamlined system)
+				// ai.GET("/settings", h.GetAISettings)
+				// ai.PUT("/settings", h.UpdateAISettings)
+				// ai.POST("/test-connection", h.TestAIConnection)
+
+				// Ollama Process Management (DISABLED - Ollama removed from streamlined AI system)
+				// ollama := ai.Group("/ollama")
+				// {
+				//	ollama.GET("/status", h.GetOllamaStatus)
+				//	ollama.GET("/metrics", h.GetOllamaMetrics)
+				//	ollama.GET("/health", h.GetOllamaHealth)
+				//	ollama.POST("/start", h.StartOllamaProcess)
+				//	ollama.POST("/stop", h.StopOllamaProcess)
+				//	ollama.POST("/restart", h.RestartOllamaProcess)
+				//	ollama.GET("/monitoring", h.GetOllamaMonitoring)
+				// }
+
+				// Hugot Provider Management (DISABLED - only using llama.cpp in streamlined system)
+				// hugot := ai.Group("/hugot")
+				// {
+				//	hugot.GET("/settings", h.GetHugotSettings)
+				//	hugot.PUT("/settings", h.UpdateHugotSettings)
+				//	hugot.POST("/test-connection", h.TestHugotConnection)
+				//	hugot.GET("/models", h.GetHugotModels)
+				//	hugot.POST("/models/download", h.DownloadHugotModel)
+				//	hugot.DELETE("/models/:model_id", h.DeleteHugotModel)
+				//	hugot.GET("/models/:model_id/download-status", h.GetHugotModelDownloadStatus)
+				// }
+
+				// MCP Server Management (DISABLED - streamlined in new AI system)
+				// mcp := ai.Group("/mcp")
+				// {
+				//	mcp.GET("/servers", h.GetMCPServers)
+				//	mcp.POST("/servers", h.AddMCPServer)
+				//	mcp.DELETE("/servers/:id", h.RemoveMCPServer)
+				//	mcp.POST("/servers/:id/restart", h.RestartMCPServer)
+				// }
 			}
 
-			// Automation endpoints
+			// Automation endpoints - use automation handler for proper registration
+			if h.GetAutomationHandler() != nil {
+				h.GetAutomationHandler().RegisterRoutes(protected)
+			}
+
+			// Legacy automation endpoints for backward compatibility
 			automation := protected.Group("/automation")
 			{
 				automation.GET("/rules", h.GetAutomations)
@@ -445,6 +483,19 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 						locale.GET("/translations/:locale", h.PreferencesHandler.GetTranslations)
 					}
 
+					// Navbar configurations
+					navbar := preferences.Group("/navbar")
+					{
+						navbar.GET("/configurations", h.PreferencesHandler.GetNavbarConfigurations)
+						navbar.GET("/configurations/:id", h.PreferencesHandler.GetNavbarConfiguration)
+						navbar.POST("/configurations", h.PreferencesHandler.CreateNavbarConfiguration)
+						navbar.PUT("/configurations/:id", h.PreferencesHandler.UpdateNavbarConfiguration)
+						navbar.DELETE("/configurations/:id", h.PreferencesHandler.DeleteNavbarConfiguration)
+						navbar.POST("/active", h.PreferencesHandler.SetActiveNavbarConfiguration)
+						navbar.GET("/templates", h.PreferencesHandler.GetNavbarTemplates)
+						navbar.GET("/widgets", h.PreferencesHandler.GetNavbarWidgets)
+					}
+
 					// Import/Export
 					preferences.GET("/export", h.PreferencesHandler.ExportPreferences)
 					preferences.POST("/import", h.PreferencesHandler.ImportPreferences)
@@ -530,6 +581,11 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				network.POST("/port-forwarding", h.CreatePortForwardingRule)
 				network.PUT("/port-forwarding/:ruleId", h.UpdatePortForwardingRule)
 				network.DELETE("/port-forwarding/:ruleId", h.DeletePortForwardingRule)
+
+				// CORS configuration management
+				network.GET("/cors", h.GetCORSConfiguration)
+				network.PUT("/cors", h.UpdateCORSConfiguration)
+				network.POST("/cors/test", h.TestCORSConfiguration)
 			}
 
 			// UPS monitoring endpoints
@@ -585,6 +641,43 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 
 				// Health reporting (for external monitoring)
 				system.POST("/health-report", h.ReportHealth)
+			}
+
+			// Speech services endpoints
+			if h.SpeechEnabled() {
+				// Protected speech routes (require authentication)
+				speech := protected.Group("/speech")
+				{
+					// Text-to-Speech
+					speech.POST("/tts", h.TextToSpeech)
+					speech.POST("/tts/streaming", h.TextToSpeechStreaming)
+					speech.GET("/tts/streaming/status/:stream_id", h.GetStreamingStatus)
+					speech.DELETE("/tts/streaming/:sessionId", h.CancelStreamingSession)
+					speech.GET("/tts/streaming/metrics", h.GetStreamingMetrics)
+					speech.GET("/tts/models", h.GetTTSModels)
+					speech.GET("/voices", h.GetVoices)
+					speech.GET("/voices/:voice_name/speakers", h.GetVoiceSpeakers)
+
+					// Speech-to-Text
+					speech.POST("/stt", h.SpeechToText)
+					speech.POST("/record", h.RecordAndTranscribe)
+					speech.GET("/stt/stream", h.STTWebSocketHandler)        // WebSocket endpoint for real-time STT
+					speech.GET("/stt/metrics", h.GetSTTMetrics)             // STT performance metrics
+					speech.POST("/stt/restart", h.RestartSTTService)        // Restart STT service
+					speech.GET("/stt/validate", h.ValidateSTTConfiguration) // Validate STT configuration
+
+					// Audio management
+					speech.GET("/devices", h.GetAudioDevices)
+
+					// Service management
+					speech.GET("/status", h.GetSpeechStatus)
+					speech.GET("/health", h.SpeechHealthCheck)
+					speech.POST("/cleanup", h.CleanupTempFiles)
+
+					// Settings management
+					speech.GET("/settings", h.GetSpeechSettings)
+					speech.PUT("/settings", h.UpdateSpeechSettings)
+				}
 			}
 
 			// Display settings endpoints
@@ -698,28 +791,24 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				shelly.GET("/status", h.GetShellyAdapterStatus)
 			}
 
-			// Enhanced conversation management endpoints
+			// Enhanced conversation management endpoints (STREAMLINED - essential only)
 			conversations := protected.Group("/conversations")
 			{
-				// Conversation CRUD operations
+				// Basic conversation operations for frontend
 				conversations.POST("", h.CreateConversation)
 				conversations.GET("", h.GetConversations)
 				conversations.GET("/:id", h.GetConversation)
-				conversations.PUT("/:id", h.UpdateConversation)
-				conversations.DELETE("/:id", h.DeleteConversation)
-
-				// Message management
-				conversations.GET("/:id/messages", h.GetConversationMessages)
 				conversations.POST("/:id/messages", h.SendMessage)
+				conversations.GET("/:id/messages", h.GetConversationMessages)
 
-				// Conversation actions
-				conversations.POST("/:id/archive", h.ArchiveConversation)
-				conversations.POST("/:id/unarchive", h.UnarchiveConversation)
-				conversations.POST("/:id/generate-title", h.GenerateConversationTitle)
-
-				// Analytics and management
-				conversations.GET("/statistics", h.GetConversationStatistics)
-				conversations.POST("/cleanup", h.CleanupConversations)
+				// DISABLED advanced conversation handlers for streamlining
+				// conversations.PUT("/:id", h.UpdateConversation)
+				// conversations.DELETE("/:id", h.DeleteConversation)
+				// conversations.POST("/:id/archive", h.ArchiveConversation)
+				// conversations.POST("/:id/unarchive", h.UnarchiveConversation)
+				// conversations.POST("/:id/generate-title", h.GenerateConversationTitle)
+				// conversations.GET("/statistics", h.GetConversationStatistics)
+				// conversations.POST("/cleanup", h.CleanupConversations)
 			}
 
 			// Analytics system endpoints
@@ -986,6 +1075,7 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 
 				// Display control
 				kiosk.GET("/display/status", h.GetKioskDisplayStatus)
+				kiosk.GET("/display/dimensions", h.GetKioskScreenDimensions)
 				kiosk.POST("/display/brightness", h.ControlKioskDisplayBrightness)
 				kiosk.POST("/display/sleep", h.PutKioskDisplayToSleep)
 				kiosk.POST("/display/wake", h.WakeKioskDisplay)
@@ -1002,6 +1092,9 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				screensaver.GET("/storage", h.GetScreensaverStorage)
 				screensaver.POST("/images/upload", h.UploadScreensaverImages)
 				screensaver.DELETE("/images/:id", h.DeleteScreensaverImage)
+				screensaver.POST("/cleanup", h.CleanupOrphanedImages)
+				screensaver.GET("/images/serve/:filename", h.GetScreensaverImage)
+				// Note: /images/:filename removed to avoid conflict with public route
 			}
 		}
 
@@ -1034,16 +1127,9 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 		// Legacy public routes (no auth required)
 		legacyAPI.GET("/status", h.Health)
 		legacyAPI.GET("/health", h.Health) // Health endpoint alias
-		legacyAPI.GET("/events/stream", middleware.CORSMiddlewareSSE(), h.GetEventStream)
+		legacyAPI.GET("/events/stream", middleware.CORSMiddlewareSSE(cfg), h.GetEventStream)
 		legacyAPI.GET("/screensaver/images", h.GetScreensaverImages)
 		legacyAPI.GET("/screensaver/images/:filename", h.GetScreensaverImage)
-
-		// Legacy AI endpoints for frontend compatibility
-		legacyAPI.GET("/ai/providers", h.GetProviders)
-		legacyAPI.GET("/ai/models", h.GetModels)
-		legacyAPI.POST("/ai/chat", h.ChatWithAI)
-		legacyAPI.GET("/ai/statistics", h.GetAIStatistics)
-
 		// Settings endpoints that frontend expects (moved to public for compatibility)
 		legacyAPI.GET("/settings/system", h.GetAllConfig)
 		legacyAPI.GET("/settings/theme", h.GetConfig)
@@ -1160,7 +1246,7 @@ func NewRouterWithDebug(cfg *config.Config, repos *database.Repositories, batchL
 	router.Use(middleware.ErrorResponseMiddleware(batchLogger.Logger, recoveryManager))
 	// Use the BatchLogger for request logging with batching capabilities
 	router.Use(middleware.LoggingMiddleware(batchLogger))
-	router.Use(middleware.CORSMiddleware())
+	router.Use(middleware.CORSMiddleware(cfg))
 
 	// Add debug middleware if debug logger is available
 	if debugLogger != nil {

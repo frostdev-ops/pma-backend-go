@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/core/dashboard"
 	"github.com/frostdev-ops/pma-backend-go/internal/core/i18n"
@@ -109,6 +111,8 @@ func (h *PreferencesHandler) GetPreferenceSection(c *gin.Context) {
 		sectionData = prefs.Notifications
 	case "dashboard":
 		sectionData = prefs.Dashboard
+	case "navbar":
+		sectionData = prefs.Navbar
 	case "automation":
 		sectionData = prefs.Automation
 	case "locale":
@@ -160,6 +164,8 @@ func (h *PreferencesHandler) UpdatePreferenceSection(c *gin.Context) {
 		json.Unmarshal(dataBytes, &prefs.Notifications)
 	case "dashboard":
 		json.Unmarshal(dataBytes, &prefs.Dashboard)
+	case "navbar":
+		json.Unmarshal(dataBytes, &prefs.Navbar)
 	case "automation":
 		json.Unmarshal(dataBytes, &prefs.Automation)
 	case "locale":
@@ -610,4 +616,413 @@ func (h *PreferencesHandler) GetPreferenceStatistics(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"statistics": stats})
+}
+
+// GetNavbarConfigurations retrieves all navbar configurations for a user
+func (h *PreferencesHandler) GetNavbarConfigurations(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = "1" // Default for unauthenticated requests
+	}
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"configurations":          prefs.Navbar.Configurations,
+		"active_configuration_id": prefs.Navbar.ActiveConfigurationID,
+		"last_modified":           prefs.Navbar.LastModified,
+	})
+}
+
+// CreateNavbarConfiguration creates a new navbar configuration
+func (h *PreferencesHandler) CreateNavbarConfiguration(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = "1" // Default for unauthenticated requests
+	}
+
+	var newConfig preferences.NavbarConfiguration
+	if err := c.ShouldBindJSON(&newConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Generate ID if not provided
+	if newConfig.ID == "" {
+		newConfig.ID = fmt.Sprintf("config-%d", time.Now().UnixNano())
+	}
+
+	// Set timestamps
+	now := time.Now()
+	newConfig.CreatedAt = now
+	newConfig.UpdatedAt = now
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	// Add the new configuration
+	prefs.Navbar.Configurations = append(prefs.Navbar.Configurations, newConfig)
+	prefs.Navbar.LastModified = now
+
+	// If this is marked as active, update the active configuration ID
+	if newConfig.IsActive {
+		// Mark all other configurations as inactive
+		for i := range prefs.Navbar.Configurations {
+			prefs.Navbar.Configurations[i].IsActive = false
+		}
+		// Mark the new one as active
+		prefs.Navbar.Configurations[len(prefs.Navbar.Configurations)-1].IsActive = true
+		prefs.Navbar.ActiveConfigurationID = newConfig.ID
+	}
+
+	if err := h.prefsManager.UpdateUserPreferences(userID, prefs); err != nil {
+		h.logger.WithError(err).Error("Failed to update preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save configuration"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":       "Configuration created successfully",
+		"configuration": newConfig,
+	})
+}
+
+// UpdateNavbarConfiguration updates an existing navbar configuration
+func (h *PreferencesHandler) UpdateNavbarConfiguration(c *gin.Context) {
+	userID := c.GetString("user_id")
+	configID := c.Param("id")
+
+	if userID == "" {
+		userID = "1" // Default for unauthenticated requests
+	}
+
+	var updateConfig preferences.NavbarConfiguration
+	if err := c.ShouldBindJSON(&updateConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	// Find and update the configuration
+	found := false
+	for i, config := range prefs.Navbar.Configurations {
+		if config.ID == configID {
+			// Preserve creation timestamp and ensure ID doesn't change
+			updateConfig.ID = configID
+			updateConfig.CreatedAt = config.CreatedAt
+			updateConfig.UpdatedAt = time.Now()
+
+			prefs.Navbar.Configurations[i] = updateConfig
+			found = true
+
+			// If this configuration is marked as active, update active ID
+			if updateConfig.IsActive {
+				// Mark all other configurations as inactive
+				for j := range prefs.Navbar.Configurations {
+					if j != i {
+						prefs.Navbar.Configurations[j].IsActive = false
+					}
+				}
+				prefs.Navbar.ActiveConfigurationID = configID
+			}
+			break
+		}
+	}
+
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+
+	prefs.Navbar.LastModified = time.Now()
+
+	if err := h.prefsManager.UpdateUserPreferences(userID, prefs); err != nil {
+		h.logger.WithError(err).Error("Failed to update preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update configuration"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Configuration updated successfully",
+		"configuration": updateConfig,
+	})
+}
+
+// DeleteNavbarConfiguration deletes a navbar configuration
+func (h *PreferencesHandler) DeleteNavbarConfiguration(c *gin.Context) {
+	userID := c.GetString("user_id")
+	configID := c.Param("id")
+
+	if userID == "" {
+		userID = "1" // Default for unauthenticated requests
+	}
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	// Find and remove the configuration
+	found := false
+	wasActive := false
+	newConfigs := make([]preferences.NavbarConfiguration, 0)
+
+	for _, config := range prefs.Navbar.Configurations {
+		if config.ID == configID {
+			found = true
+			wasActive = config.IsActive || prefs.Navbar.ActiveConfigurationID == configID
+		} else {
+			newConfigs = append(newConfigs, config)
+		}
+	}
+
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+
+	// Don't allow deleting the last configuration
+	if len(newConfigs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete the last navbar configuration"})
+		return
+	}
+
+	prefs.Navbar.Configurations = newConfigs
+
+	// If we deleted the active configuration, set the first remaining as active
+	if wasActive {
+		prefs.Navbar.Configurations[0].IsActive = true
+		prefs.Navbar.ActiveConfigurationID = prefs.Navbar.Configurations[0].ID
+	}
+
+	prefs.Navbar.LastModified = time.Now()
+
+	if err := h.prefsManager.UpdateUserPreferences(userID, prefs); err != nil {
+		h.logger.WithError(err).Error("Failed to update preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete configuration"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Configuration deleted successfully",
+	})
+}
+
+// SetActiveNavbarConfiguration sets the active navbar configuration
+func (h *PreferencesHandler) SetActiveNavbarConfiguration(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = "1" // Default for unauthenticated requests
+	}
+
+	var req struct {
+		ConfigurationID string `json:"configuration_id" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	// Find and activate the configuration
+	found := false
+	for i, config := range prefs.Navbar.Configurations {
+		if config.ID == req.ConfigurationID {
+			found = true
+			prefs.Navbar.Configurations[i].IsActive = true
+			prefs.Navbar.ActiveConfigurationID = req.ConfigurationID
+		} else {
+			prefs.Navbar.Configurations[i].IsActive = false
+		}
+	}
+
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+
+	prefs.Navbar.LastModified = time.Now()
+
+	if err := h.prefsManager.UpdateUserPreferences(userID, prefs); err != nil {
+		h.logger.WithError(err).Error("Failed to update preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set active configuration"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":                 "Active configuration updated successfully",
+		"active_configuration_id": req.ConfigurationID,
+	})
+}
+
+// GetNavbarConfiguration gets a specific navbar configuration by ID
+func (h *PreferencesHandler) GetNavbarConfiguration(c *gin.Context) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		userID = "default"
+	}
+
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Configuration ID is required"})
+		return
+	}
+
+	prefs, err := h.prefsManager.GetUserPreferences(userID)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get user preferences")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get preferences"})
+		return
+	}
+
+	// Find the requested configuration
+	for _, config := range prefs.Navbar.Configurations {
+		if config.ID == configID {
+			c.JSON(http.StatusOK, config)
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+}
+
+// GetNavbarTemplates gets available navbar templates
+func (h *PreferencesHandler) GetNavbarTemplates(c *gin.Context) {
+	// Return predefined navbar templates
+	templates := []map[string]interface{}{
+		{
+			"id":          "minimal-top",
+			"name":        "Minimal Top",
+			"description": "Clean top navbar with essential elements only",
+			"preview":     "/api/v1/static/templates/navbar/minimal-top.png",
+			"config": map[string]interface{}{
+				"location":                "top",
+				"size":                    "normal",
+				"positioning":             "overlay",
+				"horizontalJustification": "between",
+				"elements": []map[string]interface{}{
+					{"id": "home", "type": "navigation", "label": "Home", "icon": "Home", "action": "/"},
+					{"id": "dashboard", "type": "navigation", "label": "Dashboard", "icon": "LayoutDashboard", "action": "/dashboard"},
+				},
+			},
+		},
+		{
+			"id":          "sidebar-left",
+			"name":        "Left Sidebar",
+			"description": "Vertical sidebar with navigation and controls",
+			"preview":     "/api/v1/static/templates/navbar/sidebar-left.png",
+			"config": map[string]interface{}{
+				"location":                "left",
+				"size":                    "normal",
+				"positioning":             "push",
+				"horizontalJustification": "start",
+				"elements": []map[string]interface{}{
+					{"id": "home", "type": "navigation", "label": "Home", "icon": "Home", "action": "/"},
+					{"id": "entities", "type": "navigation", "label": "Entities", "icon": "Lightbulb", "action": "/entities"},
+					{"id": "rooms", "type": "navigation", "label": "Rooms", "icon": "Home", "action": "/rooms"},
+					{"id": "dashboard", "type": "navigation", "label": "Dashboard", "icon": "LayoutDashboard", "action": "/dashboard"},
+				},
+			},
+		},
+		{
+			"id":          "dashboard-focused",
+			"name":        "Dashboard Focused",
+			"description": "Optimized layout for dashboard management",
+			"preview":     "/api/v1/static/templates/navbar/dashboard-focused.png",
+			"config": map[string]interface{}{
+				"location":                "top",
+				"size":                    "large",
+				"positioning":             "static",
+				"horizontalJustification": "center",
+				"elements": []map[string]interface{}{
+					{"id": "controllers", "type": "navigation", "label": "Controllers", "icon": "Grid3x3", "action": "/controllers"},
+					{"id": "dashboard", "type": "navigation", "label": "Dashboard", "icon": "LayoutDashboard", "action": "/dashboard"},
+					{"id": "settings", "type": "navigation", "label": "Settings", "icon": "Settings", "action": "/settings"},
+				},
+			},
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"templates": templates,
+		"total":     len(templates),
+	})
+}
+
+// GetNavbarWidgets gets available navbar widgets
+func (h *PreferencesHandler) GetNavbarWidgets(c *gin.Context) {
+	// Return available widget types for navbar elements
+	widgets := []map[string]interface{}{
+		{
+			"type":         "navigation",
+			"name":         "Navigation Link",
+			"description":  "Standard navigation link with icon and label",
+			"icon":         "Link",
+			"configurable": []string{"label", "icon", "action", "badge"},
+		},
+		{
+			"type":         "entity_toggle",
+			"name":         "Entity Toggle",
+			"description":  "Toggle switch for controlling entities",
+			"icon":         "ToggleLeft",
+			"configurable": []string{"entityId", "label", "icon"},
+		},
+		{
+			"type":         "entity_status",
+			"name":         "Entity Status",
+			"description":  "Display current status of an entity",
+			"icon":         "Info",
+			"configurable": []string{"entityId", "label", "icon", "statusAttribute"},
+		},
+		{
+			"type":         "camera_feed",
+			"name":         "Camera Feed",
+			"description":  "Live camera feed thumbnail",
+			"icon":         "Camera",
+			"configurable": []string{"cameraId", "label", "refreshInterval"},
+		},
+		{
+			"type":         "weather",
+			"name":         "Weather Widget",
+			"description":  "Current weather conditions",
+			"icon":         "Cloud",
+			"configurable": []string{"location", "units", "showForecast"},
+		},
+		{
+			"type":         "system_status",
+			"name":         "System Status",
+			"description":  "System health and status indicator",
+			"icon":         "Activity",
+			"configurable": []string{"statusType", "label", "icon"},
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"widgets": widgets,
+		"total":   len(widgets),
+	})
 }

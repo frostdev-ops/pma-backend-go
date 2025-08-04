@@ -258,8 +258,35 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 		}
 	}
 
-	// Initialize UPS adapter
-	if config.Devices.UPS.Enabled && config.Devices.UPS.NUTHost != "" {
+	// Initialize UPS adapter - check for both network and I2C UPS
+	upsInitialized := false
+
+	// First, try I2C UPS detection (higher priority than network UPS)
+	if upsDetected := ups.DetectUPS(); upsDetected {
+		s.logger.Info("I2C UPS device detected (MAX17040 fuel gauge) - initializing I2C UPS adapter")
+
+		// Create UPS adapter config for I2C mode (empty network settings)
+		upsConfig := ups.UPSAdapterConfig{
+			Host:         "", // Empty for I2C mode
+			Port:         0,  // Not used for I2C
+			Username:     "",
+			Password:     "",
+			UPSNames:     []string{"i2c_ups"}, // Identifier for I2C UPS
+			PollInterval: 30 * time.Second,
+		}
+		upsAdapter := ups.NewUPSAdapter(upsConfig, s.logger)
+		if err := s.RegisterAdapter(upsAdapter); err != nil {
+			errors = append(errors, fmt.Errorf("failed to register I2C UPS adapter: %w", err))
+		} else {
+			s.logger.Info("I2C UPS adapter registered successfully")
+			upsInitialized = true
+		}
+	}
+
+	// If no I2C UPS found, try network UPS (if enabled in config)
+	if !upsInitialized && config.Devices.UPS.Enabled && config.Devices.UPS.NUTHost != "" {
+		s.logger.Info("Initializing network-based UPS adapter")
+
 		pollInterval, err := time.ParseDuration(config.Devices.UPS.PollInterval)
 		if err != nil {
 			pollInterval = 30 * time.Second // Default fallback
@@ -281,10 +308,15 @@ func (s *UnifiedEntityService) InitializeAdapters(config *config.Config) error {
 		}
 		upsAdapter := ups.NewUPSAdapter(upsConfig, s.logger)
 		if err := s.RegisterAdapter(upsAdapter); err != nil {
-			errors = append(errors, fmt.Errorf("failed to register UPS adapter: %w", err))
+			errors = append(errors, fmt.Errorf("failed to register network UPS adapter: %w", err))
 		} else {
-			s.logger.Info("UPS adapter registered successfully")
+			s.logger.Info("Network UPS adapter registered successfully")
+			upsInitialized = true
 		}
+	}
+
+	if !upsInitialized {
+		s.logger.Info("No UPS devices detected or enabled (neither I2C nor network)")
 	}
 
 	// Initialize Network adapter

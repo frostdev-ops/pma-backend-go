@@ -1,0 +1,443 @@
+server:
+  port: 3001
+  host: "0.0.0.0"
+  mode: "development" # development, production
+
+database:
+  path: "./data/pma.db"
+  migrations_path: "./migrations"
+  backup_enabled: true
+  backup_path: "./data/backups"
+  max_connections: 25
+
+redis:
+  enabled: true
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+  min_idle_conns: 5
+  key_prefix: "pma:"
+  entity_cache_ttl: "24h"
+
+# Performance optimization configuration
+performance:
+  database:
+    max_connections: 25
+    max_idle_conns: 10
+    conn_max_lifetime: "1h"
+    query_timeout: "30s"
+    enable_query_cache: true
+    cache_ttl: "30m"
+  memory:
+    gc_target: 70
+    heap_limit: 1073741824  # 1GB
+    enable_pooling: true
+  api:
+    enable_compression: true
+    max_request_size: 10485760  # 10MB
+    rate_limit_requests: 1000
+    rate_limit_window: "1m"
+  websocket:
+    max_connections: 1000
+    message_buffer_size: 256
+    compression_enabled: true
+
+auth:
+  enabled: true  # Enable authentication with remote auth logic
+  jwt_secret: "Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI=" # Override with environment variable
+  token_expiry: 1800 # 30 minutes in seconds (to match frontend expectations)
+  api_secret: "pma-shared-secret-2024-api-auth-key" # API secret for server-to-server communication
+  allow_localhost_bypass: true # Allow localhost connections to bypass authentication
+
+home_assistant:
+  url: "http://192.168.100.2:8123"
+  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJiYzkzMGUwZThlZmY0ZWEyOTc3NmI3MTIwYjc2NTAyYyIsImlhdCI6MTc1MjYxMTUxOSwiZXhwIjoyMDY3OTcxNTE5fQ.Dilak2Vad3GpSnRfrFBkAK3TRSUVQ42uOI4DMORJGoc" # Override with environment variable
+  sync:
+    enabled: true
+    full_sync_interval: "1h"
+    supported_domains: ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "lock", "alarm_control_panel"]
+    conflict_resolution: "homeassistant_wins"
+    batch_size: 100
+    retry_attempts: 3
+    retry_delay: "5s"
+    event_buffer_size: 1000
+    event_processing_delay: "100ms"
+
+logging:
+  level: "info" # debug, info, warn, error
+  format: "json" # json, text
+  debug:
+    enabled: true # Enable comprehensive debug logging
+    level: "debug" # debug, info, warn, error
+    file_enabled: true # Enable debug logging to file
+    file_path: "./logs/debug.log" # Debug log file path
+    max_file_size: 10485760 # 10MB max file size
+    max_files: 5 # Number of rotated files to keep
+    console: false # Enable debug output to console
+    components: [] # Specific components to debug (empty = all components)
+      # Example components:
+      # - "handlers"
+      # - "adapters"
+      # - "database"
+      # - "websocket"
+      # - "ai"
+      # - "entities"
+      # - "automation"
+      # - "monitoring"
+
+websocket:
+  ping_interval: 30 # seconds
+  pong_timeout: 60 # seconds
+  write_timeout: 10 # seconds
+
+ai:
+  fallback_enabled: true
+  fallback_delay: "2s"
+  default_provider: "gemini"
+  max_retries: 3
+  timeout: "60s"
+  providers:
+    - type: "ollama"
+      enabled: true
+      url: "http://localhost:11434"
+      default_model: "qwen3:0.6b"
+      auto_start: true
+      priority: 2
+      resource_limits:
+        max_memory: "4GB"
+        max_cpu: 80
+    - type: "openai"
+      enabled: false
+      api_key: "" # Override with OPENAI_API_KEY environment variable
+      default_model: "gpt-3.5-turbo"
+      max_tokens: 4096
+      priority: 2
+    - type: "claude"
+      enabled: false
+      api_key: "" # Override with CLAUDE_API_KEY environment variable
+      default_model: "claude-3-haiku-20240307"
+      max_tokens: 4096
+      priority: 3
+    - type: "gemini"
+      enabled: true
+      api_key: "AIzaSyArZr6EQ2atRvilgk7T7aSEhZkYmQhdPo4" # Override with GEMINI_API_KEY environment variable
+      default_model: "gemini-2.5-flash"
+      max_tokens: 4096
+      priority: 1
+
+# Speech Services Configuration
+speech:
+  enabled: true
+  
+  # Multi-Instance Streaming TTS Configuration
+  streaming:
+    enabled: true
+    max_workers: 5
+    chunk_size: 500
+    context_overlap: 50
+    buffer_size: 3
+    quality_preset: "balanced"  # fast, balanced, high
+    max_concurrent_streams: 10
+    stream_timeout: "5m"
+    chunk_timeout: "90s"
+    progress_interval: "500ms"
+    cleanup_interval: "30s"
+    max_retries: 3
+    retry_delay: "1s"
+    
+  # Piper Cluster Configuration
+  cluster:
+    base_port: 8001
+    port_range: 10
+    health_check_interval: "30s"
+    worker_timeout: "90s"
+    auto_scaling: true
+    min_workers: 2
+    max_workers: 8
+    default_workers: 3
+    scale_up_threshold: 0.8
+    scale_down_threshold: 0.3
+    load_balance_strategy: "least_busy"  # round_robin, least_busy, fastest
+    queue_buffer: 100
+    result_buffer: 100
+    
+  # Audio Processing Configuration
+  audio_processing:
+    sample_rate: 22050
+    format: "wav"
+    normalize_volume: true
+    insert_natural_pauses: true
+    cross_fade_duration: "50ms"
+    quality_assurance: true
+    max_output_size: "50MB"
+    
+  # Intelligent Caching Configuration
+  caching:
+    enabled: true
+    max_cache_size: "500MB"
+    max_entries: 10000
+    ttl: "24h"
+    cleanup_interval: "1h"
+    persistent_cache: true
+    cache_directory: "./data/cache/tts"
+    preload_common_phrases: true
+    compression_enabled: false
+    eviction_policy: "lru"  # lru, lfu, ttl
+    max_file_size: "10MB"
+    
+  # Quality Presets for Different Performance/Quality Tradeoffs
+  quality_presets:
+    fast:
+      chunk_size: 300
+      context_overlap: 25
+      worker_count: 3
+      processing_delay: "0ms"
+      audio_quality: "standard"
+      compression_level: 3
+    balanced:
+      chunk_size: 500
+      context_overlap: 50
+      worker_count: 5
+      processing_delay: "100ms"
+      audio_quality: "high"
+      compression_level: 5
+    high:
+      chunk_size: 700
+      context_overlap: 75
+      worker_count: 8
+      processing_delay: "200ms"
+      audio_quality: "premium"
+      compression_level: 7
+      
+  # Legacy TTS Configuration (for backward compatibility)
+  tts:
+    enabled: true
+    # TTS Daemon configuration (preferred - high performance with model caching)
+    use_daemon: true
+    daemon_url: "http://127.0.0.1:8001"
+    daemon_timeout: "60s"
+    daemon_health_check_interval: "60s"
+    # Fallback to subprocess if daemon is unavailable
+    python_script_path: "/opt/pma/speech/tts_piper_fallback.py"
+    default_model: "tts_models/en/ljspeech/fast_pitch"
+    device: "auto"
+    max_text_length: 1000
+    output_dir: "./data/temp/tts"
+    timeout: "30s"
+    force_gpu: false
+    
+  # Speech-to-Text Configuration
+  stt:
+    enabled: true
+    python_script_path: "/opt/pma/speech/stt.py"
+    default_model: "tiny"
+    language: "en"
+    silence_threshold: 300
+    autocorrect: true
+    max_audio_duration: "60s"
+    output_dir: "./data/temp/stt"
+    timeout: "30s"
+    
+  # Audio Upload Configuration
+  audio:
+    upload_max_size: 10485760  # 10MB
+    allowed_formats: ["wav", "mp3", "m4a", "ogg", "webm", "mp4"]
+    sample_rate: 16000
+    channels: 1
+
+# Router/Network Configuration
+router:
+  enabled: true
+  base_url: "http://192.168.100.1:8080"
+  auth_token: "" # Override with PMA_ROUTER_AUTH_TOKEN environment variable
+  timeout: "30s"
+  retry_attempts: 3
+  monitoring_enabled: true
+  auto_discovery: true
+  traffic_logging: true
+
+# Device Integration Configuration  
+devices:
+  health_check_interval: "30s"
+  ring:
+    enabled: false
+    email: "" # Override with RING_EMAIL environment variable
+    password: "" # Override with RING_PASSWORD environment variable  
+    poll_interval: "5m"
+    event_interval: "30s"
+    event_limit: 20
+    auto_reconnect: true
+  shelly:
+    enabled: true
+    discovery_interval: "5m"
+    discovery_timeout: "30s"
+    network_scan_enabled: true
+    network_scan_ranges: ["192.168.1.0/24", "192.168.100.0/24", "10.0.0.0/24"]
+    auto_wifi_setup: false # Enable to help configure devices in AP mode
+    default_username: "admin"
+    default_password: "" # Override with SHELLY_DEFAULT_PASSWORD environment variable
+    poll_interval: "30s"
+    max_devices: 100
+    health_check_interval: "60s"
+    retry_attempts: 3
+    retry_backoff: "10s"
+    enable_gen1_support: true
+    enable_gen2_support: true
+    # discovery_broadcast_addr: "192.168.1.255" # Optional: specific broadcast address
+    
+    # Automatic subnet detection configuration
+    auto_detect_subnets: true # Automatically detect local network interfaces
+    auto_detect_interface_filter: [] # Optional: only scan specific interfaces (e.g., ["eth0", "wlan0"])
+    exclude_loopback: true # Exclude loopback interfaces from scanning
+    exclude_docker_interfaces: true # Exclude Docker and other virtual interfaces
+    min_subnet_size: 16 # Don't scan subnets smaller than /16 (larger numbers = smaller subnets)
+  ups:
+    enabled: false
+    nut_host: "localhost"
+    nut_port: 3493
+    ups_name: "ups"
+    username: ""
+    password: ""
+    nut_servers: []
+    poll_interval: "30s"
+    monitoring_interval: "30s"
+    history_retention_days: 30
+  network:
+    enabled: true
+    scan_interval: "5m"
+    scan_subnets: ["192.168.1.0/24", "192.168.100.0/24"]
+    enable_wake_on_lan: true
+    discovery_ports: [22, 80, 443, 445, 8080]
+    ping_timeout: "5s"
+    auto_reconnect: true
+
+# System Services Configuration
+system:
+  environment: "development" # development, production, testing
+  device_id_file: "./data/device_id"
+  max_log_entries: 1000
+  performance_monitoring: true
+  services:
+    home_assistant:
+      enabled: true
+      host: "192.168.100.2"
+      port: 8123
+      display_name: "Home Assistant"
+      type: "network_service"
+    database:
+      enabled: true
+      path: "./data/pma.db"
+      display_name: "SQLite Database"
+      type: "file_service"
+    websocket:
+      enabled: true
+      display_name: "WebSocket Service"
+      type: "internal_service"
+    backend:
+      enabled: true
+      service_name: "pma-backend"
+      display_name: "PMA Backend"
+      type: "systemd_service"
+    nginx:
+      enabled: true
+      service_name: "nginx"
+      display_name: "Nginx Web Server"
+      type: "systemd_service"
+    router:
+      enabled: true
+      service_name: "pma-router"
+      display_name: "PMA Router"
+      type: "systemd_service"
+
+# External Services Configuration
+external_services:
+  # External API endpoints for system utilities
+  ip_check_services:
+    primary: "http://httpbin.org/ip"
+    fallback: "http://ipv4.icanhazip.com"
+    timeout: "10s"
+  
+  # Ring API endpoints
+  ring:
+    api_base_url: "https://api.ring.com"
+    oauth_url: "https://oauth.ring.com/oauth/token"
+    
+  # Mock/testing endpoints  
+  mock_data:
+    enabled: false # Set to true for testing/demo
+    ring_snapshots_base: "https://ring-snapshots.s3.amazonaws.com/mock"
+    ring_streams_base: "https://ring-streams.example.com"
+
+# File Storage and Paths
+storage:
+  base_path: "./data"
+  temp_path: "./data/temp"
+  backup_path: "./data/backups"
+  cache_path: "./data/cache"
+  logs_path: "./logs"
+  device_id_file: "./data/device_id"
+
+# Security Configuration
+security:
+  enable_cors: true
+  allowed_origins: 
+    - "http://192.168.100.1"
+    - "http://192.168.100.1:80"
+    - "http://192.168.100.1:3000"
+    - "http://192.168.100.1:5173"
+    - "http://192.168.10.83"
+    - "http://192.168.10.83:80"
+    - "http://localhost"
+    - "http://localhost:80"
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+    - "http://127.0.0.1"
+    - "http://127.0.0.1:80"
+    - "http://127.0.0.1:3000"
+    - "http://127.0.0.1:5173"
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 600
+    burst_size: 1000
+  
+# Test and development configuration
+test:
+  # Test endpoints configuration
+  endpoints_enabled: true  # Automatically disabled in production mode
+  mock_data_persistence: false  # Whether mock data persists between restarts
+  
+  # Mock entity generation defaults
+  default_entity_count: 20
+  supported_entity_types: ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "lock"]
+  
+  # Performance testing configuration
+  performance_tests_enabled: true
+  max_performance_test_duration: "60s"
+  
+  # Connection testing configuration
+  connection_timeout: "30s"
+  health_check_interval: "5m"
+  
+  # Development helpers
+  auto_generate_test_data: false
+  reset_data_on_startup: false
+
+# Configuration complete - all device adapters are now configured under the devices: section above
+
+# Environment Variable Overrides Documentation
+# The following environment variables can override configuration values:
+# - JWT_SECRET: Override auth.jwt_secret
+# - HOME_ASSISTANT_TOKEN: Override home_assistant.token  
+# - HA_TOKEN: Override homeassistant.token
+# - PMA_ROUTER_AUTH_TOKEN: Override router.auth_token
+# - RING_EMAIL: Override ring.email / devices.ring.email
+# - RING_PASSWORD: Override ring.password / devices.ring.password
+# - SHELLY_PASSWORD: Override devices.shelly.password
+# - OPENAI_API_KEY: Override ai.providers[openai].api_key
+# - CLAUDE_API_KEY: Override ai.providers[claude].api_key
+# - GEMINI_API_KEY: Override ai.providers[gemini].api_key
+# - PORT: Override server.port
+# - DATABASE_PATH: Override database.path
+# - LOG_LEVEL: Override logging.level 

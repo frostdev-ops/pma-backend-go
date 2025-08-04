@@ -53,7 +53,11 @@ func NewConversationRepository(db *sql.DB) repositories.ConversationRepository {
 }
 
 // CreateConversation creates a new conversation
-func (r *ConversationRepository) CreateConversation(ctx context.Context, conv *ai.Conversation) error {
+func (r *ConversationRepository) CreateConversation(ctx context.Context, convParam interface{}) error {
+	conv, ok := convParam.(*ai.Conversation)
+	if !ok {
+		return fmt.Errorf("invalid conversation type")
+	}
 	query := `
 		INSERT INTO conversations (id, user_id, title, system_prompt, provider, model, temperature, max_tokens, context_data, metadata, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -98,7 +102,7 @@ func (r *ConversationRepository) CreateConversation(ctx context.Context, conv *a
 }
 
 // GetConversation retrieves a conversation by ID and user ID
-func (r *ConversationRepository) GetConversation(ctx context.Context, id string, userID string) (*ai.Conversation, error) {
+func (r *ConversationRepository) GetConversation(ctx context.Context, id string, userID string) (interface{}, error) {
 	query := `
 		SELECT id, user_id, title, system_prompt, provider, model, temperature, max_tokens, 
 		       context_data, metadata, message_count, last_message_at, created_at, updated_at, archived
@@ -155,7 +159,11 @@ func (r *ConversationRepository) GetConversation(ctx context.Context, id string,
 }
 
 // GetConversations retrieves conversations with filtering
-func (r *ConversationRepository) GetConversations(ctx context.Context, filter *ai.ConversationFilter) ([]*ai.Conversation, error) {
+func (r *ConversationRepository) GetConversations(ctx context.Context, filter interface{}) ([]interface{}, error) {
+	convFilter, ok := filter.(*ai.ConversationFilter)
+	if !ok {
+		return nil, fmt.Errorf("invalid conversation filter type")
+	}
 	query := `
 		SELECT id, user_id, title, system_prompt, provider, model, temperature, max_tokens, 
 		       context_data, metadata, message_count, last_message_at, created_at, updated_at, archived
@@ -166,42 +174,42 @@ func (r *ConversationRepository) GetConversations(ctx context.Context, filter *a
 	var args []interface{}
 
 	if filter != nil {
-		if filter.UserID != nil {
+		if convFilter.UserID != nil {
 			conditions = append(conditions, "user_id = ?")
-			args = append(args, *filter.UserID)
+			args = append(args, *convFilter.UserID)
 		}
 
-		if filter.Archived != nil {
+		if convFilter.Archived != nil {
 			conditions = append(conditions, "archived = ?")
-			args = append(args, *filter.Archived)
+			args = append(args, *convFilter.Archived)
 		}
 
-		if filter.Provider != nil {
+		if convFilter.Provider != nil {
 			conditions = append(conditions, "provider = ?")
-			args = append(args, *filter.Provider)
+			args = append(args, *convFilter.Provider)
 		}
 
-		if filter.StartDate != nil {
+		if convFilter.StartDate != nil {
 			conditions = append(conditions, "created_at >= ?")
-			args = append(args, *filter.StartDate)
+			args = append(args, *convFilter.StartDate)
 		}
 
-		if filter.EndDate != nil {
+		if convFilter.EndDate != nil {
 			conditions = append(conditions, "created_at <= ?")
-			args = append(args, *filter.EndDate)
+			args = append(args, *convFilter.EndDate)
 		}
 
-		if filter.HasMessages != nil {
-			if *filter.HasMessages {
+		if convFilter.HasMessages != nil {
+			if *convFilter.HasMessages {
 				conditions = append(conditions, "message_count > 0")
 			} else {
 				conditions = append(conditions, "message_count = 0")
 			}
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if convFilter.SearchQuery != nil && *convFilter.SearchQuery != "" {
 			conditions = append(conditions, "(title LIKE ? OR EXISTS (SELECT 1 FROM conversation_messages WHERE conversation_id = conversations.id AND content LIKE ?))")
-			searchTerm := "%" + *filter.SearchQuery + "%"
+			searchTerm := "%" + *convFilter.SearchQuery + "%"
 			args = append(args, searchTerm, searchTerm)
 		}
 	}
@@ -214,23 +222,23 @@ func (r *ConversationRepository) GetConversations(ctx context.Context, filter *a
 	orderBy := "created_at"
 	orderDir := "DESC"
 	if filter != nil {
-		if filter.OrderBy != "" {
-			orderBy = filter.OrderBy
+		if convFilter.OrderBy != "" {
+			orderBy = convFilter.OrderBy
 		}
-		if filter.OrderDir != "" {
-			orderDir = filter.OrderDir
+		if convFilter.OrderDir != "" {
+			orderDir = convFilter.OrderDir
 		}
 	}
 	query += fmt.Sprintf(" ORDER BY %s %s", orderBy, orderDir)
 
 	// Add pagination
-	if filter != nil && filter.Limit > 0 {
+	if filter != nil && convFilter.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, convFilter.Limit)
 
-		if filter.Offset > 0 {
+		if convFilter.Offset > 0 {
 			query += " OFFSET ?"
-			args = append(args, filter.Offset)
+			args = append(args, convFilter.Offset)
 		}
 	}
 
@@ -290,53 +298,62 @@ func (r *ConversationRepository) GetConversations(ctx context.Context, filter *a
 		return nil, fmt.Errorf("error iterating conversations: %w", err)
 	}
 
-	return conversations, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(conversations))
+	for i, conv := range conversations {
+		result[i] = conv
+	}
+	return result, nil
 }
 
 // GetConversationCount returns the count of conversations matching the filter
-func (r *ConversationRepository) GetConversationCount(ctx context.Context, filter *ai.ConversationFilter) (int, error) {
+func (r *ConversationRepository) GetConversationCount(ctx context.Context, filter interface{}) (int, error) {
+	convFilter, ok := filter.(*ai.ConversationFilter)
+	if !ok {
+		return 0, fmt.Errorf("invalid conversation filter type")
+	}
 	query := "SELECT COUNT(*) FROM conversations"
 
 	var conditions []string
 	var args []interface{}
 
 	if filter != nil {
-		if filter.UserID != nil {
+		if convFilter.UserID != nil {
 			conditions = append(conditions, "user_id = ?")
-			args = append(args, *filter.UserID)
+			args = append(args, *convFilter.UserID)
 		}
 
-		if filter.Archived != nil {
+		if convFilter.Archived != nil {
 			conditions = append(conditions, "archived = ?")
-			args = append(args, *filter.Archived)
+			args = append(args, *convFilter.Archived)
 		}
 
-		if filter.Provider != nil {
+		if convFilter.Provider != nil {
 			conditions = append(conditions, "provider = ?")
-			args = append(args, *filter.Provider)
+			args = append(args, *convFilter.Provider)
 		}
 
-		if filter.StartDate != nil {
+		if convFilter.StartDate != nil {
 			conditions = append(conditions, "created_at >= ?")
-			args = append(args, *filter.StartDate)
+			args = append(args, *convFilter.StartDate)
 		}
 
-		if filter.EndDate != nil {
+		if convFilter.EndDate != nil {
 			conditions = append(conditions, "created_at <= ?")
-			args = append(args, *filter.EndDate)
+			args = append(args, *convFilter.EndDate)
 		}
 
-		if filter.HasMessages != nil {
-			if *filter.HasMessages {
+		if convFilter.HasMessages != nil {
+			if *convFilter.HasMessages {
 				conditions = append(conditions, "message_count > 0")
 			} else {
 				conditions = append(conditions, "message_count = 0")
 			}
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if convFilter.SearchQuery != nil && *convFilter.SearchQuery != "" {
 			conditions = append(conditions, "(title LIKE ? OR EXISTS (SELECT 1 FROM conversation_messages WHERE conversation_id = conversations.id AND content LIKE ?))")
-			searchTerm := "%" + *filter.SearchQuery + "%"
+			searchTerm := "%" + *convFilter.SearchQuery + "%"
 			args = append(args, searchTerm, searchTerm)
 		}
 	}
@@ -355,7 +372,11 @@ func (r *ConversationRepository) GetConversationCount(ctx context.Context, filte
 }
 
 // UpdateConversation updates a conversation
-func (r *ConversationRepository) UpdateConversation(ctx context.Context, conv *ai.Conversation) error {
+func (r *ConversationRepository) UpdateConversation(ctx context.Context, convParam interface{}) error {
+	conv, ok := convParam.(*ai.Conversation)
+	if !ok {
+		return fmt.Errorf("invalid conversation type")
+	}
 	query := `
 		UPDATE conversations
 		SET title = ?, system_prompt = ?, provider = ?, model = ?, temperature = ?, max_tokens = ?, 
@@ -474,9 +495,13 @@ func (r *ConversationRepository) UnarchiveConversation(ctx context.Context, id s
 }
 
 // CreateMessage creates a new message with retry logic for database busy errors
-func (r *ConversationRepository) CreateMessage(ctx context.Context, msg *ai.ConversationMessage) error {
+func (r *ConversationRepository) CreateMessage(ctx context.Context, msg interface{}) error {
+	message, ok := msg.(*ai.ConversationMessage)
+	if !ok {
+		return fmt.Errorf("invalid message type")
+	}
 	return retryableDatabaseOperation(ctx, func() error {
-		return r.createMessageInternal(ctx, msg)
+		return r.createMessageInternal(ctx, message)
 	}, 3) // Retry up to 3 times
 }
 
@@ -544,7 +569,7 @@ func (r *ConversationRepository) createMessageInternal(ctx context.Context, msg 
 }
 
 // GetMessage retrieves a message by ID
-func (r *ConversationRepository) GetMessage(ctx context.Context, id string) (*ai.ConversationMessage, error) {
+func (r *ConversationRepository) GetMessage(ctx context.Context, id string) (interface{}, error) {
 	query := `
 		SELECT id, conversation_id, role, content, tool_calls, tool_call_id, 
 		       tokens_used, model_used, provider_used, response_time_ms, metadata, created_at
@@ -595,7 +620,11 @@ func (r *ConversationRepository) GetMessage(ctx context.Context, id string) (*ai
 // Note: I'll continue with the remaining methods in the next part due to length constraints...
 
 // GetMessages retrieves messages with filtering
-func (r *ConversationRepository) GetMessages(ctx context.Context, filter *ai.MessageFilter) ([]*ai.ConversationMessage, error) {
+func (r *ConversationRepository) GetMessages(ctx context.Context, filter interface{}) ([]interface{}, error) {
+	msgFilter, ok := filter.(*ai.MessageFilter)
+	if !ok {
+		return nil, fmt.Errorf("invalid message filter type")
+	}
 	query := `
 		SELECT id, conversation_id, role, content, tool_calls, tool_call_id, 
 		       tokens_used, model_used, provider_used, response_time_ms, metadata, created_at
@@ -606,37 +635,37 @@ func (r *ConversationRepository) GetMessages(ctx context.Context, filter *ai.Mes
 	var args []interface{}
 
 	if filter != nil {
-		if filter.ConversationID != nil {
+		if msgFilter.ConversationID != nil {
 			conditions = append(conditions, "conversation_id = ?")
-			args = append(args, *filter.ConversationID)
+			args = append(args, *msgFilter.ConversationID)
 		}
 
-		if filter.Role != nil {
+		if msgFilter.Role != nil {
 			conditions = append(conditions, "role = ?")
-			args = append(args, *filter.Role)
+			args = append(args, *msgFilter.Role)
 		}
 
-		if filter.HasToolCalls != nil {
-			if *filter.HasToolCalls {
+		if msgFilter.HasToolCalls != nil {
+			if *msgFilter.HasToolCalls {
 				conditions = append(conditions, "tool_calls IS NOT NULL AND tool_calls != ''")
 			} else {
 				conditions = append(conditions, "(tool_calls IS NULL OR tool_calls = '')")
 			}
 		}
 
-		if filter.StartDate != nil {
+		if msgFilter.StartDate != nil {
 			conditions = append(conditions, "created_at >= ?")
-			args = append(args, *filter.StartDate)
+			args = append(args, *msgFilter.StartDate)
 		}
 
-		if filter.EndDate != nil {
+		if msgFilter.EndDate != nil {
 			conditions = append(conditions, "created_at <= ?")
-			args = append(args, *filter.EndDate)
+			args = append(args, *msgFilter.EndDate)
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if msgFilter.SearchQuery != nil && *msgFilter.SearchQuery != "" {
 			conditions = append(conditions, "content LIKE ?")
-			args = append(args, "%"+*filter.SearchQuery+"%")
+			args = append(args, "%"+*msgFilter.SearchQuery+"%")
 		}
 	}
 
@@ -648,23 +677,23 @@ func (r *ConversationRepository) GetMessages(ctx context.Context, filter *ai.Mes
 	orderBy := "created_at"
 	orderDir := "DESC"
 	if filter != nil {
-		if filter.OrderBy != "" {
-			orderBy = filter.OrderBy
+		if msgFilter.OrderBy != "" {
+			orderBy = msgFilter.OrderBy
 		}
-		if filter.OrderDir != "" {
-			orderDir = filter.OrderDir
+		if msgFilter.OrderDir != "" {
+			orderDir = msgFilter.OrderDir
 		}
 	}
 	query += fmt.Sprintf(" ORDER BY %s %s", orderBy, orderDir)
 
 	// Add pagination
-	if filter != nil && filter.Limit > 0 {
+	if filter != nil && msgFilter.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, msgFilter.Limit)
 
-		if filter.Offset > 0 {
+		if msgFilter.Offset > 0 {
 			query += " OFFSET ?"
-			args = append(args, filter.Offset)
+			args = append(args, msgFilter.Offset)
 		}
 	}
 
@@ -712,48 +741,57 @@ func (r *ConversationRepository) GetMessages(ctx context.Context, filter *ai.Mes
 		messages = append(messages, msg)
 	}
 
-	return messages, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(messages))
+	for i, msg := range messages {
+		result[i] = msg
+	}
+	return result, nil
 }
 
 // GetMessageCount returns the count of messages matching the filter
-func (r *ConversationRepository) GetMessageCount(ctx context.Context, filter *ai.MessageFilter) (int, error) {
+func (r *ConversationRepository) GetMessageCount(ctx context.Context, filter interface{}) (int, error) {
+	msgFilter, ok := filter.(*ai.MessageFilter)
+	if !ok {
+		return 0, fmt.Errorf("invalid message filter type")
+	}
 	query := "SELECT COUNT(*) FROM conversation_messages"
 
 	var conditions []string
 	var args []interface{}
 
 	if filter != nil {
-		if filter.ConversationID != nil {
+		if msgFilter.ConversationID != nil {
 			conditions = append(conditions, "conversation_id = ?")
-			args = append(args, *filter.ConversationID)
+			args = append(args, *msgFilter.ConversationID)
 		}
 
-		if filter.Role != nil {
+		if msgFilter.Role != nil {
 			conditions = append(conditions, "role = ?")
-			args = append(args, *filter.Role)
+			args = append(args, *msgFilter.Role)
 		}
 
-		if filter.HasToolCalls != nil {
-			if *filter.HasToolCalls {
+		if msgFilter.HasToolCalls != nil {
+			if *msgFilter.HasToolCalls {
 				conditions = append(conditions, "tool_calls IS NOT NULL AND tool_calls != ''")
 			} else {
 				conditions = append(conditions, "(tool_calls IS NULL OR tool_calls = '')")
 			}
 		}
 
-		if filter.StartDate != nil {
+		if msgFilter.StartDate != nil {
 			conditions = append(conditions, "created_at >= ?")
-			args = append(args, *filter.StartDate)
+			args = append(args, *msgFilter.StartDate)
 		}
 
-		if filter.EndDate != nil {
+		if msgFilter.EndDate != nil {
 			conditions = append(conditions, "created_at <= ?")
-			args = append(args, *filter.EndDate)
+			args = append(args, *msgFilter.EndDate)
 		}
 
-		if filter.SearchQuery != nil && *filter.SearchQuery != "" {
+		if msgFilter.SearchQuery != nil && *msgFilter.SearchQuery != "" {
 			conditions = append(conditions, "content LIKE ?")
-			args = append(args, "%"+*filter.SearchQuery+"%")
+			args = append(args, "%"+*msgFilter.SearchQuery+"%")
 		}
 	}
 
@@ -771,7 +809,7 @@ func (r *ConversationRepository) GetMessageCount(ctx context.Context, filter *ai
 }
 
 // GetConversationMessages retrieves messages for a specific conversation
-func (r *ConversationRepository) GetConversationMessages(ctx context.Context, conversationID string, limit int, offset int) ([]*ai.ConversationMessage, error) {
+func (r *ConversationRepository) GetConversationMessages(ctx context.Context, conversationID string, limit int, offset int) ([]interface{}, error) {
 	filter := &ai.MessageFilter{
 		ConversationID: &conversationID,
 		Limit:          limit,
@@ -783,7 +821,11 @@ func (r *ConversationRepository) GetConversationMessages(ctx context.Context, co
 }
 
 // UpdateMessage updates a message
-func (r *ConversationRepository) UpdateMessage(ctx context.Context, msg *ai.ConversationMessage) error {
+func (r *ConversationRepository) UpdateMessage(ctx context.Context, msg interface{}) error {
+	message, ok := msg.(*ai.ConversationMessage)
+	if !ok {
+		return fmt.Errorf("invalid message type")
+	}
 	query := `
 		UPDATE conversation_messages
 		SET content = ?, tool_calls = ?, tool_call_id = ?, tokens_used = ?, 
@@ -791,12 +833,12 @@ func (r *ConversationRepository) UpdateMessage(ctx context.Context, msg *ai.Conv
 		WHERE id = ?
 	`
 
-	toolCallsJSON, err := msg.MarshalToolCalls()
+	toolCallsJSON, err := message.MarshalToolCalls()
 	if err != nil {
 		return fmt.Errorf("failed to marshal tool calls: %w", err)
 	}
 
-	metadataJSON, err := json.Marshal(msg.Metadata)
+	metadataJSON, err := json.Marshal(message.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
@@ -804,15 +846,15 @@ func (r *ConversationRepository) UpdateMessage(ctx context.Context, msg *ai.Conv
 	result, err := r.db.ExecContext(
 		ctx,
 		query,
-		msg.Content,
+		message.Content,
 		toolCallsJSON,
-		msg.ToolCallID,
-		msg.TokensUsed,
-		msg.ModelUsed,
-		msg.ProviderUsed,
-		msg.ResponseTimeMs,
+		message.ToolCallID,
+		message.TokensUsed,
+		message.ModelUsed,
+		message.ProviderUsed,
+		message.ResponseTimeMs,
 		string(metadataJSON),
-		msg.ID,
+		message.ID,
 	)
 
 	if err != nil {
@@ -897,7 +939,11 @@ func (r *ConversationRepository) DeleteConversationMessages(ctx context.Context,
 }
 
 // CreateOrUpdateAnalytics creates or updates conversation analytics
-func (r *ConversationRepository) CreateOrUpdateAnalytics(ctx context.Context, analytics *ai.ConversationAnalytics) error {
+func (r *ConversationRepository) CreateOrUpdateAnalytics(ctx context.Context, analytics interface{}) error {
+	convAnalytics, ok := analytics.(*ai.ConversationAnalytics)
+	if !ok {
+		return fmt.Errorf("invalid conversation analytics type")
+	}
 	query := `
 		INSERT OR REPLACE INTO conversation_analytics 
 		(conversation_id, total_messages, total_tokens, total_cost, avg_response_time_ms, 
@@ -906,39 +952,39 @@ func (r *ConversationRepository) CreateOrUpdateAnalytics(ctx context.Context, an
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
-	providersJSON, err := json.Marshal(analytics.ProvidersUsed)
+	providersJSON, err := json.Marshal(convAnalytics.ProvidersUsed)
 	if err != nil {
 		return fmt.Errorf("failed to marshal providers: %w", err)
 	}
 
-	modelsJSON, err := json.Marshal(analytics.ModelsUsed)
+	modelsJSON, err := json.Marshal(convAnalytics.ModelsUsed)
 	if err != nil {
 		return fmt.Errorf("failed to marshal models: %w", err)
 	}
 
 	now := time.Now()
-	if analytics.CreatedAt.IsZero() {
-		analytics.CreatedAt = now
+	if convAnalytics.CreatedAt.IsZero() {
+		convAnalytics.CreatedAt = now
 	}
-	analytics.UpdatedAt = now
+	convAnalytics.UpdatedAt = now
 
 	_, err = r.db.ExecContext(
 		ctx,
 		query,
-		analytics.ConversationID,
-		analytics.TotalMessages,
-		analytics.TotalTokens,
-		analytics.TotalCost,
-		analytics.AvgResponseTimeMs,
-		analytics.ToolsUsed,
+		convAnalytics.ConversationID,
+		convAnalytics.TotalMessages,
+		convAnalytics.TotalTokens,
+		convAnalytics.TotalCost,
+		convAnalytics.AvgResponseTimeMs,
+		convAnalytics.ToolsUsed,
 		string(providersJSON),
 		string(modelsJSON),
-		analytics.SentimentScore,
-		analytics.ComplexityScore,
-		analytics.SatisfactionRating,
-		analytics.Date,
-		analytics.CreatedAt,
-		analytics.UpdatedAt,
+		convAnalytics.SentimentScore,
+		convAnalytics.ComplexityScore,
+		convAnalytics.SatisfactionRating,
+		convAnalytics.Date,
+		convAnalytics.CreatedAt,
+		convAnalytics.UpdatedAt,
 	)
 
 	if err != nil {
@@ -949,7 +995,7 @@ func (r *ConversationRepository) CreateOrUpdateAnalytics(ctx context.Context, an
 }
 
 // GetConversationAnalytics retrieves analytics for a conversation on a specific date
-func (r *ConversationRepository) GetConversationAnalytics(ctx context.Context, conversationID string, date time.Time) (*ai.ConversationAnalytics, error) {
+func (r *ConversationRepository) GetConversationAnalytics(ctx context.Context, conversationID string, date time.Time) (interface{}, error) {
 	query := `
 		SELECT id, conversation_id, total_messages, total_tokens, total_cost, avg_response_time_ms, 
 		       tools_used, providers_used, models_used, sentiment_score, complexity_score, 
@@ -998,7 +1044,7 @@ func (r *ConversationRepository) GetConversationAnalytics(ctx context.Context, c
 }
 
 // GetAnalyticsByDateRange retrieves analytics for a conversation within a date range
-func (r *ConversationRepository) GetAnalyticsByDateRange(ctx context.Context, conversationID string, startDate, endDate time.Time) ([]*ai.ConversationAnalytics, error) {
+func (r *ConversationRepository) GetAnalyticsByDateRange(ctx context.Context, conversationID string, startDate, endDate time.Time) ([]interface{}, error) {
 	query := `
 		SELECT id, conversation_id, total_messages, total_tokens, total_cost, avg_response_time_ms, 
 		       tools_used, providers_used, models_used, sentiment_score, complexity_score, 
@@ -1051,11 +1097,16 @@ func (r *ConversationRepository) GetAnalyticsByDateRange(ctx context.Context, co
 		analyticsSlice = append(analyticsSlice, analytics)
 	}
 
-	return analyticsSlice, nil
+	// Convert to []interface{}
+	result := make([]interface{}, len(analyticsSlice))
+	for i, analytics := range analyticsSlice {
+		result[i] = analytics
+	}
+	return result, nil
 }
 
 // GetGlobalStatistics retrieves global conversation statistics
-func (r *ConversationRepository) GetGlobalStatistics(ctx context.Context, userID string, startDate, endDate time.Time) (*ai.ConversationStatistics, error) {
+func (r *ConversationRepository) GetGlobalStatistics(ctx context.Context, userID string, startDate, endDate time.Time) (interface{}, error) {
 	stats := &ai.ConversationStatistics{}
 
 	// Get conversation counts

@@ -21,6 +21,7 @@ type UserPreferences struct {
 	Theme          ThemePreferences         `json:"theme"`
 	Notifications  NotificationPreferences  `json:"notifications"`
 	Dashboard      DashboardPreferences     `json:"dashboard"`
+	Navbar         NavbarPreferences        `json:"navbar"`
 	Automation     AutomationPreferences    `json:"automation"`
 	Locale         LocalePreferences        `json:"locale"`
 	Privacy        PrivacyPreferences       `json:"privacy"`
@@ -96,6 +97,83 @@ type DashboardPreferences struct {
 	AutoArrange     bool                   `json:"auto_arrange"`
 	BackgroundImage string                 `json:"background_image"`
 	Settings        map[string]interface{} `json:"settings"`
+}
+
+// NavbarPreferences contains navbar configuration settings
+type NavbarPreferences struct {
+	Configurations        []NavbarConfiguration `json:"configurations"`
+	ActiveConfigurationID string                `json:"active_configuration_id"`
+	LastModified          time.Time             `json:"last_modified"`
+}
+
+// NavbarConfiguration represents a complete navbar configuration
+type NavbarConfiguration struct {
+	ID                      string          `json:"id"`
+	Name                    string          `json:"name"`
+	Description             string          `json:"description,omitempty"`
+	Location                string          `json:"location"`                           // top, bottom, left, right
+	Positioning             string          `json:"positioning,omitempty"`              // overlay, push, static
+	Size                    string          `json:"size"`                               // compact, normal, large
+	ButtonSize              string          `json:"button_size"`                        // small, medium, large
+	Orientation             string          `json:"orientation,omitempty"`              // horizontal, vertical
+	HorizontalJustification string          `json:"horizontal_justification,omitempty"` // start, center, between, around, evenly
+	Style                   NavbarStyle     `json:"style"`
+	Elements                []NavbarElement `json:"elements"`
+	AutoHide                bool            `json:"auto_hide,omitempty"`
+	AutoHideDelay           int             `json:"auto_hide_delay,omitempty"`
+	CollapseOnMobile        bool            `json:"collapse_on_mobile,omitempty"`
+	ShowLabels              bool            `json:"show_labels"`
+	ShowBadges              bool            `json:"show_badges"`
+	ShowCollapseButton      bool            `json:"show_collapse_button,omitempty"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+	IsDefault               bool            `json:"is_default,omitempty"`
+	IsActive                bool            `json:"is_active,omitempty"`
+}
+
+// NavbarStyle contains styling options for the navbar
+type NavbarStyle struct {
+	BackgroundColor string  `json:"background_color,omitempty"`
+	BorderColor     string  `json:"border_color,omitempty"`
+	BorderWidth     int     `json:"border_width,omitempty"`
+	BorderRadius    int     `json:"border_radius,omitempty"`
+	Padding         int     `json:"padding,omitempty"`
+	Gap             int     `json:"gap,omitempty"`
+	Opacity         float64 `json:"opacity,omitempty"`
+	Blur            bool    `json:"blur,omitempty"`
+	Shadow          bool    `json:"shadow,omitempty"`
+	CustomCSS       string  `json:"custom_css,omitempty"`
+}
+
+// NavbarElement represents an individual navbar element
+type NavbarElement struct {
+	ID           string                 `json:"id"`
+	Type         string                 `json:"type"` // button, widget, dashboard_link, separator, spacer
+	Order        int                    `json:"order"`
+	Visible      bool                   `json:"visible"`
+	Label        string                 `json:"label,omitempty"`
+	Icon         string                 `json:"icon,omitempty"`
+	Path         string                 `json:"path,omitempty"`
+	Color        string                 `json:"color,omitempty"`
+	Badge        string                 `json:"badge,omitempty"`
+	Condition    string                 `json:"condition,omitempty"`
+	WidgetType   string                 `json:"widget_type,omitempty"`
+	WidgetConfig map[string]interface{} `json:"widget_config,omitempty"`
+	DashboardID  string                 `json:"dashboard_id,omitempty"`
+	DisplayMode  string                 `json:"display_mode,omitempty"` // link, embed
+	Style        *NavbarElementStyle    `json:"style,omitempty"`
+}
+
+// NavbarElementStyle contains element-specific styling
+type NavbarElementStyle struct {
+	BackgroundColor string `json:"background_color,omitempty"`
+	TextColor       string `json:"text_color,omitempty"`
+	BorderColor     string `json:"border_color,omitempty"`
+	BorderRadius    int    `json:"border_radius,omitempty"`
+	Padding         int    `json:"padding,omitempty"`
+	FontSize        string `json:"font_size,omitempty"`
+	FontWeight      string `json:"font_weight,omitempty"`
+	CustomCSS       string `json:"custom_css,omitempty"`
 }
 
 // AutomationPreferences contains automation-related settings
@@ -246,6 +324,11 @@ func DefaultPreferences() *UserPreferences {
 			BackgroundImage: "",
 			Settings:        make(map[string]interface{}),
 		},
+		Navbar: NavbarPreferences{
+			Configurations:        []NavbarConfiguration{defaultNavbarConfiguration()},
+			ActiveConfigurationID: "default",
+			LastModified:          time.Now(),
+		},
 		Automation: AutomationPreferences{
 			SuggestionsEnabled:  true,
 			AutomationGroups:    []AutomationGroup{},
@@ -298,5 +381,107 @@ func DefaultPreferences() *UserPreferences {
 		},
 		CustomSettings: make(map[string]interface{}),
 		UpdatedAt:      time.Now(),
+	}
+}
+
+// defaultNavbarConfiguration returns the default navbar configuration
+func defaultNavbarConfiguration() NavbarConfiguration {
+	return NavbarConfiguration{
+		ID:          "default",
+		Name:        "Default Navigation",
+		Description: "Default PMA navigation bar",
+		Location:    "top",
+		Size:        "normal",
+		ButtonSize:  "medium",
+		Style: NavbarStyle{
+			BackgroundColor: "var(--surface-primary)",
+			BorderColor:     "var(--border-color)",
+			BorderWidth:     1,
+			BorderRadius:    8,
+			Padding:         8,
+			Gap:             4,
+			Opacity:         1,
+			Blur:            false,
+			Shadow:          true,
+		},
+		Elements: []NavbarElement{
+			{
+				ID:      "home",
+				Type:    "button",
+				Order:   0,
+				Visible: true,
+				Label:   "Dashboard",
+				Icon:    "Home",
+				Path:    "/",
+			},
+			{
+				ID:      "controllers",
+				Type:    "button",
+				Order:   1,
+				Visible: true,
+				Label:   "Controllers",
+				Icon:    "LayoutGrid",
+				Path:    "/controllers",
+			},
+			{
+				ID:      "separator-1",
+				Type:    "separator",
+				Order:   2,
+				Visible: true,
+			},
+			{
+				ID:        "climate",
+				Type:      "button",
+				Order:     3,
+				Visible:   true,
+				Label:     "Climate",
+				Icon:      "Thermometer",
+				Path:      "/climate",
+				Condition: "climateDeviceCount > 0",
+			},
+			{
+				ID:        "cameras",
+				Type:      "button",
+				Order:     4,
+				Visible:   true,
+				Label:     "Cameras",
+				Icon:      "Camera",
+				Path:      "/cameras",
+				Condition: "cameraCount > 0",
+			},
+			{
+				ID:      "spacer-1",
+				Type:    "spacer",
+				Order:   5,
+				Visible: true,
+			},
+			{
+				ID:      "ai",
+				Type:    "button",
+				Order:   6,
+				Visible: true,
+				Label:   "AI Assistant",
+				Icon:    "Bot",
+				Path:    "/ai",
+			},
+			{
+				ID:      "settings",
+				Type:    "button",
+				Order:   7,
+				Visible: true,
+				Label:   "Settings",
+				Icon:    "Settings",
+				Path:    "/settings",
+			},
+		},
+		AutoHide:         false,
+		AutoHideDelay:    3000,
+		CollapseOnMobile: true,
+		ShowLabels:       true,
+		ShowBadges:       true,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+		IsDefault:        true,
+		IsActive:         true,
 	}
 }

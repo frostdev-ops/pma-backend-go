@@ -1,0 +1,1970 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/ai"
+
+	"github.com/frostdev-ops/pma-backend-go/internal/core/system"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
+	"github.com/frostdev-ops/pma-backend-go/pkg/utils"
+	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
+)
+
+// AI-related handlers
+
+// ChatWithAI handles chat requests to the AI system
+func (h *Handlers) ChatWithAI(c *gin.Context) {
+	var req ai.ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Use centralized LLM service directly
+	centralizedService := h.getCentralizedLLMService()
+	if centralizedService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Convert request to centralized service format
+	llmMessages := make([]llm.ChatMessage, len(req.Messages))
+	for i, msg := range req.Messages {
+		llmMessages[i] = llm.ChatMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+
+	llmOptions := llm.ChatOptions{
+		MaxTokens:    req.MaxTokens,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
+		Stream:       req.Stream,
+		SystemPrompt: req.SystemPrompt,
+	}
+
+	// Perform chat using centralized service
+	response, err := centralizedService.Chat(c.Request.Context(), llmMessages, llmOptions)
+	if err != nil {
+		h.log.WithError(err).Error("Chat request failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
+		return
+	}
+
+	// Convert response back to expected format
+	chatResponse := ai.ChatResponse{
+		ID:       response.ID,
+		Model:    response.Model,
+		Provider: response.Provider,
+		Message: ai.ChatMessage{
+			Role:    response.Message.Role,
+			Content: response.Message.Content,
+		},
+		FinishReason: response.FinishReason,
+		TokensUsed: ai.TokenUsage{
+			PromptTokens:     response.TokensUsed.PromptTokens,
+			CompletionTokens: response.TokensUsed.CompletionTokens,
+			TotalTokens:      response.TokensUsed.TotalTokens,
+		},
+		ProcessingTimeMs: response.ProcessingTimeMs,
+		CreatedAt:        response.CreatedAt,
+	}
+
+	c.JSON(http.StatusOK, chatResponse)
+}
+
+// CompleteText handles text completion requests
+func (h *Handlers) CompleteText(c *gin.Context) {
+	var req ai.CompletionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Get chat service from context or handlers
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform completion
+	response, err := chatService.Complete(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("Completion request failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Completion request failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetProviders returns information about available AI providers from LLM Manager
+func (h *Handlers) GetProviders(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		h.log.Error("LLM Manager is nil - trying fallback to centralized service")
+
+		// Fallback to centralized service for backward compatibility
+		centralizedService := h.getCentralizedLLMService()
+		if centralizedService == nil {
+			h.log.Error("Both LLM Manager and centralized service are nil")
+			c.JSON(http.StatusOK, gin.H{
+				"providers": []interface{}{},
+				"count":     0,
+				"error":     "AI services failed to initialize - check server logs",
+			})
+			return
+		}
+
+		status := centralizedService.GetStatus()
+		providers := []map[string]interface{}{
+			{
+				"name":         "ollama",
+				"type":         "ollama",
+				"enabled":      status.Enabled,
+				"available":    status.OllamaAvailable,
+				"healthy":      status.Healthy,
+				"model":        status.CurrentModel,
+				"model_loaded": status.ModelLoaded,
+			},
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"providers": providers,
+			"count":     len(providers),
+		})
+		return
+	}
+
+	// Get all providers from LLM Manager
+	ctx := c.Request.Context()
+	providers := []map[string]interface{}{}
+
+	// Get provider statuses from LLM Manager
+	providerStatuses := llmManager.GetProviders(ctx)
+	h.log.WithField("provider_count", len(providerStatuses)).Debug("Getting providers from LLM Manager")
+
+	for _, status := range providerStatuses {
+		// Get current/default model from available models
+		currentModel := ""
+		modelLoaded := false
+		if len(status.Models) > 0 {
+			// Use the first model as current
+			currentModel = status.Models[0].ID
+			modelLoaded = status.Models[0].Available
+		}
+
+		providerInfo := map[string]interface{}{
+			"name":         status.Name,
+			"type":         status.Type,
+			"enabled":      true, // If it's in the list, it's enabled
+			"available":    status.Available,
+			"healthy":      status.Healthy,
+			"model":        currentModel,
+			"model_loaded": modelLoaded,
+		}
+
+		providers = append(providers, providerInfo)
+		h.log.WithFields(logrus.Fields{
+			"provider":      status.Name,
+			"available":     status.Available,
+			"healthy":       status.Healthy,
+			"current_model": currentModel,
+			"model_count":   len(status.Models),
+		}).Debug("Added provider to response")
+	}
+
+	h.log.WithField("total_providers", len(providers)).Info("Returning providers from LLM Manager")
+
+	c.JSON(http.StatusOK, gin.H{
+		"providers": providers,
+		"count":     len(providers),
+	})
+}
+
+// GetModels returns available models from the centralized service
+func (h *Handlers) GetModels(c *gin.Context) {
+	centralizedService := h.getCentralizedLLMService()
+	if centralizedService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	models, err := centralizedService.GetAvailableModels(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get models")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve models"})
+		return
+	}
+
+	status := centralizedService.GetStatus()
+
+	// Convert to frontend-expected format (simplified for string array)
+	frontendModels := make([]map[string]interface{}, 0, len(models))
+	for _, modelName := range models {
+		frontendModel := map[string]interface{}{
+			"id":             modelName,
+			"name":           modelName,
+			"provider":       "ollama",
+			"size":           "Unknown",
+			"description":    "Ollama Model",
+			"tags":           []string{},
+			"status":         "available",
+			"context_length": 4096,
+			"capabilities":   []string{"text", "chat"},
+		}
+
+		// Mark the currently loaded model
+		if modelName == status.CurrentModel {
+			frontendModel["status"] = "loaded"
+			frontendModel["current"] = true
+		}
+
+		// Mark as installed since all Ollama models are local
+		if frontendModel["status"] == "available" {
+			frontendModel["status"] = "installed"
+		}
+
+		frontendModels = append(frontendModels, frontendModel)
+	}
+
+	// Return using standard response format
+	utils.SendSuccess(c, frontendModels)
+}
+
+// AnalyzeEntity analyzes specific entities and returns insights
+func (h *Handlers) AnalyzeEntity(c *gin.Context) {
+	entityID := c.Param("id")
+	if entityID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Entity ID is required"})
+		return
+	}
+
+	var req ai.EntityAnalysisRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Add the entity ID from the URL parameter
+	if len(req.EntityIDs) == 0 {
+		req.EntityIDs = []string{entityID}
+	}
+
+	// Set default analysis type if not specified
+	if req.AnalysisType == "" {
+		req.AnalysisType = "general"
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform analysis
+	response, err := chatService.AnalyzeEntity(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("Entity analysis failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Entity analysis failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GenerateAutomation generates automation rules from natural language
+func (h *Handlers) GenerateAutomation(c *gin.Context) {
+	var req ai.AutomationGenerationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Validate required fields
+	if req.Description == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Description is required"})
+		return
+	}
+
+	// Set default complexity if not specified
+	if req.Complexity == "" {
+		req.Complexity = "simple"
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Generate automation
+	response, err := chatService.GenerateAutomation(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("Automation generation failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Automation generation failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetSystemSummary generates an AI-powered system summary
+func (h *Handlers) GetSystemSummary(c *gin.Context) {
+	var req ai.SystemSummaryRequest
+
+	// Parse query parameters
+	req.IncludeEntities = c.DefaultQuery("include_entities", "true") == "true"
+	req.IncludeRooms = c.DefaultQuery("include_rooms", "true") == "true"
+	req.IncludeAutomation = c.DefaultQuery("include_automation", "true") == "true"
+	req.IncludeAlerts = c.DefaultQuery("include_alerts", "true") == "true"
+	req.DetailLevel = c.DefaultQuery("detail_level", "normal")
+
+	// Parse entity types if provided
+	if entityTypes := c.QueryArray("entity_types"); len(entityTypes) > 0 {
+		req.EntityTypes = entityTypes
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Generate summary
+	response, err := chatService.SummarizeSystem(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("System summary generation failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "System summary generation failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetAIStatistics returns AI system usage statistics
+func (h *Handlers) GetAIStatistics(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	stats := llmManager.GetStatistics()
+	c.JSON(http.StatusOK, stats)
+}
+
+// TestAIProvider tests connectivity to a specific AI provider
+func (h *Handlers) TestAIProvider(c *gin.Context) {
+	provider := c.Param("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Provider name is required"})
+		return
+	}
+
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Simple test chat request
+	testReq := ai.ChatRequest{
+		Messages: []ai.ChatMessage{
+			{
+				Role:    "user",
+				Content: "Hello, this is a test message. Please respond with 'Test successful'.",
+			},
+		},
+		Provider:    provider,
+		MaxTokens:   50,
+		Temperature: 0.1,
+	}
+
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Chat service not available"})
+		return
+	}
+
+	response, err := chatService.Chat(c.Request.Context(), testReq)
+	if err != nil {
+		h.log.WithError(err).WithField("provider", provider).Error("Provider test failed")
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":    "Provider test failed",
+			"provider": provider,
+			"details":  err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":             "success",
+		"provider":           provider,
+		"response":           response.Message.Content,
+		"processing_time_ms": response.ProcessingTimeMs,
+		"tokens_used":        response.TokensUsed,
+		"model":              response.Model,
+	})
+}
+
+// ChatWithContext performs a chat with enhanced context from PMA system
+func (h *Handlers) ChatWithContext(c *gin.Context) {
+	var req ai.ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Extract user ID from token/context if available
+	userID := h.getUserIDFromContext(c)
+
+	// Build conversation context from PMA system
+	context := &ai.ConversationContext{
+		UserID:    userID,
+		SessionID: c.GetHeader("X-Session-ID"),
+		Timestamp: time.Now(),
+	}
+
+	// Enhance context with actual entity and room data
+	entities, err := h.repos.Entity.GetAll(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Warn("Failed to fetch entities for AI context")
+	} else {
+		// Convert entities to EntityContext slice
+		entityContexts := make([]ai.EntityContext, 0, len(entities))
+		for _, entity := range entities {
+			entityContext := ai.EntityContext{
+				ID:          entity.EntityID,
+				Name:        entity.FriendlyName.String,
+				Type:        entity.Domain,
+				State:       entity.State.String,
+				LastChanged: entity.LastUpdated,
+			}
+
+			// Parse attributes if they exist
+			if len(entity.Attributes) > 0 {
+				var attributes map[string]interface{}
+				if err := json.Unmarshal(entity.Attributes, &attributes); err == nil {
+					entityContext.Attributes = attributes
+				}
+			}
+
+			entityContexts = append(entityContexts, entityContext)
+		}
+		context.Entities = entityContexts
+	}
+
+	rooms, err := h.repos.Room.GetAll(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Warn("Failed to fetch rooms for AI context")
+	} else {
+		// Convert rooms to RoomContext slice
+		roomContexts := make([]ai.RoomContext, 0, len(rooms))
+		for _, room := range rooms {
+			roomContext := ai.RoomContext{
+				ID:   fmt.Sprintf("room_%d", room.ID),
+				Name: room.Name,
+			}
+
+			// Get entities in this room for entity count
+			roomEntities, err := h.repos.Entity.GetByRoom(c.Request.Context(), room.ID)
+			if err == nil {
+				roomContext.EntityCount = len(roomEntities)
+
+				// Convert room entities to EntityContext
+				roomEntityContexts := make([]ai.EntityContext, 0, len(roomEntities))
+				for _, entity := range roomEntities {
+					entityContext := ai.EntityContext{
+						ID:          entity.EntityID,
+						Name:        entity.FriendlyName.String,
+						Type:        entity.Domain,
+						State:       entity.State.String,
+						Room:        room.Name,
+						LastChanged: entity.LastUpdated,
+					}
+
+					if len(entity.Attributes) > 0 {
+						var attributes map[string]interface{}
+						if err := json.Unmarshal(entity.Attributes, &attributes); err == nil {
+							entityContext.Attributes = attributes
+						}
+					}
+
+					roomEntityContexts = append(roomEntityContexts, entityContext)
+				}
+				roomContext.Entities = roomEntityContexts
+			}
+
+			roomContexts = append(roomContexts, roomContext)
+		}
+		context.Rooms = roomContexts
+	}
+
+	if req.Context == nil {
+		req.Context = context
+	} else {
+		// Merge with provided context
+		if req.Context.UserID == "" {
+			req.Context.UserID = userID
+		}
+		if req.Context.SessionID == "" {
+			req.Context.SessionID = context.SessionID
+		}
+		// Merge entity and room data
+		if req.Context.Entities == nil {
+			req.Context.Entities = context.Entities
+		}
+		if req.Context.Rooms == nil {
+			req.Context.Rooms = context.Rooms
+		}
+	}
+
+	// Get chat service
+	chatService := h.getChatService()
+	if chatService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	// Perform chat with enhanced context
+	response, err := chatService.Chat(c.Request.Context(), req)
+	if err != nil {
+		h.log.WithError(err).Error("Context-aware chat failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Chat request failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// AI Settings & Management Handlers
+
+// GetAISettings retrieves AI configuration settings for centralized LLM service
+func (h *Handlers) GetAISettings(c *gin.Context) {
+	centralizedService := h.getCentralizedLLMService()
+	if centralizedService == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "AI service not available")
+		return
+	}
+
+	status := centralizedService.GetStatus()
+
+	// Get available models
+	models, err := centralizedService.GetAvailableModels(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get available models")
+		models = []string{} // Return empty array if we can't get models
+	}
+
+	// Models are already strings, no conversion needed
+	modelNames := models
+
+	// Get Hugot provider status from LLM Manager
+	hugotSettings := map[string]interface{}{
+		"enabled":          false,
+		"status":           "disconnected",
+		"available_models": []string{},
+	}
+
+	// Get vLLM provider status from LLM Manager
+	vllmSettings := map[string]interface{}{
+		"enabled":          false,
+		"status":           "disconnected",
+		"available_models": []string{},
+	}
+
+	// Try to get provider statuses
+	llmManager := h.getLLMManager()
+	if llmManager != nil {
+		// Hugot provider status
+		hugotProvider := llmManager.GetProvider("hugot")
+		if hugotProvider != nil && hugotProvider.IsAvailable(c.Request.Context()) {
+			hugotSettings["enabled"] = true
+			hugotSettings["status"] = "connected"
+
+			// Get Hugot models if available
+			if models, err := hugotProvider.GetModels(c.Request.Context()); err == nil {
+				modelNames := make([]string, len(models))
+				for i, model := range models {
+					modelNames[i] = model.ID
+				}
+				hugotSettings["available_models"] = modelNames
+				if len(modelNames) > 0 {
+					hugotSettings["default_model"] = modelNames[0]
+				}
+			}
+			hugotSettings["models_dir"] = "./models/hugot"
+			hugotSettings["timeout"] = "30s"
+			hugotSettings["max_retries"] = 3
+		}
+
+		// vLLM provider status
+		vllmProvider := llmManager.GetProvider("vllm")
+		if vllmProvider != nil && vllmProvider.IsAvailable(c.Request.Context()) {
+			vllmSettings["enabled"] = true
+			vllmSettings["status"] = "connected"
+
+			// Get vLLM models if available
+			if models, err := vllmProvider.GetModels(c.Request.Context()); err == nil {
+				modelNames := make([]string, len(models))
+				for i, model := range models {
+					modelNames[i] = model.ID
+				}
+				vllmSettings["available_models"] = modelNames
+				if len(modelNames) > 0 {
+					vllmSettings["default_model"] = modelNames[0]
+				}
+			}
+			vllmSettings["base_url"] = "http://localhost:8000"
+			vllmSettings["timeout"] = "60s"
+			vllmSettings["max_retries"] = 3
+		}
+	}
+
+	// Get saved AI configuration from database
+	defaultProvider := "ollama" // default value
+	fallbackEnabled := false    // default value
+
+	// Try to get default provider from database
+	if providerConfig, err := h.repos.Config.Get(c.Request.Context(), "ai.default_provider"); err == nil {
+		defaultProvider = providerConfig.Value
+	}
+
+	// Try to get fallback setting from database
+	if fallbackConfig, err := h.repos.Config.Get(c.Request.Context(), "ai.fallback_enabled"); err == nil {
+		fallbackEnabled = fallbackConfig.Value == "true"
+	}
+
+	settings := map[string]interface{}{
+		"enabled":             status.Enabled,
+		"current_model":       status.CurrentModel,
+		"model_loaded":        status.ModelLoaded,
+		"available_models":    modelNames,
+		"service_healthy":     status.Healthy,
+		"service_initialized": status.Initialized,
+		"ollama_available":    status.OllamaAvailable,
+		"request_count":       status.RequestCount,
+		"error_count":         status.ErrorCount,
+		"last_used":           status.LastUsed,
+		"hugot_settings":      hugotSettings,
+		"vllm_settings":       vllmSettings,
+		"default_provider":    defaultProvider,
+		"fallback_enabled":    fallbackEnabled,
+	}
+
+	utils.SendSuccess(c, settings)
+}
+
+// UpdateAISettings updates AI configuration (specifically the current model)
+func (h *Handlers) UpdateAISettings(c *gin.Context) {
+	var req struct {
+		Model           string `json:"model,omitempty"`
+		DefaultProvider string `json:"default_provider,omitempty"`
+		FallbackEnabled *bool  `json:"fallback_enabled,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+
+	var responseData = make(map[string]interface{})
+
+	// Handle model switching if provided (via centralized service for Ollama)
+	if req.Model != "" {
+		centralizedService := h.getCentralizedLLMService()
+		if centralizedService == nil {
+			utils.SendError(c, http.StatusServiceUnavailable, "AI service not available")
+			return
+		}
+
+		// Validate that the model exists in available models
+		models, err := centralizedService.GetAvailableModels(c.Request.Context())
+		if err != nil {
+			h.log.WithError(err).Error("Failed to get available models for validation")
+			utils.SendError(c, http.StatusInternalServerError, "Failed to validate model")
+			return
+		}
+
+		modelExists := false
+		for _, modelName := range models {
+			if modelName == req.Model {
+				modelExists = true
+				break
+			}
+		}
+
+		if !modelExists {
+			utils.SendError(c, http.StatusBadRequest, "Model '"+req.Model+"' is not available")
+			return
+		}
+
+		// Set the new model
+		if err := centralizedService.SetModel(c.Request.Context(), req.Model); err != nil {
+			h.log.WithError(err).WithField("requested_model", req.Model).Error("Failed to set model")
+			utils.SendError(c, http.StatusInternalServerError, "Failed to load model: "+err.Error())
+			return
+		}
+
+		h.log.WithField("new_model", req.Model).Info("AI model updated successfully")
+		responseData["model"] = req.Model
+		responseData["model_updated"] = true
+	}
+
+	// Handle provider and fallback settings if LLMManager is available
+	llmManager := h.getLLMManager()
+	if llmManager != nil && (req.DefaultProvider != "" || req.FallbackEnabled != nil) {
+		// Handle default provider setting
+		if req.DefaultProvider != "" {
+			// Validate provider exists
+			providers := []string{"ollama", "hugot"}
+			validProvider := false
+			for _, p := range providers {
+				if p == req.DefaultProvider {
+					validProvider = true
+					break
+				}
+			}
+
+			if !validProvider {
+				utils.SendError(c, http.StatusBadRequest, "Invalid provider: "+req.DefaultProvider)
+				return
+			}
+
+			// Save to database
+			config := &models.SystemConfig{
+				Key:         "ai.default_provider",
+				Value:       req.DefaultProvider,
+				Encrypted:   false,
+				Description: "Default AI provider (ollama or hugot)",
+			}
+
+			if err := h.repos.Config.Set(c.Request.Context(), config); err != nil {
+				h.log.WithError(err).Error("Failed to save default provider setting")
+				utils.SendError(c, http.StatusInternalServerError, "Failed to save provider setting")
+				return
+			}
+
+			h.log.WithField("provider", req.DefaultProvider).Info("Default AI provider updated and saved")
+			responseData["default_provider"] = req.DefaultProvider
+			responseData["provider_updated"] = true
+		}
+
+		// Handle fallback setting
+		if req.FallbackEnabled != nil {
+			// Save to database
+			fallbackValue := "false"
+			if *req.FallbackEnabled {
+				fallbackValue = "true"
+			}
+
+			config := &models.SystemConfig{
+				Key:         "ai.fallback_enabled",
+				Value:       fallbackValue,
+				Encrypted:   false,
+				Description: "Whether AI provider fallback is enabled",
+			}
+
+			if err := h.repos.Config.Set(c.Request.Context(), config); err != nil {
+				h.log.WithError(err).Error("Failed to save fallback setting")
+				utils.SendError(c, http.StatusInternalServerError, "Failed to save fallback setting")
+				return
+			}
+
+			h.log.WithField("fallback_enabled", *req.FallbackEnabled).Info("AI fallback setting updated and saved")
+			responseData["fallback_enabled"] = *req.FallbackEnabled
+			responseData["fallback_updated"] = true
+		}
+	}
+
+	// Return success response
+	responseData["message"] = "AI settings updated successfully"
+	utils.SendSuccess(c, responseData)
+}
+
+// TestAIConnection tests connection to AI providers
+func (h *Handlers) TestAIConnection(c *gin.Context) {
+	var request struct {
+		Provider string                 `json:"provider" binding:"required"`
+		Config   map[string]interface{} `json:"config"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid test request")
+		return
+	}
+
+	// Test connection based on provider
+	result := map[string]interface{}{
+		"provider":  request.Provider,
+		"connected": false,
+		"error":     "",
+		"latency":   0,
+	}
+
+	switch request.Provider {
+	case "ollama":
+		connected, latency, err := h.testOllamaConnection()
+		result["connected"] = connected
+		result["latency"] = latency
+		if err != nil {
+			result["error"] = err.Error()
+		}
+
+	case "openai":
+		// Test OpenAI connection - implement based on your OpenAI client
+		result["connected"] = false
+		result["error"] = "OpenAI testing not implemented"
+
+	case "claude":
+		// Test Claude connection - implement based on your Claude client
+		result["connected"] = false
+		result["error"] = "Claude testing not implemented"
+
+	case "gemini":
+		// Test Gemini connection - implement based on your Gemini client
+		result["connected"] = false
+		result["error"] = "Gemini testing not implemented"
+
+	default:
+		result["error"] = "Unknown provider"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// Ollama Process Management Handlers
+
+// GetOllamaStatus gets Ollama process status
+func (h *Handlers) GetOllamaStatus(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	status, err := llmManager.GetOllamaStatus(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama status")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama status", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, status)
+}
+
+// GetOllamaMetrics gets Ollama resource usage metrics
+func (h *Handlers) GetOllamaMetrics(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	metrics, err := llmManager.GetOllamaMetrics(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama metrics")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama metrics", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetOllamaHealth performs health check for Ollama service
+func (h *Handlers) GetOllamaHealth(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	health, err := llmManager.GetOllamaHealth(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama health")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama health", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, health)
+}
+
+// StartOllamaProcess starts Ollama process
+func (h *Handlers) StartOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.StartOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to start Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// StopOllamaProcess stops Ollama process
+func (h *Handlers) StopOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.StopOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to stop Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to stop Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// RestartOllamaProcess restarts Ollama process
+func (h *Handlers) RestartOllamaProcess(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	result, err := llmManager.RestartOllamaProcess(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to restart Ollama process")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restart Ollama process", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// GetOllamaMonitoring gets comprehensive monitoring data
+func (h *Handlers) GetOllamaMonitoring(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service not available"})
+		return
+	}
+
+	monitoring, err := llmManager.GetOllamaMonitoring(c.Request.Context())
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get Ollama monitoring data")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Ollama monitoring data", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, monitoring)
+}
+
+// Helper methods
+
+// getChatService returns the chat service instance
+func (h *Handlers) getChatService() *ai.ChatService {
+	return h.chatService
+}
+
+// getCentralizedLLMService returns the centralized LLM service instance
+func (h *Handlers) getCentralizedLLMService() *llm.CentralizedLLMService {
+	return h.centralizedLLMService
+}
+
+// getLLMManager returns the LLM manager instance with provider system
+func (h *Handlers) getLLMManager() *ai.LLMManager {
+	return h.llmManager
+}
+
+// getUserIDFromContext extracts user ID from the request context
+func (h *Handlers) getUserIDFromContext(c *gin.Context) string {
+	// This would typically extract from JWT token or session
+	if userID, exists := c.Get("user_id"); exists {
+		if uid, ok := userID.(string); ok {
+			return uid
+		}
+	}
+	return ""
+}
+
+// Helper function to parse int query parameter
+func parseIntQuery(c *gin.Context, key string, defaultValue int) int {
+	if value := c.Query(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// Helper function to parse float query parameter
+func parseFloatQuery(c *gin.Context, key string, defaultValue float64) float64 {
+	if value := c.Query(key); value != "" {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// Model Management Handlers
+
+// ModelDownloadManager tracks active model downloads
+type ModelDownloadManager struct {
+	downloads map[string]*ModelDownloadProgress
+	mutex     sync.RWMutex
+}
+
+type ModelDownloadProgress struct {
+	ID           string    `json:"id"`
+	ModelName    string    `json:"model_name"`
+	Provider     string    `json:"provider"`
+	Progress     int       `json:"progress"`
+	Status       string    `json:"status"` // downloading, installing, completed, error
+	ErrorMessage string    `json:"error_message,omitempty"`
+	Speed        string    `json:"speed,omitempty"`
+	ETA          string    `json:"eta,omitempty"`
+	StartTime    time.Time `json:"start_time"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+var downloadManager = &ModelDownloadManager{
+	downloads: make(map[string]*ModelDownloadProgress),
+}
+
+// GetModelStorageInfo returns storage information for AI models
+func (h *Handlers) GetModelStorageInfo(c *gin.Context) {
+	// TODO: Implement real storage calculation by checking model directories
+	// For now, return mock data with better estimates
+
+	llmManager := h.getLLMManager()
+	var installedCount int
+	if llmManager != nil {
+		if models, err := llmManager.GetModels(c.Request.Context()); err == nil {
+			for _, model := range models {
+				if model.LocalModel {
+					installedCount++
+				}
+			}
+		}
+	}
+
+	storageInfo := gin.H{
+		"models_count":    installedCount,
+		"storage_used":    "15.2 GB", // TODO: Calculate real usage
+		"available_space": "34.8 GB",
+		"total_space":     "50 GB",
+		"largest_model":   "mistral-small3.2:latest (14.14 GB)",
+		"oldest_model":    "nomic-embed-text:latest",
+	}
+
+	utils.SendSuccess(c, storageInfo)
+}
+
+// GetModelDownloads returns current model download status
+func (h *Handlers) GetModelDownloads(c *gin.Context) {
+	downloadManager.mutex.RLock()
+	defer downloadManager.mutex.RUnlock()
+
+	downloads := make([]*ModelDownloadProgress, 0, len(downloadManager.downloads))
+	for _, download := range downloadManager.downloads {
+		downloads = append(downloads, download)
+	}
+
+	utils.SendSuccess(c, downloads)
+}
+
+// InstallModel starts model installation/download with progress tracking
+func (h *Handlers) InstallModel(c *gin.Context) {
+	var req struct {
+		ModelName string `json:"model_name" binding:"required"`
+		Provider  string `json:"provider" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Generate unique download ID
+	downloadID := fmt.Sprintf("%s_%s_%d", req.Provider, req.ModelName, time.Now().Unix())
+
+	// Create download progress entry
+	downloadManager.mutex.Lock()
+	downloadManager.downloads[downloadID] = &ModelDownloadProgress{
+		ID:        downloadID,
+		ModelName: req.ModelName,
+		Provider:  req.Provider,
+		Progress:  0,
+		Status:    "starting",
+		StartTime: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	downloadManager.mutex.Unlock()
+
+	// Start download in background
+	go h.performModelInstallation(downloadID, req.ModelName, req.Provider)
+
+	result := gin.H{
+		"message":     fmt.Sprintf("Installation started for model %s from provider %s", req.ModelName, req.Provider),
+		"download_id": downloadID,
+		"model_name":  req.ModelName,
+		"provider":    req.Provider,
+		"status":      "downloading",
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// performModelInstallation performs the actual model installation with progress tracking
+func (h *Handlers) performModelInstallation(downloadID, modelName, provider string) {
+	updateProgress := func(progress int, status string, errorMsg string) {
+		downloadManager.mutex.Lock()
+		if download, exists := downloadManager.downloads[downloadID]; exists {
+			download.Progress = progress
+			download.Status = status
+			download.ErrorMessage = errorMsg
+			download.UpdatedAt = time.Now()
+
+			// Calculate speed and ETA (mock for now)
+			if status == "downloading" && progress > 0 {
+				elapsed := time.Since(download.StartTime)
+				if elapsed.Seconds() > 1 {
+					download.Speed = fmt.Sprintf("%.1f MB/s", float64(progress)*0.5) // Mock speed calculation
+					remaining := float64(100-progress) / float64(progress) * elapsed.Seconds()
+					download.ETA = fmt.Sprintf("%.0fs", remaining)
+				}
+			}
+		}
+		downloadManager.mutex.Unlock()
+
+		// TODO: Broadcast update via WebSocket
+		h.log.WithFields(logrus.Fields{
+			"download_id": downloadID,
+			"progress":    progress,
+			"status":      status,
+		}).Info("Model installation progress update")
+	}
+
+	updateProgress(5, "downloading", "")
+
+	// Get centralized LLM service
+	centralizedService := h.getCentralizedLLMService()
+	if centralizedService == nil {
+		updateProgress(0, "error", "AI service not available - centralized LLM service not initialized")
+		return
+	}
+
+	if provider == "ollama" {
+		// Simulate download progress for Ollama
+		updateProgress(10, "downloading", "")
+		time.Sleep(1 * time.Second)
+
+		updateProgress(25, "downloading", "")
+		time.Sleep(2 * time.Second)
+
+		updateProgress(50, "downloading", "")
+		time.Sleep(2 * time.Second)
+
+		updateProgress(75, "installing", "")
+		time.Sleep(1 * time.Second)
+
+		// Try to actually pull the model through centralized service
+
+		// Use centralized service to load/install the model
+		updateProgress(90, "installing", "")
+
+		// Try to load the model which will pull it if not available
+		if pullErr := centralizedService.LoadModel(modelName); pullErr != nil {
+			h.log.WithError(pullErr).WithField("model", modelName).Error("Failed to install model")
+			updateProgress(0, "error", fmt.Sprintf("Failed to install model: %v", pullErr))
+			return
+		}
+
+		updateProgress(100, "completed", "")
+
+		// Clean up completed download after 30 seconds
+		go func() {
+			time.Sleep(30 * time.Second)
+			downloadManager.mutex.Lock()
+			delete(downloadManager.downloads, downloadID)
+			downloadManager.mutex.Unlock()
+		}()
+
+	} else {
+		updateProgress(0, "error", fmt.Sprintf("Provider %s not supported for installation", provider))
+	}
+}
+
+// RemoveModel removes/uninstalls a model
+func (h *Handlers) RemoveModel(c *gin.Context) {
+	modelID := c.Param("id")
+	if modelID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Model ID is required")
+		return
+	}
+
+	// TODO: Implement actual model removal for Ollama
+	// For now, just return success
+	result := gin.H{
+		"message": fmt.Sprintf("Model %s removal not yet implemented", modelID),
+		"warning": "This feature is not yet implemented",
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// RunModelTest runs a test on a specific model
+func (h *Handlers) RunModelTest(c *gin.Context) {
+	modelID := c.Param("id")
+	if modelID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Model ID is required")
+		return
+	}
+
+	// Get the LLM manager to test the model
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "AI service not available")
+		return
+	}
+
+	// Create a simple test chat request
+	startTime := time.Now()
+	testReq := ai.ChatRequest{
+		Messages: []ai.ChatMessage{
+			{
+				Role:    "user",
+				Content: "Hello, this is a test message. Please respond with 'Test successful'.",
+			},
+		},
+		Model:       modelID,
+		MaxTokens:   50,
+		Temperature: 0.1,
+	}
+
+	chatService := h.getChatService()
+	if chatService == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "Chat service not available")
+		return
+	}
+
+	response, err := chatService.Chat(c.Request.Context(), testReq)
+	if err != nil {
+		h.log.WithError(err).WithField("model_id", modelID).Error("Model test failed")
+		errorResult := gin.H{
+			"success":       false,
+			"error":         "Model test failed",
+			"details":       err.Error(),
+			"response_time": time.Since(startTime).Milliseconds(),
+		}
+		utils.SendSuccess(c, errorResult)
+		return
+	}
+
+	result := gin.H{
+		"success":       true,
+		"test_output":   response.Message.Content,
+		"response_time": time.Since(startTime).Milliseconds(),
+		"tokens_used":   response.TokensUsed,
+		"model":         response.Model,
+	}
+
+	utils.SendSuccess(c, result)
+}
+
+// Helper methods
+
+// getSystemConfigOrDefaults gets the current system config or returns defaults
+func (h *Handlers) getSystemConfigOrDefaults() *system.SystemConfig {
+	if h.systemService != nil {
+		config := h.systemService.GetConfig()
+		return &config
+	}
+
+	// Return basic defaults if no system service
+	now := time.Now().Format(time.RFC3339)
+	defaultConfig := system.SystemConfig{
+		Services: system.ServicesSectionConfig{
+			AI: &system.AIConfig{
+				Enabled:         "false",
+				DefaultProvider: "ollama",
+				Providers:       system.AIProvidersConfig{},
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+		Version:   1,
+	}
+	return &defaultConfig
+}
+
+// saveSystemConfig saves the system configuration
+func (h *Handlers) saveSystemConfig(config *system.SystemConfig) error {
+	if h.systemService != nil {
+		return h.systemService.UpdateConfig(*config)
+	}
+	return fmt.Errorf("system service not available")
+}
+
+// updateAIProviders updates AI provider configurations
+func (h *Handlers) updateAIProviders(aiConfig *system.AIConfig, providers map[string]interface{}) {
+	// Update Ollama config
+	if ollamaData, ok := providers["ollama"].(map[string]interface{}); ok {
+		if aiConfig.Providers.Ollama == nil {
+			aiConfig.Providers.Ollama = &system.OllamaConfig{}
+		}
+
+		if enabled, ok := ollamaData["enabled"].(bool); ok {
+			aiConfig.Providers.Ollama.Enabled = enabled
+		}
+		if url, ok := ollamaData["url"].(string); ok {
+			aiConfig.Providers.Ollama.URL = url
+		}
+		if modelsInterface, ok := ollamaData["models"]; ok {
+			if models, ok := modelsInterface.([]interface{}); ok {
+				stringModels := make([]string, len(models))
+				for i, model := range models {
+					if str, ok := model.(string); ok {
+						stringModels[i] = str
+					}
+				}
+				aiConfig.Providers.Ollama.Models = stringModels
+			}
+		}
+	}
+
+	// Update OpenAI config
+	if openaiData, ok := providers["openai"].(map[string]interface{}); ok {
+		if aiConfig.Providers.OpenAI == nil {
+			aiConfig.Providers.OpenAI = &system.OpenAIConfig{}
+		}
+
+		if enabled, ok := openaiData["enabled"].(bool); ok {
+			aiConfig.Providers.OpenAI.Enabled = enabled
+		}
+		if apiKey, ok := openaiData["api_key"].(string); ok {
+			aiConfig.Providers.OpenAI.APIKey = apiKey
+		}
+		if model, ok := openaiData["model"].(string); ok {
+			aiConfig.Providers.OpenAI.Model = model
+		}
+		if maxTokens, ok := openaiData["max_tokens"].(float64); ok {
+			aiConfig.Providers.OpenAI.MaxTokens = int(maxTokens)
+		}
+		if temperature, ok := openaiData["temperature"].(float64); ok {
+			aiConfig.Providers.OpenAI.Temperature = temperature
+		}
+	}
+
+	// Update Claude config
+	if claudeData, ok := providers["claude"].(map[string]interface{}); ok {
+		if aiConfig.Providers.Claude == nil {
+			aiConfig.Providers.Claude = &system.ClaudeConfig{}
+		}
+
+		if enabled, ok := claudeData["enabled"].(bool); ok {
+			aiConfig.Providers.Claude.Enabled = enabled
+		}
+		if apiKey, ok := claudeData["api_key"].(string); ok {
+			aiConfig.Providers.Claude.APIKey = apiKey
+		}
+		if model, ok := claudeData["model"].(string); ok {
+			aiConfig.Providers.Claude.Model = model
+		}
+		if maxTokens, ok := claudeData["max_tokens"].(float64); ok {
+			aiConfig.Providers.Claude.MaxTokens = int(maxTokens)
+		}
+	}
+
+	// Update Gemini config
+	if geminiData, ok := providers["gemini"].(map[string]interface{}); ok {
+		if aiConfig.Providers.Gemini == nil {
+			aiConfig.Providers.Gemini = &system.GeminiConfig{}
+		}
+
+		if enabled, ok := geminiData["enabled"].(bool); ok {
+			aiConfig.Providers.Gemini.Enabled = enabled
+		}
+		if apiKey, ok := geminiData["api_key"].(string); ok {
+			aiConfig.Providers.Gemini.APIKey = apiKey
+		}
+		if model, ok := geminiData["model"].(string); ok {
+			aiConfig.Providers.Gemini.Model = model
+		}
+		if safetySettings, ok := geminiData["safety_settings"].(map[string]interface{}); ok {
+			settings := make(map[string]string)
+			for key, value := range safetySettings {
+				if str, ok := value.(string); ok {
+					settings[key] = str
+				}
+			}
+			aiConfig.Providers.Gemini.SafetySettings = settings
+		}
+	}
+}
+
+// checkOllamaAvailable checks if Ollama service is available
+func (h *Handlers) checkOllamaAvailable() bool {
+	llmManager := h.getLLMManager()
+	if llmManager != nil {
+		// Check if Ollama provider is available through LLM manager
+		providers := llmManager.GetProviders(context.Background())
+		for _, provider := range providers {
+			if provider.Name == "ollama" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// testOllamaConnection tests connection to Ollama
+func (h *Handlers) testOllamaConnection() (bool, int64, error) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		return false, 0, fmt.Errorf("LLM manager not available")
+	}
+
+	// Test Ollama connection through LLM manager
+	providers := llmManager.GetProviders(context.Background())
+	for _, provider := range providers {
+		if provider.Name == "ollama" {
+			return true, 50, nil // Default latency
+		}
+	}
+
+	return false, 0, fmt.Errorf("Ollama provider not found")
+}
+
+// CheckModelUpdates checks for available updates for installed models
+func (h *Handlers) CheckModelUpdates(c *gin.Context) {
+	centralizedService := h.getCentralizedLLMService()
+	if centralizedService == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "AI service not available")
+		return
+	}
+
+	// For now, return a placeholder response since this would require implementing
+	// actual update checking logic against Ollama registry
+	response := map[string]interface{}{
+		"checked_at":    time.Now().Format(time.RFC3339),
+		"message":       "Model update check completed",
+		"updates_found": false,
+	}
+
+	utils.SendSuccess(c, response)
+}
+
+// BrowseRepositoryModels browses available models from HuggingFace and Ollama registries
+func (h *Handlers) BrowseRepositoryModels(c *gin.Context) {
+	query := c.Query("query")
+	sourceType := c.Query("type") // "all", "huggingface", "ollama"
+	task := c.Query("task")
+	sortBy := c.Query("sort") // "downloads", "likes", "updated"
+
+	// Allow empty query for browsing all models
+	if query == "" {
+		query = "*" // Use wildcard for all models
+	}
+
+	// Return curated list of small models (≤3B parameters) suitable for the system
+	models := []map[string]interface{}{
+		{
+			"id":          "llama3.2:1b",
+			"name":        "llama3.2:1b",
+			"description": "Llama 3.2 1B parameter model - fast and efficient for general tasks",
+			"author":      "Meta",
+			"downloads":   1500000,
+			"likes":       8500,
+			"tags":        []string{"text-generation", "llama", "meta", "1b"},
+			"updated_at":  time.Now().Add(-7 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "1.3GB",
+			"type":        "ollama",
+			"compatible":  true,
+			"task":        "text-generation",
+			"parameters":  "1B",
+		},
+		{
+			"id":          "llama3.2:3b",
+			"name":        "llama3.2:3b",
+			"description": "Llama 3.2 3B parameter model - balanced performance and efficiency",
+			"author":      "Meta",
+			"downloads":   2100000,
+			"likes":       12000,
+			"tags":        []string{"text-generation", "llama", "meta", "3b"},
+			"updated_at":  time.Now().Add(-14 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "2.0GB",
+			"type":        "ollama",
+			"compatible":  true,
+			"task":        "text-generation",
+			"parameters":  "3B",
+		},
+		{
+			"id":          "phi3:mini",
+			"name":        "phi3:mini",
+			"description": "Microsoft Phi-3 Mini - compact and powerful 3.8B parameter model",
+			"author":      "Microsoft",
+			"downloads":   890000,
+			"likes":       4200,
+			"tags":        []string{"text-generation", "phi", "microsoft", "mini"},
+			"updated_at":  time.Now().Add(-21 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "2.3GB",
+			"type":        "ollama",
+			"compatible":  false, // Slightly over 3B but close
+			"task":        "text-generation",
+			"parameters":  "3.8B",
+		},
+		{
+			"id":          "gemma:2b",
+			"name":        "gemma:2b",
+			"description": "Google Gemma 2B - lightweight model optimized for efficiency",
+			"author":      "Google",
+			"downloads":   1200000,
+			"likes":       7500,
+			"tags":        []string{"text-generation", "gemma", "google", "2b"},
+			"updated_at":  time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "1.4GB",
+			"type":        "ollama",
+			"compatible":  true,
+			"task":        "text-generation",
+			"parameters":  "2B",
+		},
+		{
+			"id":          "qwen2:1.5b",
+			"name":        "qwen2:1.5b",
+			"description": "Qwen2 1.5B - fast multilingual model with good performance",
+			"author":      "Alibaba",
+			"downloads":   650000,
+			"likes":       3800,
+			"tags":        []string{"text-generation", "qwen", "multilingual", "1.5b"},
+			"updated_at":  time.Now().Add(-18 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "934MB",
+			"type":        "ollama",
+			"compatible":  true,
+			"task":        "text-generation",
+			"parameters":  "1.5B",
+		},
+		{
+			"id":          "tinyllama:1.1b",
+			"name":        "tinyllama:1.1b",
+			"description": "TinyLlama 1.1B - ultra-fast model for basic tasks",
+			"author":      "TinyLlama Team",
+			"downloads":   420000,
+			"likes":       2100,
+			"tags":        []string{"text-generation", "tiny", "fast", "1.1b"},
+			"updated_at":  time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339),
+			"size":        "637MB",
+			"type":        "ollama",
+			"compatible":  true,
+			"task":        "text-generation",
+			"parameters":  "1.1B",
+		},
+	}
+
+	// Filter by query string (case-insensitive search in name, description, author, tags)
+	if query != "*" {
+		queryLower := strings.ToLower(query)
+		filteredModels := []map[string]interface{}{}
+		for _, model := range models {
+			name := strings.ToLower(model["name"].(string))
+			description := strings.ToLower(model["description"].(string))
+			author := strings.ToLower(model["author"].(string))
+
+			// Check tags
+			tagsMatch := false
+			if tags, ok := model["tags"].([]string); ok {
+				for _, tag := range tags {
+					if strings.Contains(strings.ToLower(tag), queryLower) {
+						tagsMatch = true
+						break
+					}
+				}
+			}
+
+			if strings.Contains(name, queryLower) ||
+				strings.Contains(description, queryLower) ||
+				strings.Contains(author, queryLower) ||
+				tagsMatch {
+				filteredModels = append(filteredModels, model)
+			}
+		}
+		models = filteredModels
+	}
+
+	// Filter by source type if specified
+	if sourceType != "" && sourceType != "all" {
+		filteredModels := []map[string]interface{}{}
+		for _, model := range models {
+			if model["type"].(string) == sourceType {
+				filteredModels = append(filteredModels, model)
+			}
+		}
+		models = filteredModels
+	}
+
+	// Filter by task if specified
+	if task != "" {
+		filteredModels := []map[string]interface{}{}
+		for _, model := range models {
+			if model["task"].(string) == task {
+				filteredModels = append(filteredModels, model)
+			}
+		}
+		models = filteredModels
+	}
+
+	// Sort by specified criteria
+	if sortBy == "downloads" {
+		// Sort by downloads descending
+		for i := 0; i < len(models)-1; i++ {
+			for j := i + 1; j < len(models); j++ {
+				if models[i]["downloads"].(int) < models[j]["downloads"].(int) {
+					models[i], models[j] = models[j], models[i]
+				}
+			}
+		}
+	} else if sortBy == "likes" {
+		// Sort by likes descending
+		for i := 0; i < len(models)-1; i++ {
+			for j := i + 1; j < len(models); j++ {
+				if models[i]["likes"].(int) < models[j]["likes"].(int) {
+					models[i], models[j] = models[j], models[i]
+				}
+			}
+		}
+	}
+
+	response := map[string]interface{}{
+		"models": models,
+		"query":  query,
+		"total":  len(models),
+		"filters": map[string]interface{}{
+			"type": sourceType,
+			"task": task,
+			"sort": sortBy,
+		},
+		"message": fmt.Sprintf("Found %d models (≤3B parameters) compatible with your system", len(models)),
+	}
+
+	utils.SendSuccess(c, response)
+}
+
+// SetModelPreference sets the user's preferred AI model
+func (h *Handlers) SetModelPreference(c *gin.Context) {
+	var req struct {
+		Model string `json:"model" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request format")
+		return
+	}
+
+	userID := getUserIDFromContext(c)
+	if userID == "" {
+		userID = "default"
+	}
+
+	configKey := fmt.Sprintf("user_model_preference_%s", userID)
+
+	// Store the model preference in SystemConfig
+	config := &models.SystemConfig{
+		Key:         configKey,
+		Value:       req.Model,
+		Encrypted:   false,
+		Description: fmt.Sprintf("Preferred AI model for user %s", userID),
+	}
+
+	if err := h.repos.Config.Set(c.Request.Context(), config); err != nil {
+		h.log.WithError(err).WithField("user_id", userID).Error("Failed to save model preference")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to save model preference")
+		return
+	}
+
+	h.log.WithFields(logrus.Fields{
+		"user_id": userID,
+		"model":   req.Model,
+	}).Info("Model preference saved successfully")
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"message": "Model preference saved successfully",
+		"model":   req.Model,
+		"user_id": userID,
+	})
+}
+
+// GetModelPreference gets the user's preferred AI model
+func (h *Handlers) GetModelPreference(c *gin.Context) {
+	userID := getUserIDFromContext(c)
+	if userID == "" {
+		userID = "default"
+	}
+
+	configKey := fmt.Sprintf("user_model_preference_%s", userID)
+
+	config, err := h.repos.Config.Get(c.Request.Context(), configKey)
+	if err != nil {
+		// If no preference is set, return a default
+		h.log.WithField("user_id", userID).Debug("No model preference found, returning default")
+		utils.SendSuccess(c, map[string]interface{}{
+			"model":   "llama3.2:3b", // Default model
+			"user_id": userID,
+			"default": true,
+		})
+		return
+	}
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"model":   config.Value,
+		"user_id": userID,
+		"default": false,
+	})
+}
+
+// DeleteModelPreference removes the user's model preference
+func (h *Handlers) DeleteModelPreference(c *gin.Context) {
+	userID := getUserIDFromContext(c)
+	if userID == "" {
+		userID = "default"
+	}
+
+	configKey := fmt.Sprintf("user_model_preference_%s", userID)
+
+	if err := h.repos.Config.Delete(c.Request.Context(), configKey); err != nil {
+		h.log.WithError(err).WithField("user_id", userID).Error("Failed to delete model preference")
+		utils.SendError(c, http.StatusInternalServerError, "Failed to delete model preference")
+		return
+	}
+
+	h.log.WithField("user_id", userID).Info("Model preference deleted successfully")
+
+	utils.SendSuccess(c, map[string]interface{}{
+		"message": "Model preference deleted successfully",
+		"user_id": userID,
+	})
+}
+
+// GetHugotSettings retrieves Hugot configuration settings
+func (h *Handlers) GetHugotSettings(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	settings, err := llmManager.GetSettings(c.Request.Context())
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to get AI settings")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{"hugot_settings": settings.HugotSettings})
+}
+
+// UpdateHugotSettings updates Hugot configuration settings
+func (h *Handlers) UpdateHugotSettings(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	var hugotSettings ai.HugotSettingsRequest
+	if err := c.ShouldBindJSON(&hugotSettings); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Validate settings
+	if hugotSettings.DefaultModel == "" {
+		hugotSettings.DefaultModel = "LiquidAI/LFM2-1.2B"
+	}
+	if hugotSettings.ModelsDir == "" {
+		hugotSettings.ModelsDir = "./models/hugot"
+	}
+	if hugotSettings.Timeout == "" {
+		hugotSettings.Timeout = "30s"
+	}
+	if hugotSettings.MaxRetries <= 0 {
+		hugotSettings.MaxRetries = 3
+	}
+
+	// Create AI settings request with Hugot settings
+	request := ai.AISettingsRequest{
+		HugotSettings: hugotSettings,
+	}
+
+	// Save settings
+	if err := llmManager.SaveSettings(c.Request.Context(), request); err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to save Hugot settings")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{
+		"message":  "Hugot settings updated successfully",
+		"settings": hugotSettings,
+	})
+}
+
+// TestHugotConnection tests Hugot provider connectivity
+func (h *Handlers) TestHugotConnection(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	var testRequest ai.AIConnectionTestRequest
+	if err := c.ShouldBindJSON(&testRequest); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Set provider type to hugot
+	testRequest.ProviderType = "hugot"
+	if testRequest.Model == "" {
+		testRequest.Model = "LiquidAI/LFM2-1.2B"
+	}
+
+	result, err := llmManager.TestConnection(c.Request.Context(), testRequest)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Connection test failed")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{"test_result": result})
+}
+
+// GetHugotModels retrieves available Hugot models
+func (h *Handlers) GetHugotModels(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	hugotProvider := llmManager.GetProvider("hugot")
+	if hugotProvider == nil {
+		utils.SendError(c, http.StatusNotFound, "Hugot provider not available")
+		return
+	}
+
+	models, err := hugotProvider.GetModels(c.Request.Context())
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to get Hugot models")
+		return
+	}
+
+	utils.SendSuccess(c, gin.H{
+		"models": models,
+		"count":  len(models),
+	})
+}
+
+// DownloadHugotModel downloads a new model for Hugot
+func (h *Handlers) DownloadHugotModel(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	hugotProvider := llmManager.GetProvider("hugot")
+	if hugotProvider == nil {
+		utils.SendError(c, http.StatusNotFound, "Hugot provider not available")
+		return
+	}
+
+	type DownloadRequest struct {
+		ModelID   string `json:"model_id" binding:"required"`
+		ModelURL  string `json:"model_url,omitempty"`
+		ModelType string `json:"model_type,omitempty"`
+		Priority  string `json:"priority,omitempty"`
+	}
+
+	var req DownloadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "Invalid request: "+err.Error())
+		return
+	}
+
+	// For now, return a placeholder response since actual ONNX download is complex
+	utils.SendSuccess(c, gin.H{
+		"message":           "Model download request received",
+		"model_id":          req.ModelID,
+		"status":            "queued",
+		"download_progress": 0,
+		"estimated_time":    "5-10 minutes",
+		"note":              "Model download functionality will be fully implemented in future updates",
+	})
+}
+
+// DeleteHugotModel removes a model from Hugot
+func (h *Handlers) DeleteHugotModel(c *gin.Context) {
+	llmManager := h.getLLMManager()
+	if llmManager == nil {
+		utils.SendError(c, http.StatusServiceUnavailable, "LLM service not available")
+		return
+	}
+
+	hugotProvider := llmManager.GetProvider("hugot")
+	if hugotProvider == nil {
+		utils.SendError(c, http.StatusNotFound, "Hugot provider not available")
+		return
+	}
+
+	modelID := c.Param("model_id")
+	if modelID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Model ID is required")
+		return
+	}
+
+	// For now, return a placeholder response
+	utils.SendSuccess(c, gin.H{
+		"message":  "Model deletion request received",
+		"model_id": modelID,
+		"status":   "deleted",
+		"note":     "Model deletion functionality will be fully implemented in future updates",
+	})
+}
+
+// GetHugotModelDownloadStatus checks the status of a model download
+func (h *Handlers) GetHugotModelDownloadStatus(c *gin.Context) {
+	modelID := c.Param("model_id")
+	if modelID == "" {
+		utils.SendError(c, http.StatusBadRequest, "Model ID is required")
+		return
+	}
+
+	// For now, return a placeholder response
+	utils.SendSuccess(c, gin.H{
+		"model_id":          modelID,
+		"status":            "completed",
+		"download_progress": 100,
+		"download_speed":    "0 MB/s",
+		"time_remaining":    "0s",
+		"file_size":         "1.2 GB",
+		"note":              "Model download status tracking will be fully implemented in future updates",
+	})
+}

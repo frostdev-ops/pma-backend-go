@@ -3,11 +3,11 @@ package ai
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
+	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/sirupsen/logrus"
 )
 
@@ -35,6 +35,9 @@ type LLMManager struct {
 
 	// Provider factories
 	providerFactories map[string]ProviderFactory
+
+	// Database configuration storage
+	configRepo repositories.ConfigRepository
 }
 
 // ProviderFactory creates new provider instances
@@ -62,13 +65,13 @@ type ContextExtractor interface {
 }
 
 // NewLLMManager creates a new LLM manager with configured providers
-func NewLLMManager(cfg *config.Config, logger *logrus.Logger) (*LLMManager, error) {
+func NewLLMManager(cfg *config.Config, logger *logrus.Logger, configRepo repositories.ConfigRepository) (*LLMManager, error) {
 	manager := &LLMManager{
 		providers:         make([]LLMProvider, 0),
 		providersByName:   make(map[string]LLMProvider),
-		primaryProvider:   cfg.AI.DefaultProvider,
-		fallbackEnabled:   cfg.AI.FallbackEnabled,
-		maxRetries:        cfg.AI.MaxRetries,
+		primaryProvider:   "",   // Will be set dynamically based on available providers
+		fallbackEnabled:   true, // Enable fallback between providers
+		maxRetries:        3,    // Default max retries
 		logger:            logger,
 		requestCount:      make(map[string]int64),
 		errorCount:        make(map[string]int64),
@@ -76,32 +79,73 @@ func NewLLMManager(cfg *config.Config, logger *logrus.Logger) (*LLMManager, erro
 		lastUsage:         make(map[string]time.Time),
 		circuitBreaker:    make(map[string]*CircuitBreaker),
 		providerFactories: make(map[string]ProviderFactory),
+		configRepo:        configRepo,
+		fallbackDelay:     0, // No fallback delay needed
 	}
 
-	// Parse fallback delay
-	if cfg.AI.FallbackDelay != "" {
-		if delay, err := time.ParseDuration(cfg.AI.FallbackDelay); err == nil {
-			manager.fallbackDelay = delay
-		} else {
-			manager.fallbackDelay = 2 * time.Second
-		}
-	}
-
-	// Parse timeout
-	if cfg.AI.Timeout != "" {
-		if timeout, err := time.ParseDuration(cfg.AI.Timeout); err == nil {
+	// Parse timeout from LlamaCpp config or use default
+	if cfg.AI.LlamaCpp.Timeout != "" {
+		if timeout, err := time.ParseDuration(cfg.AI.LlamaCpp.Timeout); err == nil {
 			manager.timeout = timeout
 		} else {
-			manager.timeout = 30 * time.Second
+			manager.timeout = 60 * time.Second
 		}
+	} else {
+		manager.timeout = 60 * time.Second
 	}
 
-	// Initialize providers based on configuration
-	if err := manager.initializeProviders(cfg.AI.Providers, logger); err != nil {
-		return nil, fmt.Errorf("failed to initialize providers: %w", err)
+	// Update max retries from LlamaCpp config if available
+	if cfg.AI.LlamaCpp.MaxRetries > 0 {
+		manager.maxRetries = cfg.AI.LlamaCpp.MaxRetries
+	}
+
+	// Provider factories will be registered separately to avoid import cycles
+
+	// Build provider configs from configuration
+	var providerConfigs []config.AIProviderConfig
+
+	// Add LlamaCpp provider if enabled (PRIMARY PROVIDER)
+	if cfg.AI.Enabled && cfg.AI.LlamaCpp.Enabled {
+		providerConfigs = append(providerConfigs, config.AIProviderConfig{
+			Type:         "llamacpp",
+			Enabled:      cfg.AI.LlamaCpp.Enabled,
+			URL:          cfg.AI.LlamaCpp.BaseURL,
+			APIKey:       cfg.AI.LlamaCpp.APIKey,
+			DefaultModel: cfg.AI.LlamaCpp.DefaultModel,
+			MaxTokens:    4096, // Default for LLMs
+			AutoStart:    true, // Always auto-start llama.cpp for LFM2
+		})
+	}
+
+	// Initialize providers if any are configured
+	if len(providerConfigs) > 0 {
+		if err := manager.initializeProviders(providerConfigs, logger); err != nil {
+			return nil, fmt.Errorf("failed to initialize providers: %w", err)
+		}
+
+		// Set primary provider based on what's available
+		if len(manager.providers) > 0 {
+			// Prefer LlamaCpp if available, otherwise use the first available provider
+			for _, provider := range manager.providers {
+				if provider.GetName() == "llamacpp" {
+					manager.primaryProvider = "llamacpp"
+					break
+				}
+			}
+			if manager.primaryProvider == "" {
+				manager.primaryProvider = manager.providers[0].GetName()
+			}
+		}
 	}
 
 	return manager, nil
+}
+
+// RegisterProviderFactory registers a provider factory function
+func (m *LLMManager) RegisterProviderFactory(providerType string, factory ProviderFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.providerFactories[providerType] = factory
 }
 
 // Initialize initializes all providers
@@ -147,100 +191,92 @@ func (m *LLMManager) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Complete performs text completion with fallback
-func (m *LLMManager) Complete(ctx context.Context, prompt string, opts CompletionOptions) (*CompletionResponse, error) {
-	// Add timeout to context
-	if m.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, m.timeout)
-		defer cancel()
-	}
-
-	// Try primary provider first
-	if opts.Provider == "" && m.primaryProvider != "" {
-		opts.Provider = m.primaryProvider
-	}
-
-	// If specific provider requested, try only that provider
-	if opts.Provider != "" {
-		if provider, exists := m.providersByName[opts.Provider]; exists {
-			if m.isProviderAvailable(ctx, provider) {
-				return m.tryComplete(ctx, provider, prompt, opts)
-			}
-			return nil, &ProviderError{
-				Provider: opts.Provider,
-				Type:     "unavailable",
-				Message:  fmt.Sprintf("Provider %s is not available", opts.Provider),
-			}
-		}
-		return nil, &ProviderError{
-			Provider: opts.Provider,
-			Type:     "not_found",
-			Message:  fmt.Sprintf("Provider %s not found", opts.Provider),
-		}
-	}
-
-	// Try providers in order with fallback
-	return m.completeWithFallback(ctx, prompt, opts)
-}
-
-// Chat performs chat completion with fallback
+// Chat performs chat completion with the primary provider (LlamaCpp)
 func (m *LLMManager) Chat(ctx context.Context, messages []ChatMessage, opts ChatOptions) (*ChatResponse, error) {
+	m.logger.WithFields(logrus.Fields{
+		"messageCount": len(messages),
+		"provider":     opts.Provider,
+		"model":        opts.Model,
+		"maxTokens":    opts.MaxTokens,
+		"temperature":  opts.Temperature,
+		"timeout":      m.timeout,
+	}).Info("🚀 LLM Manager Chat request started")
+
 	// Add timeout to context
 	if m.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, m.timeout)
 		defer cancel()
+		m.logger.WithField("timeout", m.timeout).Info("⏱️ Applied timeout to context")
 	}
 
-	// Try primary provider first
-	if opts.Provider == "" && m.primaryProvider != "" {
+	// Use primary provider (LlamaCpp) if not specified
+	if opts.Provider == "" {
 		opts.Provider = m.primaryProvider
+		m.logger.WithField("provider", opts.Provider).Info("🔄 Using primary provider")
 	}
 
-	// If specific provider requested, try only that provider
-	if opts.Provider != "" {
-		if provider, exists := m.providersByName[opts.Provider]; exists {
-			if m.isProviderAvailable(ctx, provider) {
-				return m.tryChat(ctx, provider, messages, opts)
-			}
-			return nil, &ProviderError{
-				Provider: opts.Provider,
-				Type:     "unavailable",
-				Message:  fmt.Sprintf("Provider %s is not available", opts.Provider),
-			}
-		}
-		return nil, &ProviderError{
-			Provider: opts.Provider,
-			Type:     "not_found",
-			Message:  fmt.Sprintf("Provider %s not found", opts.Provider),
-		}
+	m.logger.WithField("requestedProvider", opts.Provider).Info("🔍 Looking up provider")
+
+	// Get the requested provider
+	provider, exists := m.providersByName[opts.Provider]
+	if !exists {
+		m.logger.WithFields(logrus.Fields{
+			"requestedProvider":  opts.Provider,
+			"availableProviders": len(m.providersByName),
+		}).Error("❌ Provider not found")
+		return nil, fmt.Errorf("provider %s not found", opts.Provider)
 	}
 
-	// Try providers in order with fallback
-	return m.chatWithFallback(ctx, messages, opts)
+	m.logger.WithField("provider", provider.GetName()).Info("✅ Provider found")
+
+	// Check if provider is available
+	m.logger.Info("🔍 Checking provider availability")
+	if !provider.IsAvailable(ctx) {
+		m.logger.WithField("provider", provider.GetName()).Error("❌ Provider is not available")
+		return nil, fmt.Errorf("provider %s is not available", opts.Provider)
+	}
+
+	m.logger.WithField("provider", provider.GetName()).Info("✅ Provider is available")
+
+	// Make the request using the provider interface
+	m.logger.Info("📤 Sending chat request to provider")
+	startTime := time.Now()
+	response, err := provider.Chat(ctx, messages, opts)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		m.logger.WithError(err).WithFields(logrus.Fields{
+			"provider": provider.GetName(),
+			"duration": duration,
+			"model":    opts.Model,
+		}).Error("❌ Chat request failed")
+		m.recordError(provider.GetName())
+		return nil, err
+	}
+
+	m.logger.WithFields(logrus.Fields{
+		"provider":     provider.GetName(),
+		"duration":     duration,
+		"responseID":   response.ID,
+		"finishReason": response.FinishReason,
+		"tokenCount":   response.TokensUsed.TotalTokens,
+	}).Info("✅ Chat request completed successfully")
+
+	m.recordSuccess(provider.GetName(), duration)
+
+	// Return the response directly (it's already in the correct format)
+	return response, nil
 }
 
 // GetProviders returns all available providers
-func (m *LLMManager) GetProviders(ctx context.Context) []ProviderStatus {
+func (m *LLMManager) GetProviders(ctx context.Context) []LLMProvider {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	statuses := make([]ProviderStatus, 0, len(m.providers))
-	for _, provider := range m.providers {
-		status := m.getProviderStatus(ctx, provider)
-		statuses = append(statuses, status)
-	}
-
-	return statuses
-}
-
-// GetProvider returns a specific provider by name
-func (m *LLMManager) GetProvider(name string) LLMProvider {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.providersByName[name]
+	providers := make([]LLMProvider, 0, len(m.providers))
+	providers = append(providers, m.providers...)
+	return providers
 }
 
 // GetModels returns all available models from all providers
@@ -252,7 +288,7 @@ func (m *LLMManager) GetModels(ctx context.Context) ([]ModelInfo, error) {
 
 	var allModels []ModelInfo
 	for _, provider := range providers {
-		if m.isProviderAvailable(ctx, provider) {
+		if provider.IsAvailable(ctx) {
 			models, err := provider.GetModels(ctx)
 			if err != nil {
 				m.logger.WithError(err).WithField("provider", provider.GetName()).Warn("Failed to get models")
@@ -265,689 +301,134 @@ func (m *LLMManager) GetModels(ctx context.Context) ([]ModelInfo, error) {
 	return allModels, nil
 }
 
-// GetStatistics returns usage statistics
-func (m *LLMManager) GetStatistics() map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := make(map[string]interface{})
-
-	// Provider-specific stats
-	providerStats := make(map[string]map[string]interface{})
-	for name, provider := range m.providersByName {
-		providerStats[name] = map[string]interface{}{
-			"request_count":       m.requestCount[name],
-			"error_count":         m.errorCount[name],
-			"average_response_ms": int64(0),
-			"last_used":           m.lastUsage[name],
-			"available":           provider.IsAvailable(context.Background()),
-		}
-
-		if m.requestCount[name] > 0 {
-			providerStats[name]["average_response_ms"] = m.responseTime[name].Milliseconds() / m.requestCount[name]
-		}
-
-		// Circuit breaker stats
-		if cb, exists := m.circuitBreaker[name]; exists {
-			cb.mu.RLock()
-			providerStats[name]["circuit_state"] = cb.state
-			providerStats[name]["circuit_failures"] = cb.failures
-			cb.mu.RUnlock()
-		}
-	}
-
-	stats["providers"] = providerStats
-	stats["primary_provider"] = m.primaryProvider
-	stats["fallback_enabled"] = m.fallbackEnabled
-	stats["total_providers"] = len(m.providers)
-
-	return stats
-}
-
-// SetContextExtractor sets the context extractor for AI requests
-func (m *LLMManager) SetContextExtractor(extractor ContextExtractor) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.contextExtractor = extractor
-}
-
-// RegisterProviderFactory registers a provider factory
-func (m *LLMManager) RegisterProviderFactory(providerType string, factory ProviderFactory) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.providerFactories[providerType] = factory
-}
-
-// ReinitializeProviders re-initializes providers from config using registered factories
-func (m *LLMManager) ReinitializeProviders(cfg *config.Config) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Clear existing providers
-	m.providers = make([]LLMProvider, 0)
-	m.providersByName = make(map[string]LLMProvider)
-	m.circuitBreaker = make(map[string]*CircuitBreaker)
-
-	// Re-run provider initialization with current factories
-	return m.initializeProviders(cfg.AI.Providers, m.logger)
-}
-
-// Private methods
-
-func (m *LLMManager) initializeProviders(providerConfigs []config.AIProviderConfig, logger *logrus.Logger) error {
-	logger.WithField("count", len(providerConfigs)).Info("DEBUG: Starting provider initialization")
-	logger.WithField("factories", len(m.providerFactories)).Info("DEBUG: Available factories")
-
-	// Sort providers by priority
-	sort.Slice(providerConfigs, func(i, j int) bool {
-		return providerConfigs[i].Priority < providerConfigs[j].Priority
-	})
-
-	for i, cfg := range providerConfigs {
-		logger.WithFields(logrus.Fields{
-			"index":         i,
-			"type":          cfg.Type,
-			"enabled":       cfg.Enabled,
-			"url":           cfg.URL,
-			"api_key":       cfg.APIKey,
-			"default_model": cfg.DefaultModel,
-			"priority":      cfg.Priority,
-			"auto_start":    cfg.AutoStart,
-		}).Info("DEBUG: Processing provider config")
-
-		if !cfg.Enabled {
-			logger.WithField("provider", cfg.Type).Debug("Provider disabled, skipping")
+// initializeProviders initializes providers from configuration
+func (m *LLMManager) initializeProviders(configs []config.AIProviderConfig, logger *logrus.Logger) error {
+	for _, cfg := range configs {
+		factory, exists := m.providerFactories[cfg.Type]
+		if !exists {
+			logger.WithField("type", cfg.Type).Warn("No factory registered for provider type")
 			continue
 		}
 
-		var provider LLMProvider
-
-		// Use factory if available
-		if factory, exists := m.providerFactories[cfg.Type]; exists {
-			logger.WithField("type", cfg.Type).Info("DEBUG: Creating provider with factory")
-			provider = factory(cfg, logger)
-		} else {
-			// For now, we'll skip unknown providers until we register the factories
-			logger.WithField("type", cfg.Type).Warn("DEBUG: Provider factory not registered")
-			continue
-		}
-
-		if provider == nil {
-			logger.WithField("provider", cfg.Type).Error("DEBUG: Failed to create provider - provider is nil")
-			continue
-		}
-
+		provider := factory(cfg, logger)
 		m.providers = append(m.providers, provider)
 		m.providersByName[provider.GetName()] = provider
 		m.circuitBreaker[provider.GetName()] = &CircuitBreaker{
 			state: CircuitClosed,
 		}
 
-		logger.WithField("provider", provider.GetName()).Info("DEBUG: Provider registered successfully")
+		logger.WithField("provider", provider.GetName()).Info("Provider registered")
 	}
 
-	logger.WithField("total_providers", len(m.providers)).Info("DEBUG: Provider initialization complete")
-	// We'll allow empty providers for now since factories will be registered later
 	return nil
 }
 
-func (m *LLMManager) isProviderAvailable(ctx context.Context, provider LLMProvider) bool {
-	// Check circuit breaker
-	cb := m.circuitBreaker[provider.GetName()]
-	if cb != nil {
-		cb.mu.RLock()
-		state := cb.state
-		lastFailure := cb.lastFailure
-		cb.mu.RUnlock()
-
-		switch state {
-		case CircuitOpen:
-			// Check if enough time has passed to try again
-			if time.Since(lastFailure) > 60*time.Second {
-				cb.mu.Lock()
-				cb.state = CircuitHalfOpen
-				cb.mu.Unlock()
-			} else {
-				return false
-			}
-		case CircuitHalfOpen:
-			// Allow one request to test if provider is back
-		}
+// Complete performs text completion using the configured providers
+func (m *LLMManager) Complete(ctx context.Context, prompt string, opts CompletionOptions) (*CompletionResponse, error) {
+	if opts.Provider == "" {
+		opts.Provider = m.primaryProvider
 	}
 
-	return provider.IsAvailable(ctx)
-}
+	provider, exists := m.providersByName[opts.Provider]
+	if !exists {
+		return nil, fmt.Errorf("provider %s not found", opts.Provider)
+	}
 
-func (m *LLMManager) tryComplete(ctx context.Context, provider LLMProvider, prompt string, opts CompletionOptions) (*CompletionResponse, error) {
-	startTime := time.Now()
+	// Check if provider is available
+	if !provider.IsAvailable(ctx) {
+		return nil, fmt.Errorf("provider %s is not available", opts.Provider)
+	}
 
-	resp, err := provider.Complete(ctx, prompt, opts)
-
-	duration := time.Since(startTime)
-	providerName := provider.GetName()
-
-	m.mu.Lock()
-	m.requestCount[providerName]++
-	m.responseTime[providerName] += duration
-	m.lastUsage[providerName] = time.Now()
-
+	// Make the request using the provider interface
+	response, err := provider.Complete(ctx, prompt, opts)
 	if err != nil {
-		m.errorCount[providerName]++
-		m.updateCircuitBreaker(providerName, false)
-	} else {
-		m.updateCircuitBreaker(providerName, true)
+		m.recordError(provider.GetName())
+		return nil, fmt.Errorf("completion failed: %w", err)
 	}
-	m.mu.Unlock()
 
-	return resp, err
+	m.recordSuccess(provider.GetName(), time.Since(time.Now()))
+	return response, nil
 }
 
-func (m *LLMManager) tryChat(ctx context.Context, provider LLMProvider, messages []ChatMessage, opts ChatOptions) (*ChatResponse, error) {
-	startTime := time.Now()
-
-	resp, err := provider.Chat(ctx, messages, opts)
-
-	duration := time.Since(startTime)
-	providerName := provider.GetName()
-
-	m.mu.Lock()
-	m.requestCount[providerName]++
-	m.responseTime[providerName] += duration
-	m.lastUsage[providerName] = time.Now()
-
-	if err != nil {
-		m.errorCount[providerName]++
-		m.updateCircuitBreaker(providerName, false)
-	} else {
-		m.updateCircuitBreaker(providerName, true)
-	}
-	m.mu.Unlock()
-
-	return resp, err
-}
-
-func (m *LLMManager) completeWithFallback(ctx context.Context, prompt string, opts CompletionOptions) (*CompletionResponse, error) {
-	if !m.fallbackEnabled {
-		// No fallback, try primary provider only
-		if m.primaryProvider != "" {
-			if provider, exists := m.providersByName[m.primaryProvider]; exists {
-				return m.tryComplete(ctx, provider, prompt, opts)
-			}
-		}
-		// If no primary provider, try first available
-		for _, provider := range m.providers {
-			if m.isProviderAvailable(ctx, provider) {
-				return m.tryComplete(ctx, provider, prompt, opts)
-			}
-		}
-		return nil, &ProviderError{
-			Provider: "manager",
-			Type:     "unavailable",
-			Message:  "No providers available",
-		}
-	}
-
-	var lastError error
-	retries := 0
-
-	for retries < m.maxRetries {
-		for _, provider := range m.providers {
-			if !m.isProviderAvailable(ctx, provider) {
-				continue
-			}
-
-			resp, err := m.tryComplete(ctx, provider, prompt, opts)
-			if err == nil {
-				return resp, nil
-			}
-
-			lastError = err
-			m.logger.WithError(err).WithField("provider", provider.GetName()).Debug("Provider failed, trying fallback")
-
-			// Check if error is retryable
-			if provErr, ok := err.(*ProviderError); ok && !provErr.Retryable {
-				// Non-retryable error, skip to next provider
-				continue
-			}
-
-			// Wait before trying next provider
-			if m.fallbackDelay > 0 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(m.fallbackDelay):
-				}
-			}
-		}
-		retries++
-	}
-
-	if lastError != nil {
-		return nil, lastError
-	}
-
-	return nil, &ProviderError{
-		Provider: "manager",
-		Type:     "unavailable",
-		Message:  "All providers failed after retries",
-	}
-}
-
-func (m *LLMManager) chatWithFallback(ctx context.Context, messages []ChatMessage, opts ChatOptions) (*ChatResponse, error) {
-	if !m.fallbackEnabled {
-		// No fallback, try primary provider only
-		if m.primaryProvider != "" {
-			if provider, exists := m.providersByName[m.primaryProvider]; exists {
-				return m.tryChat(ctx, provider, messages, opts)
-			}
-		}
-		// If no primary provider, try first available
-		for _, provider := range m.providers {
-			if m.isProviderAvailable(ctx, provider) {
-				return m.tryChat(ctx, provider, messages, opts)
-			}
-		}
-		return nil, &ProviderError{
-			Provider: "manager",
-			Type:     "unavailable",
-			Message:  "No providers available",
-		}
-	}
-
-	var lastError error
-	retries := 0
-
-	for retries < m.maxRetries {
-		for _, provider := range m.providers {
-			if !m.isProviderAvailable(ctx, provider) {
-				continue
-			}
-
-			resp, err := m.tryChat(ctx, provider, messages, opts)
-			if err == nil {
-				return resp, nil
-			}
-
-			lastError = err
-			m.logger.WithError(err).WithField("provider", provider.GetName()).Debug("Provider failed, trying fallback")
-
-			// Check if error is retryable
-			if provErr, ok := err.(*ProviderError); ok && !provErr.Retryable {
-				// Non-retryable error, skip to next provider
-				continue
-			}
-
-			// Wait before trying next provider
-			if m.fallbackDelay > 0 {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(m.fallbackDelay):
-				}
-			}
-		}
-		retries++
-	}
-
-	if lastError != nil {
-		return nil, lastError
-	}
-
-	return nil, &ProviderError{
-		Provider: "manager",
-		Type:     "unavailable",
-		Message:  "All providers failed after retries",
-	}
-}
-
-func (m *LLMManager) updateCircuitBreaker(providerName string, success bool) {
-	cb := m.circuitBreaker[providerName]
-	if cb == nil {
-		return
-	}
-
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	if success {
-		cb.failures = 0
-		cb.state = CircuitClosed
-	} else {
-		cb.failures++
-		cb.lastFailure = time.Now()
-
-		// Open circuit after 5 consecutive failures
-		if cb.failures >= 5 {
-			cb.state = CircuitOpen
-		}
-	}
-}
-
-func (m *LLMManager) getProviderStatus(ctx context.Context, provider LLMProvider) ProviderStatus {
-	providerName := provider.GetName()
-
-	status := ProviderStatus{
-		Name:         providerName,
-		Type:         providerName, // Simplified for now
-		Available:    provider.IsAvailable(ctx),
-		Healthy:      true, // Will be updated by health check
-		RequestCount: m.requestCount[providerName],
-		ErrorCount:   m.errorCount[providerName],
-		RateLimit:    provider.GetRateLimit(),
-	}
-
-	if status.RequestCount > 0 {
-		status.AverageResponseMs = m.responseTime[providerName].Milliseconds() / status.RequestCount
-	}
-
-	// Get models
-	if models, err := provider.GetModels(ctx); err == nil {
-		status.Models = models
-	}
-
-	// Check health
-	if err := provider.HealthCheck(ctx); err != nil {
-		status.Healthy = false
-	}
-
-	return status
-}
-
-// AI Settings Management Methods
-
-// GetSettings retrieves current AI configuration settings
-func (m *LLMManager) GetSettings(ctx context.Context) (*AISettingsResponse, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	providers := make([]AIProviderInfo, 0, len(m.providers))
-	for _, provider := range m.providers {
-		providerName := provider.GetName()
-		status := "disconnected"
-		if provider.IsAvailable(ctx) {
-			status = "connected"
-		}
-
-		providerInfo := AIProviderInfo{
-			Type:         providerName,
-			Enabled:      true, // All registered providers are enabled
-			URL:          "",   // URL not available from interface
-			DefaultModel: "",   // Default model not available from interface
-			Priority:     1,    // Default priority for now
-			Status:       status,
-			LastChecked:  time.Now(),
-		}
-
-		// Get models
-		if models, err := provider.GetModels(ctx); err == nil {
-			modelNames := make([]string, len(models))
-			for i, model := range models {
-				modelNames[i] = model.Name
-			}
-			providerInfo.Models = modelNames
-		}
-
-		providers = append(providers, providerInfo)
-	}
-
-	return &AISettingsResponse{
-		Providers:       providers,
-		DefaultProvider: m.primaryProvider,
-		FallbackEnabled: m.fallbackEnabled,
-		MaxRetries:      m.maxRetries,
-		Timeout:         m.timeout.String(),
-		LastUpdated:     time.Now(),
-	}, nil
-}
-
-// SaveSettings saves AI configuration settings
-func (m *LLMManager) SaveSettings(ctx context.Context, req AISettingsRequest) error {
+// recordSuccess records successful provider usage
+func (m *LLMManager) recordSuccess(providerName string, duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Update manager settings
-	m.primaryProvider = req.DefaultProvider
-	m.fallbackEnabled = req.FallbackEnabled
-	m.maxRetries = req.MaxRetries
-
-	if req.Timeout != "" {
-		if timeout, err := time.ParseDuration(req.Timeout); err == nil {
-			m.timeout = timeout
-		}
-	}
-
-	// Note: In a full implementation, you'd save to config file/database
-	// For now, just log the update
-	m.logger.Info("AI settings updated",
-		"default_provider", req.DefaultProvider,
-		"fallback_enabled", req.FallbackEnabled,
-		"max_retries", req.MaxRetries,
-		"timeout", req.Timeout)
-
-	return nil
+	m.requestCount[providerName]++
+	m.responseTime[providerName] += duration
+	m.lastUsage[providerName] = time.Now()
 }
 
-// TestConnection tests connectivity to an AI provider
-func (m *LLMManager) TestConnection(ctx context.Context, req AIConnectionTestRequest) (*AIConnectionTestResponse, error) {
-	startTime := time.Now()
+// recordError records provider error
 
-	// Find provider by type
-	provider := m.providersByName[req.ProviderType]
-	if provider == nil {
-		return &AIConnectionTestResponse{
-			Success:     false,
-			Message:     "Provider not found",
-			TestedAt:    time.Now(),
-			ErrorDetail: fmt.Sprintf("Provider '%s' is not registered", req.ProviderType),
-		}, nil
-	}
+func (m *LLMManager) recordError(providerName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	// Test connection
-	if !provider.IsAvailable(ctx) {
-		return &AIConnectionTestResponse{
-			Success:     false,
-			Message:     "Provider not available",
-			TestedAt:    time.Now(),
-			ErrorDetail: "Provider is not currently available",
-		}, nil
-	}
-
-	// Test with a simple request
-	testMessages := []ChatMessage{
-		{Role: "user", Content: "Hello"},
-	}
-
-	testOpts := ChatOptions{
-		Model: req.Model,
-	}
-
-	_, err := provider.Chat(ctx, testMessages, testOpts)
-	latency := time.Since(startTime)
-
-	if err != nil {
-		return &AIConnectionTestResponse{
-			Success:     false,
-			Message:     "Connection test failed",
-			Latency:     latency.String(),
-			TestedAt:    time.Now(),
-			ErrorDetail: err.Error(),
-		}, nil
-	}
-
-	// Get available models
-	var models []string
-	if modelList, err := provider.GetModels(ctx); err == nil {
-		models = make([]string, len(modelList))
-		for i, model := range modelList {
-			models[i] = model.Name
-		}
-	}
-
-	return &AIConnectionTestResponse{
-		Success:  true,
-		Message:  "Connection successful",
-		Models:   models,
-		Latency:  latency.String(),
-		TestedAt: time.Now(),
-	}, nil
+	m.errorCount[providerName]++
 }
 
-// Ollama-specific Methods
+// ReinitializeProviders reinitializes providers with new configuration
+func (m *LLMManager) ReinitializeProviders(cfg *config.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-// GetOllamaStatus gets Ollama process status
-func (m *LLMManager) GetOllamaStatus(ctx context.Context) (*OllamaStatusResponse, error) {
-	// Find Ollama provider
-	ollamaProvider := m.providersByName["ollama"]
-	if ollamaProvider == nil {
-		return &OllamaStatusResponse{
-			Running:     false,
-			LastChecked: time.Now(),
-		}, nil
+	// Clear existing providers
+	m.providers = nil
+	m.providersByName = make(map[string]LLMProvider)
+	m.circuitBreaker = make(map[string]*CircuitBreaker)
+
+	// Build new provider configs
+	var providerConfigs []config.AIProviderConfig
+
+	// Add LlamaCpp provider if enabled (PRIMARY PROVIDER)
+	m.logger.WithFields(logrus.Fields{
+		"ai_enabled":       cfg.AI.Enabled,
+		"llamacpp_enabled": cfg.AI.LlamaCpp.Enabled,
+		"auto_start":       cfg.AI.LlamaCpp.AutoStart,
+		"binary_path":      cfg.AI.LlamaCpp.BinaryPath,
+		"model_path":       cfg.AI.LlamaCpp.ModelPath,
+	}).Info("Checking LlamaCpp provider configuration")
+
+	if cfg.AI.Enabled && cfg.AI.LlamaCpp.Enabled {
+		m.logger.Info("Adding LlamaCpp provider to configuration list")
+		providerConfigs = append(providerConfigs, config.AIProviderConfig{
+			Type:         "llamacpp",
+			Enabled:      cfg.AI.LlamaCpp.Enabled,
+			URL:          cfg.AI.LlamaCpp.BaseURL,
+			APIKey:       cfg.AI.LlamaCpp.APIKey,
+			DefaultModel: cfg.AI.LlamaCpp.DefaultModel,
+			MaxTokens:    4096, // Default for LLMs
+			AutoStart:    cfg.AI.LlamaCpp.AutoStart,
+		})
+	} else {
+		m.logger.WithFields(logrus.Fields{
+			"ai_enabled":       cfg.AI.Enabled,
+			"llamacpp_enabled": cfg.AI.LlamaCpp.Enabled,
+		}).Warn("LlamaCpp provider not enabled, skipping")
 	}
 
-	running := ollamaProvider.IsAvailable(ctx)
-	status := &OllamaStatusResponse{
-		Running:     running,
-		LastChecked: time.Now(),
-	}
+	// Initialize providers
+	if len(providerConfigs) > 0 {
+		if err := m.initializeProviders(providerConfigs, m.logger); err != nil {
+			return fmt.Errorf("failed to initialize providers: %w", err)
+		}
 
-	if running {
-		// Get models
-		if models, err := ollamaProvider.GetModels(ctx); err == nil {
-			ollamaModels := make([]OllamaModelInfo, len(models))
-			for i, model := range models {
-				ollamaModels[i] = OllamaModelInfo{
-					Name:       model.Name,
-					ModifiedAt: time.Now(), // Placeholder
+		// Set primary provider based on what's available
+		if len(m.providers) > 0 {
+			// Prefer LlamaCpp if available, otherwise use the first available provider
+			for _, provider := range m.providers {
+				if provider.GetName() == "llamacpp" {
+					m.primaryProvider = "llamacpp"
+					break
 				}
 			}
-			status.Models = ollamaModels
-		}
-
-		status.SystemInfo = OllamaSystemInfo{
-			Platform:     "linux",
-			Architecture: "amd64",
-			GPU:          false,
-			Memory:       8 * 1024 * 1024 * 1024, // 8GB placeholder
-		}
-
-		status.ResourceUsage = OllamaResourceInfo{
-			CPUUsage:    0.0,
-			MemoryUsage: 0,
+			if m.primaryProvider == "" {
+				m.primaryProvider = m.providers[0].GetName()
+			}
 		}
 	}
 
-	return status, nil
-}
-
-// GetOllamaMetrics gets Ollama resource usage metrics
-func (m *LLMManager) GetOllamaMetrics(ctx context.Context) (*OllamaMetricsResponse, error) {
-	status, err := m.GetOllamaStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	health := "down"
-	if status.Running {
-		health = "healthy"
-	}
-
-	return &OllamaMetricsResponse{
-		Status:         *status,
-		RequestCount:   m.requestCount["ollama"],
-		ErrorCount:     m.errorCount["ollama"],
-		AverageLatency: 0.0,  // Placeholder
-		TotalUptime:    "0s", // Placeholder
-		Health:         health,
-	}, nil
-}
-
-// GetOllamaHealth performs health check for Ollama service
-func (m *LLMManager) GetOllamaHealth(ctx context.Context) (map[string]interface{}, error) {
-	ollamaProvider := m.providersByName["ollama"]
-	if ollamaProvider == nil {
-		return map[string]interface{}{
-			"status":  "not_configured",
-			"healthy": false,
-			"message": "Ollama provider not configured",
-		}, nil
-	}
-
-	healthy := ollamaProvider.IsAvailable(ctx)
-	status := "down"
-	message := "Ollama service is not running"
-
-	if healthy {
-		status = "up"
-		message = "Ollama service is running normally"
-	}
-
-	return map[string]interface{}{
-		"status":     status,
-		"healthy":    healthy,
-		"message":    message,
-		"checked_at": time.Now(),
-	}, nil
-}
-
-// StartOllamaProcess starts Ollama process
-func (m *LLMManager) StartOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
-	// In a real implementation, this would start the Ollama systemd service
-	// For now, return a placeholder response
-	return &OllamaProcessResponse{
-		Success:   false,
-		Message:   "Ollama process management not implemented",
-		Timestamp: time.Now(),
-	}, fmt.Errorf("ollama process management not implemented")
-}
-
-// StopOllamaProcess stops Ollama process
-func (m *LLMManager) StopOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
-	// In a real implementation, this would stop the Ollama systemd service
-	// For now, return a placeholder response
-	return &OllamaProcessResponse{
-		Success:   false,
-		Message:   "Ollama process management not implemented",
-		Timestamp: time.Now(),
-	}, fmt.Errorf("ollama process management not implemented")
-}
-
-// RestartOllamaProcess restarts Ollama process
-func (m *LLMManager) RestartOllamaProcess(ctx context.Context) (*OllamaProcessResponse, error) {
-	// In a real implementation, this would restart the Ollama systemd service
-	// For now, return a placeholder response
-	return &OllamaProcessResponse{
-		Success:   false,
-		Message:   "Ollama process management not implemented",
-		Timestamp: time.Now(),
-	}, fmt.Errorf("ollama process management not implemented")
-}
-
-// GetOllamaMonitoring gets comprehensive monitoring data
-func (m *LLMManager) GetOllamaMonitoring(ctx context.Context) (map[string]interface{}, error) {
-	status, err := m.GetOllamaStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	metrics, err := m.GetOllamaMetrics(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	health, err := m.GetOllamaHealth(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return map[string]interface{}{
-		"status":  status,
-		"metrics": metrics,
-		"health":  health,
-		"monitoring": map[string]interface{}{
-			"enabled":        true,
-			"last_check":     time.Now(),
-			"check_interval": "30s",
-		},
-	}, nil
+	return nil
 }

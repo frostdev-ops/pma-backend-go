@@ -11,8 +11,10 @@ import (
 )
 
 // UPSAdapter implements the PMAAdapter interface for UPS devices
+// Supports both Network UPS Tools (NUT) servers and I2C UPS devices
 type UPSAdapter struct {
-	client            *NUTClient
+	nutClient         *NUTClient
+	i2cClient         *MAX17040
 	devices           map[string]*UPSDevice
 	logger            *logrus.Logger
 	config            UPSAdapterConfig
@@ -24,6 +26,7 @@ type UPSAdapter struct {
 	successfulActions int
 	failedActions     int
 	syncErrors        int
+	isI2CMode         bool
 }
 
 // UPSAdapterConfig holds configuration for the UPS adapter
@@ -43,19 +46,31 @@ type UPSDevice struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
-// NewUPSAdapter creates a new UPS adapter
+// NewUPSAdapter creates a new UPS adapter for either network or I2C mode
 func NewUPSAdapter(config UPSAdapterConfig, logger *logrus.Logger) *UPSAdapter {
 	if config.PollInterval == 0 {
 		config.PollInterval = 30 * time.Second
 	}
 
-	return &UPSAdapter{
-		client:    NewNUTClient(config.Host, config.Port, logger),
+	adapter := &UPSAdapter{
 		devices:   make(map[string]*UPSDevice),
 		logger:    logger,
 		config:    config,
 		startTime: time.Now(),
 	}
+
+	// Determine mode based on configuration
+	// If Host is empty, we're in I2C mode
+	if config.Host == "" {
+		adapter.isI2CMode = true
+		logger.Info("Initializing UPS adapter in I2C mode")
+	} else {
+		adapter.isI2CMode = false
+		adapter.nutClient = NewNUTClient(config.Host, config.Port, logger)
+		logger.Info("Initializing UPS adapter in network mode")
+	}
+
+	return adapter
 }
 
 // ========================================
@@ -64,6 +79,9 @@ func NewUPSAdapter(config UPSAdapterConfig, logger *logrus.Logger) *UPSAdapter {
 
 // GetID returns the unique identifier for this adapter instance
 func (a *UPSAdapter) GetID() string {
+	if a.isI2CMode {
+		return "ups_i2c"
+	}
 	return fmt.Sprintf("ups_%s", a.config.Host)
 }
 
@@ -82,36 +100,63 @@ func (a *UPSAdapter) GetVersion() string {
 	return "1.0.0"
 }
 
-// Connect establishes connection to UPS server
+// Connect establishes connection to UPS (either network or I2C)
 func (a *UPSAdapter) Connect(ctx context.Context) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	a.logger.Info("Connecting to UPS server...")
+	if a.isI2CMode {
+		a.logger.Info("Connecting to I2C UPS device...")
 
-	if err := a.client.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect to UPS server: %w", err)
-	}
-
-	// Discover UPS devices
-	for _, upsName := range a.config.UPSNames {
-		upsData, err := a.client.GetUPSData(ctx, upsName)
+		// Initialize I2C client
+		i2cClient, err := NewMAX17040()
 		if err != nil {
-			a.logger.WithError(err).Warnf("Failed to get data for UPS %s", upsName)
-			continue
+			return fmt.Errorf("failed to connect to I2C UPS device: %w", err)
+		}
+		a.i2cClient = i2cClient
+
+		// Create a single I2C device entry
+		upsData, err := a.i2cClient.ReadUPSData()
+		if err != nil {
+			return fmt.Errorf("failed to read initial I2C UPS data: %w", err)
 		}
 
+		// Convert to standard UPS data format
+		standardData := upsData.ConvertToUPSData("i2c_ups")
 		device := &UPSDevice{
-			Name:     upsName,
-			Data:     upsData,
+			Name:     "i2c_ups",
+			Data:     standardData,
 			LastSeen: time.Now(),
 		}
-		a.devices[upsName] = device
-		a.logger.WithField("ups_name", upsName).Info("Discovered UPS device")
+		a.devices["i2c_ups"] = device
+		a.logger.Info("Successfully connected to I2C UPS device")
+	} else {
+		a.logger.Info("Connecting to network UPS server...")
+
+		if err := a.nutClient.Connect(ctx); err != nil {
+			return fmt.Errorf("failed to connect to UPS server: %w", err)
+		}
+
+		// Discover UPS devices
+		for _, upsName := range a.config.UPSNames {
+			upsData, err := a.nutClient.GetUPSData(ctx, upsName)
+			if err != nil {
+				a.logger.WithError(err).Warnf("Failed to get data for UPS %s", upsName)
+				continue
+			}
+
+			device := &UPSDevice{
+				Name:     upsName,
+				Data:     upsData,
+				LastSeen: time.Now(),
+			}
+			a.devices[upsName] = device
+			a.logger.WithField("ups_name", upsName).Info("Discovered network UPS device")
+		}
+		a.logger.Infof("Successfully connected to network UPS server with %d devices", len(a.devices))
 	}
 
 	a.connected = true
-	a.logger.Infof("Successfully connected to UPS server with %d devices", len(a.devices))
 	return nil
 }
 
@@ -121,10 +166,11 @@ func (a *UPSAdapter) Disconnect(ctx context.Context) error {
 	defer a.mutex.Unlock()
 
 	a.connected = false
-	if a.client != nil {
-		a.client.Close()
+	if a.nutClient != nil {
+		a.nutClient.Close()
 	}
-	a.logger.Info("Disconnected from UPS server")
+	// I2C client doesn't need explicit closing
+	a.logger.Info("Disconnected from UPS")
 	return nil
 }
 
@@ -213,12 +259,26 @@ func (a *UPSAdapter) SyncEntities(ctx context.Context) ([]types.PMAEntity, error
 	}
 	a.mutex.RUnlock()
 
-	// Update UPS data
+	// Update UPS data based on mode
 	for _, device := range devices {
-		upsData, err := a.client.GetUPSData(ctx, device.Name)
-		if err != nil {
-			a.logger.WithError(err).Warnf("Failed to update data for UPS %s", device.Name)
-			continue
+		var upsData *UPSData
+		var err error
+
+		if a.isI2CMode {
+			// Read from I2C device
+			i2cData, i2cErr := a.i2cClient.ReadUPSData()
+			if i2cErr != nil {
+				a.logger.WithError(i2cErr).Warnf("Failed to read I2C UPS data for %s", device.Name)
+				continue
+			}
+			upsData = i2cData.ConvertToUPSData(device.Name)
+		} else {
+			// Read from network UPS
+			upsData, err = a.nutClient.GetUPSData(ctx, device.Name)
+			if err != nil {
+				a.logger.WithError(err).Warnf("Failed to update data for UPS %s", device.Name)
+				continue
+			}
 		}
 
 		a.mutex.Lock()
