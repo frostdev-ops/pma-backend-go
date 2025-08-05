@@ -60,7 +60,7 @@ func (h *Handlers) ChatWithAI(c *gin.Context) {
 		h.log.Warn("⚠️ Smart model selector not available - using fallback")
 		selectedModel = req.Model
 		if selectedModel == "" {
-			selectedModel = "LFM2-1.2B"
+			selectedModel = "LFM2-1.2B-Q4_K_M" // Match the actual model file name
 		}
 		h.log.WithField("selectedModel", selectedModel).Info("🔄 Using fallback model")
 	}
@@ -161,7 +161,7 @@ func (h *Handlers) ChatWithAI(c *gin.Context) {
 
 	// Set default options
 	opts := ai.ChatOptions{
-		Provider:     "llamacpp",
+		Provider:     h.llmManager.GetPrimaryProvider(), // Use primary provider (multi-llamacpp or llamacpp)
 		Model:        selectedModel,
 		MaxTokens:    maxTokens,
 		Temperature:  req.Temperature,

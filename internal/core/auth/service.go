@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sync"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/frostdev-ops/pma-backend-go/internal/database/models"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -257,6 +256,32 @@ func (s *Service) DisablePin(ctx context.Context, currentPin, clientID string) e
 
 // ValidateSession validates a session token
 func (s *Service) ValidateSession(ctx context.Context, token string) (*models.Session, error) {
+	// First validate the JWT token
+	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(s.config.JWTSecret), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT token: %w", err)
+	}
+
+	if !parsedToken.Valid {
+		return nil, fmt.Errorf("invalid or expired JWT token")
+	}
+
+	// Extract claims to check expiration
+	if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
+		if exp, ok := claims["exp"].(float64); ok {
+			if time.Now().Unix() > int64(exp) {
+				return nil, fmt.Errorf("JWT token has expired")
+			}
+		}
+	}
+
 	// Check cache first
 	s.cacheMu.RLock()
 	if session, exists := s.sessionCache[token]; exists {
@@ -272,7 +297,7 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*models.Se
 	// Get from database
 	session, err := s.repo.GetSession(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("invalid or expired session")
+		return nil, fmt.Errorf("session not found in database")
 	}
 
 	// Add to cache
@@ -349,20 +374,31 @@ type PinStatusResponse struct {
 // Private helper methods
 
 func (s *Service) generateSession(ctx context.Context, pin string) (*SessionResponse, error) {
-	// Generate secure token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate secure token: %w", err)
+	// Generate JWT token with proper claims
+	expiresAt := time.Now().Add(time.Duration(s.config.SessionTimeout) * time.Second)
+
+	claims := jwt.MapClaims{
+		"authorized": true,
+		"user_id":    "1",    // Default user ID for PIN auth
+		"username":   "user", // Default username for PIN auth
+		"auth_type":  "pin",  // Indicate this is PIN-based authentication
+		"exp":        expiresAt.Unix(),
+		"iat":        time.Now().Unix(),
+		"iss":        "pma-backend",  // Issuer
+		"aud":        "pma-frontend", // Audience
 	}
-	token := hex.EncodeToString(tokenBytes)
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(s.config.JWTSecret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate JWT token: %w", err)
+	}
 
 	// Create session
 	sessionID := uuid.New().String()
-	expiresAt := time.Now().Add(time.Duration(s.config.SessionTimeout) * time.Second)
-
 	session := &models.Session{
 		ID:        sessionID,
-		Token:     token,
+		Token:     tokenString,
 		ExpiresAt: expiresAt,
 	}
 
@@ -372,11 +408,11 @@ func (s *Service) generateSession(ctx context.Context, pin string) (*SessionResp
 
 	// Add to cache
 	s.cacheMu.Lock()
-	s.sessionCache[token] = session
+	s.sessionCache[tokenString] = session
 	s.cacheMu.Unlock()
 
 	return &SessionResponse{
-		Token:     token,
+		Token:     tokenString,
 		ExpiresAt: expiresAt,
 	}, nil
 }

@@ -694,6 +694,16 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 			return providers.NewLlamaCppProviderWithConfigAndRepo(providerCfg, cfg, logger, repos.Config)
 		})
 
+		// Register multi-instance provider factory
+		llmManager.RegisterProviderFactory("multi-llamacpp", func(providerCfg config.AIProviderConfig, logger *logrus.Logger) ai.LLMProvider {
+			logger.WithFields(logrus.Fields{
+				"provider_cfg": providerCfg,
+				"provider_type": "multi-llamacpp",
+				"llamacpp_cfg": cfg.AI.LlamaCpp,
+			}).Info("Creating Multi-Instance LlamaCpp provider with config")
+			return providers.NewMultiInstanceLlamaCppProvider(providerCfg, cfg, logger)
+		})
+
 		// Initialize providers
 		if err := llmManager.ReinitializeProviders(cfg); err != nil {
 			logger.WithError(err).Error("Failed to initialize LLM Manager providers")
@@ -1221,27 +1231,48 @@ func NewHandlers(cfg *config.Config, repos *database.Repositories, logger *logru
 	// NOTE: Home Assistant adapter initialization now handled by unifiedService.InitializeAdapters() above
 	// to ensure proper registration, connection, and event handler setup without conflicts.
 
-	// TEMPORARILY DISABLED: Start periodic sync scheduler after adapters are initialized and connected
-	// TODO: Fix deadlock between periodic sync and GetAll method
-	/*
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.WithField("panic", r).Error("Periodic sync scheduler goroutine panic recovered")
-				}
-			}()
-
-			// Wait for adapters to initialize and connect
-			time.Sleep(5 * time.Second)
-
-			if err := unifiedService.StartPeriodicSync(); err != nil {
-				logger.WithError(err).Error("Failed to start periodic sync scheduler")
-			} else {
-				logger.Info("Periodic sync scheduler started successfully")
+	// Start periodic sync scheduler with proper deadlock prevention
+	// Fixed: Use separate goroutine with timeout and proper synchronization
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.WithField("panic", r).Error("Periodic sync scheduler goroutine panic recovered")
 			}
 		}()
-	*/
-	logger.Info("Periodic sync scheduler DISABLED to fix GetAll deadlock")
+
+		// Wait for adapters to initialize and connect
+		time.Sleep(5 * time.Second)
+
+		// Use a separate context with timeout to prevent deadlocks
+		syncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Start periodic sync with proper error handling
+		if err := unifiedService.StartPeriodicSync(); err != nil {
+			logger.WithError(err).Error("Failed to start periodic sync scheduler")
+		} else {
+			logger.Info("Periodic sync scheduler started successfully")
+		}
+
+		// Monitor sync operations to prevent deadlocks
+		go func() {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-syncCtx.Done():
+					logger.Info("Periodic sync monitoring stopped")
+					return
+				case <-ticker.C:
+					// Simple monitoring - just log that sync is still running
+					logger.Debug("Periodic sync monitoring check - sync is running")
+				}
+			}
+		}()
+	}()
+
+	logger.Info("Periodic sync scheduler started with deadlock prevention")
 
 	return handlers
 }

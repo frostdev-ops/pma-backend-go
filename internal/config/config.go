@@ -66,6 +66,7 @@ type AuthConfig struct {
 	TokenExpiry          int    `mapstructure:"token_expiry"`
 	APISecret            string `mapstructure:"api_secret"`
 	AllowLocalhostBypass bool   `mapstructure:"allow_localhost_bypass"`
+	LocalhostSecret      string `mapstructure:"localhost_secret"`
 }
 
 type HomeAssistantConfig struct {
@@ -126,14 +127,14 @@ type WebSocketHAConfig struct {
 
 // AIConfig contains AI/LLM provider configuration (simplified for centralized service)
 type AIConfig struct {
-	Enabled        bool               `mapstructure:"enabled"`
-	DefaultModel   string             `mapstructure:"default_model"`
-	DefaultProvider string            `mapstructure:"default_provider"`
-	FallbackEnabled bool              `mapstructure:"fallback_enabled"`
-	Ollama         OllamaConfig       `mapstructure:"ollama"`
-	Hugot          HugotConfig        `mapstructure:"hugot"`
-	VLLM           VLLMConfig         `mapstructure:"vllm"`
-	LlamaCpp       LlamaCppConfig     `mapstructure:"llamacpp"`
+	Enabled         bool           `mapstructure:"enabled"`
+	DefaultModel    string         `mapstructure:"default_model"`
+	DefaultProvider string         `mapstructure:"default_provider"`
+	FallbackEnabled bool           `mapstructure:"fallback_enabled"`
+	Ollama          OllamaConfig   `mapstructure:"ollama"`
+	Hugot           HugotConfig    `mapstructure:"hugot"`
+	VLLM            VLLMConfig     `mapstructure:"vllm"`
+	LlamaCpp        LlamaCppConfig `mapstructure:"llamacpp"`
 }
 
 // OllamaConfig contains Ollama-specific configuration
@@ -167,16 +168,17 @@ type VLLMConfig struct {
 
 // LlamaCppConfig contains llama.cpp-specific configuration for edge LLM deployment
 type LlamaCppConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	BaseURL      string `mapstructure:"base_url"`
-	APIKey       string `mapstructure:"api_key"`
-	DefaultModel string `mapstructure:"default_model"`
-	Timeout      string `mapstructure:"timeout"`
-	MaxRetries   int    `mapstructure:"max_retries"`
-	AutoStart    bool   `mapstructure:"auto_start"`
-	BinaryPath   string `mapstructure:"binary_path"`
-	ModelPath    string `mapstructure:"model_path"`
-	ServerPort   int    `mapstructure:"server_port"`
+	Enabled       bool   `mapstructure:"enabled"`
+	BaseURL       string `mapstructure:"base_url"`
+	APIKey        string `mapstructure:"api_key"`
+	DefaultModel  string `mapstructure:"default_model"`
+	Timeout       string `mapstructure:"timeout"`
+	MaxRetries    int    `mapstructure:"max_retries"`
+	AutoStart     bool   `mapstructure:"auto_start"`
+	BinaryPath    string `mapstructure:"binary_path"`
+	ModelPath     string `mapstructure:"model_path"`
+	ServerPort    int    `mapstructure:"server_port"`
+	MultiInstance bool   `mapstructure:"multi_instance"`
 }
 
 // AIResourceLimits contains resource limit configuration for AI providers

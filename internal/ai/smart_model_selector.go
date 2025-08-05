@@ -239,23 +239,12 @@ func (s *SmartModelSelector) SelectOptimalModel(complexity ModelComplexity) stri
 		s.logger.WithField("model", selectedModel).Warn("⚠️ Unknown complexity - using balanced model")
 	}
 
-	// Check if model is available
-	if config, exists := s.models[selectedModel]; exists {
-		if config.IsLoaded {
-			s.logger.WithFields(logrus.Fields{
-				"model":        selectedModel,
-				"quantization": config.Quantization,
-				"maxTokens":    config.MaxTokens,
-				"accuracy":     config.Accuracy,
-			}).Info("✅ Model selected and available")
-		} else {
-			s.logger.WithField("model", selectedModel).Warn("⚠️ Selected model not loaded - falling back to Q4")
-			selectedModel = "LFM2-1.2B-Q4"
-		}
-	} else {
-		s.logger.WithField("model", selectedModel).Error("❌ Selected model not found in configuration")
-		selectedModel = "LFM2-1.2B-Q4"
-	}
+	// Multi-instance model selection - let the manager handle fallbacks
+	s.logger.WithFields(logrus.Fields{
+		"selectedModel": selectedModel,
+		"complexity":    complexity,
+		"reason":        "multi_instance_selection",
+	}).Info("🎯 Model selected for multi-instance deployment")
 
 	return selectedModel
 }

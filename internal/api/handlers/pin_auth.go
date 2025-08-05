@@ -265,12 +265,23 @@ func (h *Handlers) Logout(c *gin.Context) {
 
 // generateJWTToken creates a new JWT token
 func (h *Handlers) generateJWTToken() (string, time.Time, error) {
-	expiresAt := time.Now().Add(24 * time.Hour) // 24 hour expiry
+	// Use configured token expiry or default to 30 minutes
+	tokenExpiry := time.Duration(h.cfg.Auth.TokenExpiry) * time.Second
+	if tokenExpiry == 0 {
+		tokenExpiry = 30 * time.Minute
+	}
+
+	expiresAt := time.Now().Add(tokenExpiry)
 
 	claims := jwt.MapClaims{
 		"authorized": true,
+		"user_id":    "1",    // Default user ID for PIN auth
+		"username":   "user", // Default username for PIN auth
+		"auth_type":  "pin",  // Indicate this is PIN-based authentication
 		"exp":        expiresAt.Unix(),
 		"iat":        time.Now().Unix(),
+		"iss":        "pma-backend",  // Issuer
+		"aud":        "pma-frontend", // Audience
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

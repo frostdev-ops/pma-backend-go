@@ -61,18 +61,17 @@ func (p *LlamaCppProvider) startServer(ctx context.Context) error {
 		"port":   p.serverPort,
 	}).Info("Starting llama.cpp server")
 
-	// Prepare command arguments for LFM2 optimization
+	// Prepare command arguments for LFM2 optimization with 32K context
 	args := []string{
 		"--server",
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(p.serverPort),
 		"--model", modelPath,
-		"--n-predict", "4096",
-		"--ctx-size", "8192",
+		"--n-predict", "-1", // Unlimited prediction length
+		"--ctx-size", "32768", // Full 32K context window for LFM2
 		"--threads", "4", // Optimize for RPi5
 		"--n-gpu-layers", "0", // CPU-only for RPi5
 		"--chat-template", "chatml", // Use ChatML template for LFM2
-		"--log-format", "json",
 		"--verbose",
 	}
 
@@ -172,10 +171,16 @@ func (p *LlamaCppProvider) findModelFile() (string, error) {
 	possibleNames := []string{
 		p.defaultModel,
 		p.defaultModel + ".gguf",
-		"LFM2-1.2B.gguf",
-		"LFM2-700M-Q4_K_M.gguf",
+		// Prioritize Q4 quantized models for better performance
 		"lfm2/LFM2-1.2B-Q4_K_M.gguf",
+		"LFM2-1.2B-Q4_K_M.gguf", 
+		"LFM2-700M-Q4_K_M.gguf",
+		// Fallback to other quantizations
+		"lfm2/LFM2-1.2B-Q2_K.gguf",
+		"lfm2/LFM2-1.2B-Q8_0.gguf",
+		// Last resort: full precision model
 		"lfm2-full/LFM2-1.2B.gguf",
+		"LFM2-1.2B.gguf",
 	}
 
 	for _, dir := range modelDirs {

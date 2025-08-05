@@ -109,6 +109,12 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 
 			// Remote authentication status
 			auth.GET("/remote-status", h.GetRemoteAuthStatus)
+
+			// Localhost secret endpoint (for localhost bypass)
+			auth.GET("/localhost-secret", h.GetLocalhostSecret)
+
+			// Secure localhost verification endpoint
+			auth.POST("/verify-localhost", h.VerifyLocalhost)
 		}
 
 		// Public API routes (no auth required)
@@ -289,6 +295,16 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				ai.GET("/statistics", h.GetAIStatistics)
 				ai.GET("/settings", h.GetAISettings)
 				ai.POST("/test/:provider", h.TestAIProvider)
+
+				// Multi-Instance Model Manager endpoints
+				multiInstance := ai.Group("/multi-instance")
+				{
+					multiInstance.GET("/status", h.GetMultiInstanceStatus)
+					multiInstance.GET("/health", h.GetMultiInstanceHealth)
+					multiInstance.GET("/recommendations", h.GetMultiInstanceRecommendations)
+					multiInstance.POST("/configure", h.ConfigureMultiInstanceModels)
+					multiInstance.POST("/restart/:model", h.RestartMultiInstanceModel)
+				}
 
 				// DISABLED complex AI handlers for streamlining
 				// ai.POST("/complete", h.CompleteText)
@@ -810,7 +826,6 @@ func NewRouter(cfg *config.Config, repos *database.Repositories, batchLogger *lo
 				shelly.PUT("/config", h.UpdateShellyConfig)
 				shelly.GET("/status", h.GetShellyAdapterStatus)
 			}
-
 
 			// Analytics system endpoints
 			if h.AnalyticsHandler != nil {

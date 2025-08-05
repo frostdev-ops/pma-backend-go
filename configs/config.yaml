@@ -50,6 +50,7 @@ auth:
   token_expiry: 1800 # 30 minutes in seconds (to match frontend expectations)
   api_secret: "pma-shared-secret-2024-api-auth-key" # API secret for server-to-server communication
   allow_localhost_bypass: true # Allow localhost connections to bypass authentication
+  localhost_secret: "pma-localhost-bypass-secret-2024" # Secret for localhost bypass through nginx
 
 home_assistant:
   url: "http://192.168.100.2:8123"
@@ -410,6 +411,25 @@ test:
   # Development helpers
   auto_generate_test_data: false
   reset_data_on_startup: false
+
+# AI Configuration
+ai:
+  enabled: true
+  default_model: "LFM2-1.2B-Q4_K_M"
+  default_provider: "multi-llamacpp"
+  fallback_enabled: true
+  llamacpp:
+    enabled: true
+    multi_instance: true  # Enable multi-instance mode
+    base_url: "http://localhost:8080"  # Single instance fallback URL
+    api_key: ""
+    default_model: "LFM2-1.2B-Q4_K_M"
+    timeout: "300s"
+    max_retries: 3
+    auto_start: true
+    binary_path: "/opt/pma/llama.cpp/build/bin/llama-server"
+    model_path: "/opt/pma/llama.cpp/models"
+    server_port: 8080
 
 # Configuration complete - all device adapters are now configured under the devices: section above
 

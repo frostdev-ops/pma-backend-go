@@ -3,11 +3,12 @@ package middleware
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
-	"github.com/frostdev-ops/pma-backend-go/internal/core/auth"
 	"github.com/frostdev-ops/pma-backend-go/internal/database/repositories"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 )
 
@@ -15,6 +16,7 @@ import (
 // - Localhost connections: No authentication required
 // - Local network connections: No authentication required
 // - Remote connections: User/password authentication required
+// - Localhost secret header: Secondary bypass for nginx-proxied local requests
 func RemoteAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Allow OPTIONS requests to pass through for CORS preflight
@@ -34,6 +36,17 @@ func RemoteAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		clientIP := c.ClientIP()
+
+		// Check for localhost secret header first (for nginx-proxied local requests)
+		localhostSecret := c.GetHeader("X-Localhost-Secret")
+		if localhostSecret != "" && localhostSecret == cfg.Auth.LocalhostSecret {
+			c.Set("user_id", "1")
+			c.Set("username", "localhost_secret")
+			c.Set("auth_type", "localhost_secret_bypass")
+			c.Set("localhost_secret_bypass", true)
+			c.Next()
+			return
+		}
 
 		// Check if this is a local connection (localhost or local network)
 		if isLocalConnection(clientIP) {
@@ -92,12 +105,77 @@ func RemoteAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// For now, allow any bearer token since we're using PIN-based auth
-		// In production, you would validate the JWT token here
-		c.Set("user_id", "1")
-		c.Set("username", "remote")
-		c.Set("auth_type", "jwt")
-		c.Set("remote_connection", true)
+		tokenString := tokenParts[1]
+
+		// Validate JWT token
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// Validate signing method
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			return []byte(cfg.Auth.JWTSecret), nil
+		})
+
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "Invalid JWT token",
+				"code":    "INVALID_JWT",
+			})
+			c.Abort()
+			return
+		}
+
+		if !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "Invalid or expired JWT token",
+				"code":    "INVALID_JWT",
+			})
+			c.Abort()
+			return
+		}
+
+		// Extract claims
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			// Check if token is expired
+			if exp, ok := claims["exp"].(float64); ok {
+				if time.Now().Unix() > int64(exp) {
+					c.JSON(http.StatusUnauthorized, gin.H{
+						"success": false,
+						"error":   "JWT token has expired",
+						"code":    "EXPIRED_JWT",
+					})
+					c.Abort()
+					return
+				}
+			}
+
+			// Set user context from JWT claims
+			userID := "1"      // Default user ID
+			username := "user" // Default username
+
+			if userIDClaim, ok := claims["user_id"].(string); ok {
+				userID = userIDClaim
+			}
+			if usernameClaim, ok := claims["username"].(string); ok {
+				username = usernameClaim
+			}
+
+			c.Set("user_id", userID)
+			c.Set("username", username)
+			c.Set("auth_type", "jwt")
+			c.Set("jwt_claims", claims)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "Invalid JWT claims",
+				"code":    "INVALID_JWT_CLAIMS",
+			})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }
@@ -181,31 +259,75 @@ func UserAuthMiddleware(cfg *config.Config, authRepo repositories.AuthRepository
 
 		token := tokenParts[1]
 
-		// Validate session token
-		authConfig := auth.AuthConfig{
-			SessionTimeout:    cfg.Auth.TokenExpiry,
-			MaxFailedAttempts: 3,
-			LockoutDuration:   300,
-			JWTSecret:         cfg.Auth.JWTSecret,
-		}
-		authService := auth.NewService(authRepo, authConfig, logger)
+		// Validate JWT token
+		parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+			// Validate signing method
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			return []byte(cfg.Auth.JWTSecret), nil
+		})
 
-		session, err := authService.ValidateSession(c.Request.Context(), token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"error":   "Invalid or expired session",
-				"code":    "INVALID_SESSION",
+				"error":   "Invalid JWT token",
+				"code":    "INVALID_JWT",
 			})
 			c.Abort()
 			return
 		}
 
-		// Set user context from session (using default values since Session model doesn't have user fields)
-		c.Set("user_id", "1")
-		c.Set("username", "user")
-		c.Set("auth_type", "session")
-		c.Set("session_id", session.ID)
+		if !parsedToken.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "Invalid or expired JWT token",
+				"code":    "INVALID_JWT",
+			})
+			c.Abort()
+			return
+		}
+
+		// Extract claims
+		if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
+			// Check if token is expired
+			if exp, ok := claims["exp"].(float64); ok {
+				if time.Now().Unix() > int64(exp) {
+					c.JSON(http.StatusUnauthorized, gin.H{
+						"success": false,
+						"error":   "JWT token has expired",
+						"code":    "EXPIRED_JWT",
+					})
+					c.Abort()
+					return
+				}
+			}
+
+			// Set user context from JWT claims
+			userID := "1"      // Default user ID
+			username := "user" // Default username
+
+			if userIDClaim, ok := claims["user_id"].(string); ok {
+				userID = userIDClaim
+			}
+			if usernameClaim, ok := claims["username"].(string); ok {
+				username = usernameClaim
+			}
+
+			c.Set("user_id", userID)
+			c.Set("username", username)
+			c.Set("auth_type", "jwt")
+			c.Set("jwt_claims", claims)
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "Invalid JWT claims",
+				"code":    "INVALID_JWT_CLAIMS",
+			})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }

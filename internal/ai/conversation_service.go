@@ -186,7 +186,7 @@ func (cs *StreamlinedConversationService) getOrCreateConversation(ctx context.Co
 		ID:           conversationID,
 		UserID:       "1", // Default user ID
 		Title:        "AI Conversation",
-		Provider:     "llamacpp",
+		Provider:     cs.llmManager.GetPrimaryProvider(), // Use primary provider (multi-llamacpp or llamacpp)
 		SystemPrompt: &cs.systemPrompt,
 		Temperature:  0.7,
 		MaxTokens:    32768, // Use full context window
@@ -219,7 +219,7 @@ func (cs *StreamlinedConversationService) GetConversation(ctx context.Context, c
 	return &Conversation{
 		ID:           conversationID,
 		Title:        "AI Conversation",
-		Provider:     "llamacpp",
+		Provider:     cs.llmManager.GetPrimaryProvider(), // Use primary provider (multi-llamacpp or llamacpp)
 		SystemPrompt: &cs.systemPrompt,
 		Temperature:  0.7,
 		MaxTokens:    32768,
@@ -232,7 +232,7 @@ func (cs *StreamlinedConversationService) CreateConversation(ctx context.Context
 		ID:           uuid.New().String(),
 		UserID:       userID,
 		Title:        req.Title,
-		Provider:     "llamacpp", // Always use llamacpp
+		Provider:     cs.llmManager.GetPrimaryProvider(), // Use primary provider (multi-llamacpp or llamacpp)
 		SystemPrompt: &cs.systemPrompt,
 		Temperature:  0.7,
 		MaxTokens:    32768, // Use full context window

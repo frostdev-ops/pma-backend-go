@@ -128,41 +128,15 @@ func (sts *StreamingTTSService) StopStreaming(ctx context.Context) error {
 
 // TextToSpeechStreaming processes text using multi-instance streaming
 func (sts *StreamingTTSService) TextToSpeechStreaming(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
-	// Always use intelligent single-daemon processing for now
-	// TODO: Enable cluster-based processing when multiple daemon instances are available
+	// Check if cluster processing is available and enabled
+	if sts.clusterManager != nil && sts.clusterManager.IsAvailable() {
+		sts.logger.Info("🌐 Using cluster-based processing")
+		return sts.processClusterBased(ctx, req)
+	}
+
+	// Fallback to single instance processing
+	sts.logger.Info("🔄 Using single-instance fallback processing")
 	return sts.fallbackToSingleInstance(ctx, req)
-
-	if !sts.isInitialized {
-		return nil, fmt.Errorf("streaming service not initialized")
-	}
-
-	// Validate request
-	if err := sts.validateStreamingRequest(req); err != nil {
-		return nil, fmt.Errorf("invalid streaming request: %w", err)
-	}
-
-	sts.logger.WithFields(logrus.Fields{
-		"text_length":    len(req.Text),
-		"voice":          req.Voice,
-		"language":       req.Language,
-		"streaming_mode": req.StreamingMode,
-		"quality":        req.Quality,
-	}).Info("Processing streaming TTS request")
-
-	// Create stream session
-	session, err := sts.createStreamSession(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stream session: %w", err)
-	}
-
-	// Update metrics
-	sts.metrics.IncrementTotalStreams()
-	sts.metrics.IncrementActiveStreams()
-
-	// Start processing pipeline
-	go sts.processStreamingPipeline(session)
-
-	return session.Response, nil
 }
 
 // createStreamSession creates a new streaming session
@@ -524,86 +498,133 @@ func (sts *StreamingTTSService) calculateTotalDuration(segments []AudioSegment) 
 	return total
 }
 
+// fallbackToSingleInstance processes the request using a single TTS instance
 func (sts *StreamingTTSService) fallbackToSingleInstance(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
-	sts.logger.Info("Using intelligent single-daemon streaming mode")
-
-	// For short texts, use direct processing
-	if len(req.Text) < 200 {
-		return sts.processSingleChunk(ctx, req)
-	}
-
-	// For longer texts, use intelligent chunking with single daemon
-	return sts.processIntelligentChunking(ctx, req)
+	sts.logger.Info("🔄 Using single-instance fallback processing")
+	return sts.processSingleChunk(ctx, req)
 }
 
-func (sts *StreamingTTSService) processSingleChunk(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
-	// Convert streaming request to regular request
-	regularReq := &TTSRequest{
-		Text:     req.Text,
-		Voice:    req.Voice,
-		Language: req.Language,
-		Speed:    req.Speed,
+// processClusterBased processes the request using the cluster manager
+func (sts *StreamingTTSService) processClusterBased(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
+	if !sts.isInitialized {
+		return nil, fmt.Errorf("streaming service not initialized")
 	}
 
-	// Process using the existing single-instance method
-	response, err := sts.Service.TextToSpeech(ctx, regularReq)
+	// Validate request
+	if err := sts.validateStreamingRequest(req); err != nil {
+		return nil, fmt.Errorf("invalid streaming request: %w", err)
+	}
+
+	sts.logger.WithFields(logrus.Fields{
+		"text_length":    len(req.Text),
+		"voice":          req.Voice,
+		"language":       req.Language,
+		"streaming_mode": req.StreamingMode,
+		"quality":        req.Quality,
+	}).Info("Processing cluster-based TTS request")
+
+	// Split text into chunks
+	chunks, err := sts.textSplitter.SplitIntelligently(req.Text)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to split text: %w", err)
 	}
 
-	// Convert to streaming response
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("no chunks generated from text")
+	}
+
+	sts.logger.WithField("total_chunks", len(chunks)).Info("Text split into chunks")
+
+	// Create response
 	streamResponse := &StreamingTTSResponse{
-		StreamID:       generateRequestID(),
-		TotalChunks:    1,
-		FinalAudioFile: response.OutputFile,
-		AudioStream:    make(chan AudioChunk, 1),
-		ProgressStream: make(chan ProgressUpdate, 1),
-		ErrorStream:    make(chan error, 1),
+		StreamID:       req.RequestID,
+		AudioStream:    make(chan AudioChunk, len(chunks)),
+		ProgressStream: make(chan ProgressUpdate, 10),
+		ErrorStream:    make(chan error, 5),
 		CompletionChan: make(chan StreamCompletion, 1),
 	}
 
-	// Send single chunk
+	// Process chunks through cluster
 	go func() {
 		defer close(streamResponse.AudioStream)
 		defer close(streamResponse.ProgressStream)
 		defer close(streamResponse.ErrorStream)
 		defer close(streamResponse.CompletionChan)
 
-		// Read audio file
-		var audioData []byte
-		if response.OutputFile != "" {
-			data, err := os.ReadFile(response.OutputFile)
-			if err == nil {
-				audioData = data
+		// Convert chunks to cluster format
+		clusterChunks := make([]TextChunk, len(chunks))
+		for i, chunk := range chunks {
+			clusterChunks[i] = TextChunk{
+				Index:   i,
+				Content: chunk.Content,
 			}
 		}
 
-		chunk := AudioChunk{
-			ChunkIndex: 0,
-			AudioData:  audioData,
-			AudioFile:  response.OutputFile,
-			Duration:   time.Duration(response.AudioDuration * float64(time.Second)),
-			Timestamp:  time.Now(),
-			IsComplete: true,
+		// Process through cluster
+		resultChan, err := sts.clusterManager.ProcessChunks(ctx, clusterChunks, req.Voice, req.Language, req.Speed)
+		if err != nil {
+			select {
+			case streamResponse.ErrorStream <- fmt.Errorf("cluster processing failed: %w", err):
+			case <-ctx.Done():
+			}
+			return
 		}
 
-		streamResponse.AudioStream <- chunk
+		// Collect results
+		processedChunks := 0
+		for result := range resultChan {
+			if result.Success {
+				audioChunk := AudioChunk{
+					ChunkIndex: result.ChunkIndex,
+					AudioData:  result.AudioData,
+					AudioFile:  result.AudioFile,
+					Duration:   result.Duration,
+					Timestamp:  time.Now(),
+					IsComplete: true,
+					Metadata:   result.Metadata,
+				}
 
+				select {
+				case streamResponse.AudioStream <- audioChunk:
+				case <-ctx.Done():
+					return
+				}
+
+				processedChunks++
+			} else {
+				select {
+				case streamResponse.ErrorStream <- fmt.Errorf("chunk %d failed: %s", result.ChunkIndex, result.ErrorMessage):
+				case <-ctx.Done():
+				}
+			}
+
+			// Send progress update
+			progress := ProgressUpdate{
+				TotalChunks:     len(chunks),
+				ChunksProcessed: processedChunks,
+				Timestamp:       time.Now(),
+				Phase:           "processing",
+			}
+
+			select {
+			case streamResponse.ProgressStream <- progress:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// Send completion
 		completion := StreamCompletion{
-			StreamID:        streamResponse.StreamID,
-			Success:         response.Success,
-			TotalChunks:     1,
-			ProcessedChunks: 1,
-			FinalAudioFile:  response.OutputFile,
+			Success:         processedChunks == len(chunks),
+			TotalChunks:     len(chunks),
+			ProcessedChunks: processedChunks,
 			Timestamp:       time.Now(),
 		}
 
-		if !response.Success {
-			completion.Error = fmt.Errorf(response.Error)
-			completion.ErrorMessage = response.Error
+		select {
+		case streamResponse.CompletionChan <- completion:
+		case <-ctx.Done():
 		}
-
-		streamResponse.CompletionChan <- completion
 	}()
 
 	return streamResponse, nil
@@ -720,6 +741,79 @@ func (sts *StreamingTTSService) IsStreamingEnabled() bool {
 	return sts.streamingConfig.Enabled && sts.isInitialized
 }
 
+func (sts *StreamingTTSService) processSingleChunk(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
+	// Convert streaming request to regular request
+	regularReq := &TTSRequest{
+		Text:     req.Text,
+		Voice:    req.Voice,
+		Language: req.Language,
+		Speed:    req.Speed,
+	}
+
+	// Process using the existing single-instance method
+	response, err := sts.Service.TextToSpeech(ctx, regularReq)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to streaming response
+	streamResponse := &StreamingTTSResponse{
+		StreamID:       generateRequestID(),
+		TotalChunks:    1,
+		FinalAudioFile: response.OutputFile,
+		AudioStream:    make(chan AudioChunk, 1),
+		ProgressStream: make(chan ProgressUpdate, 1),
+		ErrorStream:    make(chan error, 1),
+		CompletionChan: make(chan StreamCompletion, 1),
+	}
+
+	// Send single chunk
+	go func() {
+		defer close(streamResponse.AudioStream)
+		defer close(streamResponse.ProgressStream)
+		defer close(streamResponse.ErrorStream)
+		defer close(streamResponse.CompletionChan)
+
+		// Read audio file
+		var audioData []byte
+		if response.OutputFile != "" {
+			data, err := os.ReadFile(response.OutputFile)
+			if err == nil {
+				audioData = data
+			}
+		}
+
+		chunk := AudioChunk{
+			ChunkIndex: 0,
+			AudioData:  audioData,
+			AudioFile:  response.OutputFile,
+			Duration:   time.Duration(response.AudioDuration * float64(time.Second)),
+			Timestamp:  time.Now(),
+			IsComplete: true,
+		}
+
+		streamResponse.AudioStream <- chunk
+
+		completion := StreamCompletion{
+			StreamID:        streamResponse.StreamID,
+			Success:         response.Success,
+			TotalChunks:     1,
+			ProcessedChunks: 1,
+			FinalAudioFile:  response.OutputFile,
+			Timestamp:       time.Now(),
+		}
+
+		if !response.Success {
+			completion.Error = fmt.Errorf("%s", response.Error)
+			completion.ErrorMessage = response.Error
+		}
+
+		streamResponse.CompletionChan <- completion
+	}()
+
+	return streamResponse, nil
+}
+
 func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, req *StreamingTTSRequest) (*StreamingTTSResponse, error) {
 	sts.logger.WithField("text_length", len(req.Text)).Info("Processing with intelligent chunking")
 
@@ -754,19 +848,39 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 
 		var audioSegments []AudioSegment
 		var totalDuration float64
+		startTime := time.Now()
+		var processingTimes []time.Duration
 
 		for i, chunk := range chunks {
+			chunkStartTime := time.Now()
+
 			sts.logger.WithFields(logrus.Fields{
 				"chunk_index": i,
 				"chunk_text":  chunk.Content[:minInt(50, len(chunk.Content))],
 			}).Info("Processing chunk")
 
+			// Calculate estimated time remaining and processing speed
+			var estimatedTimeRemaining time.Duration
+			var processingSpeed float64
+
+			if len(processingTimes) > 0 {
+				avgProcessingTime := time.Duration(0)
+				for _, pt := range processingTimes {
+					avgProcessingTime += pt
+				}
+				avgProcessingTime = avgProcessingTime / time.Duration(len(processingTimes))
+
+				remainingChunks := len(chunks) - i
+				estimatedTimeRemaining = avgProcessingTime * time.Duration(remainingChunks)
+				processingSpeed = float64(len(chunks)) / time.Since(startTime).Seconds()
+			}
+
 			// Send progress update
 			progress := ProgressUpdate{
 				TotalChunks:            len(chunks),
 				ChunksProcessed:        i,
-				EstimatedTimeRemaining: 0, // TODO: Calculate based on average processing time
-				ProcessingSpeed:        0, // TODO: Calculate processing speed
+				EstimatedTimeRemaining: estimatedTimeRemaining,
+				ProcessingSpeed:        processingSpeed,
 				BufferHealth:           1.0,
 				Timestamp:              time.Now(),
 				Phase:                  "processing",
@@ -796,11 +910,18 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 				return
 			}
 
+			// Calculate actual duration from audio file
+			audioDuration := response.AudioDuration
+			if audioDuration <= 0 {
+				// Fallback: estimate duration based on text length
+				audioDuration = float64(len(chunk.Content)) / 15.0 // Rough estimate: 15 chars per second
+			}
+
 			// Create audio segment
 			segment := AudioSegment{
 				Index:    i,
 				FilePath: response.OutputFile,
-				Duration: 0, // TODO: Get actual duration from audio file
+				Duration: time.Duration(audioDuration * float64(time.Second)),
 				Metadata: map[string]interface{}{
 					"text":       chunk.Content,
 					"voice":      req.Voice,
@@ -809,6 +930,11 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 			}
 
 			audioSegments = append(audioSegments, segment)
+			totalDuration += audioDuration
+
+			// Record processing time
+			processingTime := time.Since(chunkStartTime)
+			processingTimes = append(processingTimes, processingTime)
 
 			// Send audio chunk
 			audioChunk := AudioChunk{
@@ -830,8 +956,33 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 			sts.logger.WithField("chunk_index", i).Info("Chunk processed successfully")
 		}
 
-		// TODO: Implement audio assembly to create final combined file
-		finalAudioFile := audioSegments[len(audioSegments)-1].FilePath // Temporary: use last chunk
+		// Implement audio assembly to create final combined file
+		finalAudioFile := ""
+		if len(audioSegments) > 0 {
+			if sts.audioAssembler != nil {
+				// Use audio assembler to combine files
+				combinedAudio, err := sts.audioAssembler.AssembleAudioStream(audioSegments)
+				if err != nil {
+					sts.logger.WithError(err).Warn("Failed to combine audio files, using last chunk")
+					finalAudioFile = audioSegments[len(audioSegments)-1].FilePath
+				} else {
+					// Save combined audio to a temporary file
+					tempFile := fmt.Sprintf("/tmp/combined_audio_%s.wav", generateRequestID())
+					if err := os.WriteFile(tempFile, combinedAudio, 0644); err == nil {
+						finalAudioFile = tempFile
+					} else {
+						sts.logger.WithError(err).Warn("Failed to save combined audio, using last chunk")
+						finalAudioFile = audioSegments[len(audioSegments)-1].FilePath
+					}
+				}
+			} else {
+				// Fallback: use last chunk if no assembler available
+				finalAudioFile = audioSegments[len(audioSegments)-1].FilePath
+			}
+		}
+
+		// Calculate actual processing time
+		totalProcessingTime := time.Since(startTime)
 
 		// Send completion
 		completion := StreamCompletion{
@@ -840,7 +991,7 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 			ProcessedChunks: len(chunks),
 			FinalAudioFile:  finalAudioFile,
 			TotalDuration:   time.Duration(totalDuration * float64(time.Second)),
-			ProcessingTime:  time.Duration(0), // TODO: Calculate actual processing time
+			ProcessingTime:  totalProcessingTime,
 			Timestamp:       time.Now(),
 		}
 
@@ -850,9 +1001,10 @@ func (sts *StreamingTTSService) processIntelligentChunking(ctx context.Context, 
 		}
 
 		sts.logger.WithFields(logrus.Fields{
-			"stream_id":    streamResponse.StreamID,
-			"total_chunks": len(chunks),
-			"final_file":   finalAudioFile,
+			"stream_id":       streamResponse.StreamID,
+			"total_chunks":    len(chunks),
+			"final_file":      finalAudioFile,
+			"processing_time": totalProcessingTime,
 		}).Info("Intelligent chunking completed")
 	}()
 

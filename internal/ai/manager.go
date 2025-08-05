@@ -106,15 +106,32 @@ func NewLLMManager(cfg *config.Config, logger *logrus.Logger, configRepo reposit
 
 	// Add LlamaCpp provider if enabled (PRIMARY PROVIDER)
 	if cfg.AI.Enabled && cfg.AI.LlamaCpp.Enabled {
-		providerConfigs = append(providerConfigs, config.AIProviderConfig{
-			Type:         "llamacpp",
-			Enabled:      cfg.AI.LlamaCpp.Enabled,
-			URL:          cfg.AI.LlamaCpp.BaseURL,
-			APIKey:       cfg.AI.LlamaCpp.APIKey,
-			DefaultModel: cfg.AI.LlamaCpp.DefaultModel,
-			MaxTokens:    4096, // Default for LLMs
-			AutoStart:    true, // Always auto-start llama.cpp for LFM2
-		})
+		// Check if multi-instance mode is enabled via environment or config
+		useMultiInstance := cfg.AI.LlamaCpp.MultiInstance || true // Default to multi-instance for now
+		
+		if useMultiInstance {
+			// Use multi-instance provider
+			providerConfigs = append(providerConfigs, config.AIProviderConfig{
+				Type:         "multi-llamacpp",
+				Enabled:      cfg.AI.LlamaCpp.Enabled,
+				URL:          cfg.AI.LlamaCpp.BaseURL,
+				APIKey:       cfg.AI.LlamaCpp.APIKey,
+				DefaultModel: cfg.AI.LlamaCpp.DefaultModel,
+				MaxTokens:    32768, // Full 32K context for multi-instance
+				AutoStart:    true,  // Always auto-start multi-instance manager
+			})
+		} else {
+			// Use single-instance provider
+			providerConfigs = append(providerConfigs, config.AIProviderConfig{
+				Type:         "llamacpp",
+				Enabled:      cfg.AI.LlamaCpp.Enabled,
+				URL:          cfg.AI.LlamaCpp.BaseURL,
+				APIKey:       cfg.AI.LlamaCpp.APIKey,
+				DefaultModel: cfg.AI.LlamaCpp.DefaultModel,
+				MaxTokens:    4096, // Default for LLMs
+				AutoStart:    true, // Always auto-start llama.cpp for LFM2
+			})
+		}
 	}
 
 	// Initialize providers if any are configured
@@ -125,11 +142,13 @@ func NewLLMManager(cfg *config.Config, logger *logrus.Logger, configRepo reposit
 
 		// Set primary provider based on what's available
 		if len(manager.providers) > 0 {
-			// Prefer LlamaCpp if available, otherwise use the first available provider
+			// Prefer Multi-Instance LlamaCpp if available, then LlamaCpp, otherwise use the first available provider
 			for _, provider := range manager.providers {
-				if provider.GetName() == "llamacpp" {
-					manager.primaryProvider = "llamacpp"
+				if provider.GetName() == "multi-llamacpp" {
+					manager.primaryProvider = "multi-llamacpp"
 					break
+				} else if provider.GetName() == "llamacpp" {
+					manager.primaryProvider = "llamacpp"
 				}
 			}
 			if manager.primaryProvider == "" {
@@ -277,6 +296,23 @@ func (m *LLMManager) GetProviders(ctx context.Context) []LLMProvider {
 	providers := make([]LLMProvider, 0, len(m.providers))
 	providers = append(providers, m.providers...)
 	return providers
+}
+
+// GetProvider returns a specific provider by name
+func (m *LLMManager) GetProvider(name string) (LLMProvider, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	provider, exists := m.providersByName[name]
+	return provider, exists
+}
+
+// GetPrimaryProvider returns the name of the primary provider
+func (m *LLMManager) GetPrimaryProvider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	return m.primaryProvider
 }
 
 // GetModels returns all available models from all providers

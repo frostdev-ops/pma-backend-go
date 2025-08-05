@@ -2,12 +2,15 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/frostdev-ops/pma-backend-go/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
@@ -104,12 +107,96 @@ func HandleWebSocketWithAuth(hub *Hub, w http.ResponseWriter, r *http.Request, c
 		"user_agent": r.Header.Get("User-Agent"),
 	}).Info("WebSocket connection attempt")
 
-	// CRITICAL FIX: Disable WebSocket authentication to match REST API approach
-	// Authentication has been disabled across the application for development/testing
-	hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (authentication disabled system-wide)")
+	// Check for localhost secret header first (for nginx-proxied local requests)
+	localhostSecret := r.Header.Get("X-Localhost-Secret")
+	if localhostSecret != "" && localhostSecret == cfg.Auth.LocalhostSecret {
+		hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (localhost secret bypass)")
+		// Proceed with WebSocket upgrade for localhost secret bypass
+		hub.HandleWebSocket(w, r, cfg)
+		return
+	}
 
-	// Proceed with WebSocket upgrade without authentication checks
-	hub.HandleWebSocket(w, r, cfg)
+	// Check if this is a local connection (localhost or local network)
+	if isLocalConnection(clientIP) {
+		hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (local connection bypass)")
+		// Proceed with WebSocket upgrade for local connections
+		hub.HandleWebSocket(w, r, cfg)
+		return
+	}
+
+	// For remote connections, require authentication
+	// Check for API secret header first (preferred method)
+	apiSecret := r.Header.Get("X-API-Secret")
+	if apiSecret != "" {
+		if apiSecret == cfg.Auth.APISecret {
+			hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (API secret)")
+			hub.HandleWebSocket(w, r, cfg)
+			return
+		} else {
+			hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (invalid API secret)")
+			http.Error(w, "Invalid API secret", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Check for JWT token in Authorization header
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (no authentication)")
+		http.Error(w, "Authentication required for remote access", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract token from "Bearer <token>"
+	tokenParts := strings.Split(authHeader, " ")
+	if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
+		hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (invalid authorization header)")
+		http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
+		return
+	}
+
+	tokenString := tokenParts[1]
+
+	// Validate JWT token
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(cfg.Auth.JWTSecret), nil
+	})
+
+	if err != nil {
+		hub.logger.WithField("client_ip", clientIP).WithError(err).Warn("WebSocket connection denied (invalid JWT token)")
+		http.Error(w, "Invalid JWT token", http.StatusUnauthorized)
+		return
+	}
+
+	if !token.Valid {
+		hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (invalid or expired JWT token)")
+		http.Error(w, "Invalid or expired JWT token", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract claims
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		// Check if token is expired
+		if exp, ok := claims["exp"].(float64); ok {
+			if time.Now().Unix() > int64(exp) {
+				hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (expired JWT token)")
+				http.Error(w, "JWT token has expired", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		hub.logger.WithField("client_ip", clientIP).Info("WebSocket connection allowed (valid JWT token)")
+		// Proceed with WebSocket upgrade for authenticated connections
+		hub.HandleWebSocket(w, r, cfg)
+	} else {
+		hub.logger.WithField("client_ip", clientIP).Warn("WebSocket connection denied (invalid JWT claims)")
+		http.Error(w, "Invalid JWT claims", http.StatusUnauthorized)
+		return
+	}
 }
 
 // HandleWebSocket handles websocket requests from clients
@@ -589,18 +676,108 @@ func (c *Client) handleAuthentication(msg Message) {
 		"token_provided": msg.Token != "",
 	}).Info("WebSocket authentication request received")
 
-	// For now, since authentication is disabled in the system,
-	// we'll just acknowledge the auth request and mark as successful
-	// TODO: Implement proper JWT validation when authentication is re-enabled
+	var authSuccess bool
+	var authMessage string
+	var userInfo map[string]interface{}
+
+	if msg.Token != "" {
+		// Validate JWT token
+		token, err := jwt.Parse(msg.Token, func(token *jwt.Token) (interface{}, error) {
+			// Validate signing method
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			// Use the JWT secret from config - we need to get this from the hub or pass it in
+			// For now, we'll use a default secret - in production this should be passed from the hub
+			return []byte("Bwv3acVjr0RHkYNnXAsDAT7RYWXaQEZhm7xZzfccUMI="), nil
+		})
+
+		if err != nil {
+			authSuccess = false
+			authMessage = fmt.Sprintf("Invalid JWT token: %v", err)
+			userInfo = map[string]interface{}{
+				"authenticated": false,
+				"error":         err.Error(),
+			}
+		} else if !token.Valid {
+			authSuccess = false
+			authMessage = "Invalid or expired JWT token"
+			userInfo = map[string]interface{}{
+				"authenticated": false,
+				"error":         "token_invalid",
+			}
+		} else {
+			// Extract claims
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				// Check if token is expired
+				if exp, ok := claims["exp"].(float64); ok {
+					if time.Now().Unix() > int64(exp) {
+						authSuccess = false
+						authMessage = "JWT token has expired"
+						userInfo = map[string]interface{}{
+							"authenticated": false,
+							"error":         "token_expired",
+						}
+					} else {
+						// Token is valid
+						authSuccess = true
+						authMessage = "Authentication successful"
+
+						// Extract user info from claims
+						userID := "1"
+						username := "user"
+
+						if userIDClaim, ok := claims["user_id"].(string); ok {
+							userID = userIDClaim
+						}
+						if usernameClaim, ok := claims["username"].(string); ok {
+							username = usernameClaim
+						}
+
+						userInfo = map[string]interface{}{
+							"authenticated": true,
+							"user_id":       userID,
+							"username":      username,
+							"permissions":   []string{"read", "write"},
+							"auth_type":     claims["auth_type"],
+						}
+
+						// Mark client as authenticated
+						c.authenticated = true
+					}
+				} else {
+					authSuccess = false
+					authMessage = "Invalid JWT claims"
+					userInfo = map[string]interface{}{
+						"authenticated": false,
+						"error":         "invalid_claims",
+					}
+				}
+			} else {
+				authSuccess = false
+				authMessage = "Invalid JWT claims"
+				userInfo = map[string]interface{}{
+					"authenticated": false,
+					"error":         "invalid_claims",
+				}
+			}
+		}
+	} else {
+		// No token provided
+		authSuccess = false
+		authMessage = "No authentication token provided"
+		userInfo = map[string]interface{}{
+			"authenticated": false,
+			"error":         "no_token",
+		}
+	}
 
 	authResponse := Message{
 		Type: "auth_response",
 		Data: map[string]interface{}{
-			"success": true,
-			"message": "Authentication successful",
-			"user": map[string]interface{}{
-				"authenticated": true,
-			},
+			"success": authSuccess,
+			"message": authMessage,
+			"user":    userInfo,
 		},
 	}
 
@@ -608,7 +785,7 @@ func (c *Client) handleAuthentication(msg Message) {
 
 	c.logger.WithFields(logrus.Fields{
 		"client_id": c.ID,
-		"response":  authResponse,
-		"json":      string(authResponse.ToJSON()),
+		"success":   authSuccess,
+		"message":   authMessage,
 	}).Info("WebSocket authentication response sent")
 }

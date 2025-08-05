@@ -305,7 +305,7 @@ func (h *Handlers) SendMessage(c *gin.Context) {
 
 	// Convert SendMessageRequest to ChatOptions for streamlined service
 	opts := ai.ChatOptions{
-		Provider:     "llamacpp",
+		Provider:     h.llmManager.GetPrimaryProvider(), // Use primary provider (multi-llamacpp or llamacpp)
 		Model:        "LFM2-1.2B", // Default full precision model
 		MaxTokens:    100,         // Default
 		Temperature:  0.7,         // Default

@@ -376,30 +376,29 @@ func (pc *PiperCluster) GetWorkerStats() []map[string]interface{} {
 	return stats
 }
 
-// GetClusterStats returns overall cluster statistics
+// GetClusterStats returns current cluster statistics
 func (pc *PiperCluster) GetClusterStats() map[string]interface{} {
-	pc.metrics.mu.RLock()
-	defer pc.metrics.mu.RUnlock()
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
 
-	uptime := time.Since(pc.metrics.StartTime)
-	queueLength := int64(len(pc.chunkQueue))
 	activeWorkers := pc.countActiveWorkers()
 
 	return map[string]interface{}{
-		"total_tasks":       pc.metrics.TotalTasks,
-		"completed_tasks":   pc.metrics.CompletedTasks,
-		"failed_tasks":      pc.metrics.FailedTasks,
-		"queue_length":      queueLength,
-		"active_workers":    activeWorkers,
-		"total_workers":     len(pc.workers),
-		"average_latency":   pc.metrics.AverageLatency,
-		"throughput":        pc.metrics.Throughput,
-		"uptime":            uptime.String(),
-		"start_time":        pc.metrics.StartTime,
-		"last_update":       pc.metrics.LastUpdate,
-		"queue_capacity":    cap(pc.chunkQueue),
-		"queue_utilization": float64(queueLength) / float64(cap(pc.chunkQueue)),
+		"total_workers":         len(pc.workers),
+		"active_workers":        activeWorkers,
+		"queue_length":          len(pc.chunkQueue),
+		"is_running":            pc.isRunning,
+		"load_balance_strategy": pc.loadBalancer.strategy,
+		"metrics":               pc.metrics,
 	}
+}
+
+// IsAvailable checks if the cluster is available for processing
+func (pc *PiperCluster) IsAvailable() bool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	return pc.isRunning && pc.countActiveWorkers() > 0
 }
 
 // Internal methods
@@ -485,7 +484,49 @@ func (pc *PiperCluster) dispatchTask(task ChunkTask) {
 	worker := pc.loadBalancer.SelectWorker(pc.workers)
 	if worker == nil {
 		pc.logger.Error("No available workers for task")
-		// TODO: Handle no workers available (queue for retry, scale up, etc.)
+		// Handle no workers available - queue for retry with backoff
+		if task.RetryCount < pc.config.MaxRetries {
+			task.RetryCount++
+			task.CreatedAt = time.Now()
+
+			// Exponential backoff delay
+			backoffDelay := pc.config.RetryDelay * time.Duration(1<<(task.RetryCount-1))
+			time.Sleep(backoffDelay)
+
+			// Re-queue the task
+			select {
+			case pc.chunkQueue <- task:
+				pc.logger.WithFields(logrus.Fields{
+					"task_id":     task.ID,
+					"retry_count": task.RetryCount,
+					"backoff":     backoffDelay,
+				}).Info("Re-queued task for retry")
+			default:
+				pc.logger.WithField("task_id", task.ID).Error("Failed to re-queue task - queue is full")
+			}
+		} else {
+			pc.logger.WithFields(logrus.Fields{
+				"task_id":     task.ID,
+				"retry_count": task.RetryCount,
+			}).Error("Task failed after maximum retries")
+
+			// Send failure result
+			result := ChunkResult{
+				TaskID:       task.ID,
+				RequestID:    task.RequestID,
+				ChunkIndex:   task.Chunk.Index,
+				Success:      false,
+				Error:        fmt.Errorf("no available workers after %d retries", task.RetryCount),
+				ErrorMessage: "No available workers",
+				CompletedAt:  time.Now(),
+			}
+
+			select {
+			case pc.resultCollector <- result:
+			default:
+				pc.logger.Error("Failed to send failure result - collector is full")
+			}
+		}
 		return
 	}
 
@@ -502,7 +543,49 @@ func (pc *PiperCluster) dispatchTask(task ChunkTask) {
 			"task_id":   task.ID,
 			"worker_id": worker.ID,
 		}).Warn("Worker queue is full, will retry")
-		// TODO: Implement retry logic or queue overflow handling
+		// Implement retry logic with exponential backoff
+		if task.RetryCount < pc.config.MaxRetries {
+			task.RetryCount++
+			task.CreatedAt = time.Now()
+
+			// Exponential backoff delay
+			backoffDelay := pc.config.RetryDelay * time.Duration(1<<(task.RetryCount-1))
+			time.Sleep(backoffDelay)
+
+			// Re-queue the task
+			select {
+			case pc.chunkQueue <- task:
+				pc.logger.WithFields(logrus.Fields{
+					"task_id":     task.ID,
+					"retry_count": task.RetryCount,
+					"backoff":     backoffDelay,
+				}).Info("Re-queued task after worker queue overflow")
+			default:
+				pc.logger.WithField("task_id", task.ID).Error("Failed to re-queue task - queue is full")
+			}
+		} else {
+			pc.logger.WithFields(logrus.Fields{
+				"task_id":     task.ID,
+				"retry_count": task.RetryCount,
+			}).Error("Task failed after maximum retries due to queue overflow")
+
+			// Send failure result
+			result := ChunkResult{
+				TaskID:       task.ID,
+				RequestID:    task.RequestID,
+				ChunkIndex:   task.Chunk.Index,
+				Success:      false,
+				Error:        fmt.Errorf("worker queue overflow after %d retries", task.RetryCount),
+				ErrorMessage: "Worker queue overflow",
+				CompletedAt:  time.Now(),
+			}
+
+			select {
+			case pc.resultCollector <- result:
+			default:
+				pc.logger.Error("Failed to send failure result - collector is full")
+			}
+		}
 	}
 }
 
